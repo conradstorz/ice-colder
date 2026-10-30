@@ -55,6 +55,11 @@ async def _legacy_snapshot(
         }
 
     status = vmc_instance.get_status()
+    # The cloud StatusView keeps its dollar field until Task 5.
+    status = {
+        **{k: v for k, v in status.items() if k != "credit_escrow_cents"},
+        "credit_escrow": status["credit_escrow_cents"] / 100,  # cents-shim(T5)
+    }
     issues: list[str] = []
     active_faults = vmc_instance.active_faults()
     for f in active_faults:
@@ -123,8 +128,8 @@ def _pay104_machine(tmp_path):
     vmc1 = machine1.vmc
     vmc1.set_state("interacting_with_user")
     vmc1.selected_product = next(p for p in vmc1.products if p.sku == "ICE-1")
-    vmc1.deposit_funds(2.00, payment_method="cash_bill")
-    vmc1.deposit_funds(0.50, payment_method="card")
+    vmc1.deposit_funds(200, payment_method="cash_bill")
+    vmc1.deposit_funds(50, payment_method="card")
     vmc1.process_payment()
     assert vmc1.state == "dispensing"
     SessionStore(store_path).save(vmc1.snapshot())
@@ -294,7 +299,7 @@ def test_build_fault_views_equals_projected_legacy_faults(scenario, monkeypatch)
     pending sale's ``name``/``slot``/``saved_at``; FaultView drops exactly
     those (cloud spec section 6.4). So the expected value is each legacy dict
     restricted to the FaultView fields, with ``pending_sale`` restricted to
-    ``sku``/``price``/``methods``."""
+    ``sku``/``price``/``methods`` (dollars until Task 5)."""
     machine, monitor, _avail, _recorder = scenario
     _freeze(monitor, monkeypatch)
     legacy = _legacy_faults_with_age(machine, monitor)
@@ -304,7 +309,16 @@ def test_build_fault_views_equals_projected_legacy_faults(scenario, monkeypatch)
         row = {k: f[k] for k in fields.split()}
         ps = f["pending_sale"]
         row["pending_sale"] = (
-            {k: ps[k] for k in ("sku", "price", "methods")} if ps else None
+            {
+                "sku": ps["sku"],
+                "price": ps["price_cents"] / 100,  # cents-shim(T5)
+                "methods": {
+                    k: v / 100  # cents-shim(T5)
+                    for k, v in ps["methods"].items()
+                },
+            }
+            if ps
+            else None
         )
         expected.append(row)
     # positive control: the keys being dropped really exist in the legacy shape

@@ -14,7 +14,7 @@ class TestInitialState:
         assert vmc.state == "idle"
 
     def test_initial_credit_is_zero(self, vmc):
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
 
     def test_no_selected_product(self, vmc):
         assert vmc.selected_product is None
@@ -22,29 +22,29 @@ class TestInitialState:
 
 class TestDeposit:
     def test_deposit_increases_credit(self, vmc):
-        vmc.deposit_funds(5.00)
-        assert vmc.credit_escrow == 5.00
+        vmc.deposit_funds(500)
+        assert vmc.credit_escrow_cents == 500
 
     def test_deposit_updates_payment_method(self, vmc):
-        vmc.deposit_funds(1.00, payment_method="Cash")
+        vmc.deposit_funds(100, payment_method="Cash")
         assert vmc.last_payment_method == "Cash"
 
     def test_multiple_deposits_accumulate(self, vmc):
-        vmc.deposit_funds(1.00)
-        vmc.deposit_funds(2.50)
-        assert vmc.credit_escrow == 3.50
+        vmc.deposit_funds(100)
+        vmc.deposit_funds(250)
+        assert vmc.credit_escrow_cents == 350
 
 
 class TestRefund:
     def test_refund_zeroes_credit(self, vmc):
-        vmc.deposit_funds(5.00)
+        vmc.deposit_funds(500)
         vmc.request_refund()
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
 
     def test_refund_with_no_credit(self, vmc):
         """Refund with no balance should not error."""
         vmc.request_refund()
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
 
 
 class TestFSMTransitions:
@@ -60,12 +60,12 @@ class TestFSMTransitions:
     def test_complete_transaction_to_idle_when_no_credit(self, vmc):
         vmc.start_interaction()
         vmc.dispense_product()
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         vmc.complete_transaction()
         assert vmc.state == "idle"
 
     def test_complete_transaction_stays_interacting_with_credit(self, vmc):
-        vmc.deposit_funds(10.00)
+        vmc.deposit_funds(1000)
         vmc.start_interaction()
         vmc.dispense_product()
         vmc.complete_transaction()
@@ -98,7 +98,7 @@ class TestGetStatus:
         status = vmc.get_status()
         assert "state" in status
         assert "selected_product" in status
-        assert "credit_escrow" in status
+        assert "credit_escrow_cents" in status
         assert "last_payment_method" in status
 
     def test_status_reflects_state(self, vmc):
@@ -111,18 +111,18 @@ class TestCallbacks:
     def test_update_callback_called_on_deposit(self, vmc):
         """Update callback receives state, product, and credit_escrow."""
         cb = MagicMock()
-        vmc.deposit_funds(2.00)  # Seed escrow to distinguish amount from balance
+        vmc.deposit_funds(200)  # Seed escrow to distinguish amount from balance
         vmc.outputs.set_update_callback(cb)
-        vmc.deposit_funds(1.00)
+        vmc.deposit_funds(100)
         # Callback is called once with (state, product, credit), not twice
-        cb.assert_called_once_with("idle", None, 3.0)
+        cb.assert_called_once_with("idle", None, 300)
 
     def test_message_callback_called_on_deposit(self, vmc):
         """Message callback receives formatted text with amount and balance."""
         cb = MagicMock()
-        vmc.deposit_funds(2.00)  # Seed escrow to distinguish amount from balance
+        vmc.deposit_funds(200)  # Seed escrow to distinguish amount from balance
         vmc.outputs.set_message_callback(cb)
-        vmc.deposit_funds(1.00)
+        vmc.deposit_funds(100)
         # Callback is called with the exact message text
         cb.assert_called_once_with("$1.00 deposited. Current balance: $3.00.")
 
@@ -160,7 +160,7 @@ class TestExplicitTriggers:
     def test_complete_transaction_destination_follows_credit(
         self, vmc, credit, expected
     ):
-        vmc.credit_escrow = credit
+        vmc.credit_escrow_cents = credit
         vmc.set_state("dispensing")
         vmc.complete_transaction()
         assert vmc.state == expected

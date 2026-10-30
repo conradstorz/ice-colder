@@ -487,7 +487,7 @@ class TestFullTransactionLoop:
 
             # VMC should return to idle (no remaining credit)
             await _wait_for_state(vmc, "idle", timeout=5.0)
-            assert vmc.credit_escrow == 0.0
+            assert vmc.credit_escrow_cents == 0
             h.collector.assert_one_dispense_per_sale([request_id])
 
     async def test_overpayment_returns_to_idle_with_change(self, tmp_path):
@@ -510,7 +510,7 @@ class TestFullTransactionLoop:
             await _wait_for_state(vmc, "dispensing", timeout=5.0)
 
             # Credit should be $5.00 - $1.50 = $3.50
-            assert abs(vmc.credit_escrow - 3.50) < 0.01
+            assert abs(vmc.credit_escrow_cents - 3.50) < 0.01
 
             dispense_msg = await h.collector.next_dispense()
             assert dispense_msg["params"]["slot"] == 2
@@ -529,7 +529,7 @@ class TestFullTransactionLoop:
 
             # With remaining credit, VMC goes back to interacting_with_user
             await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
-            assert abs(vmc.credit_escrow - 3.50) < 0.01
+            assert abs(vmc.credit_escrow_cents - 3.50) < 0.01
             h.collector.assert_one_dispense_per_sale([request_id])
 
     async def test_insufficient_funds_waits_for_more(self, tmp_path):
@@ -554,7 +554,7 @@ class TestFullTransactionLoop:
             # Credit never becomes sufficient ($1.00 < $3.50), so the
             # state assertion holds regardless of when process_payment's
             # own timer happens to re-check.
-            await _wait_until(lambda: abs(vmc.credit_escrow - 1.00) < 0.01)
+            await _wait_until(lambda: abs(vmc.credit_escrow_cents - 1.00) < 0.01)
             assert vmc.state == "interacting_with_user"
             assert h.collector.dispenses == []
 
@@ -567,7 +567,7 @@ class TestFullTransactionLoop:
             # Now it should transition to dispensing
             await _wait_for_state(vmc, "dispensing", timeout=10.0)
             # Credit should be $4.00 - $3.50 = $0.50
-            assert abs(vmc.credit_escrow - 0.50) < 0.01
+            assert abs(vmc.credit_escrow_cents - 0.50) < 0.01
 
             dispense_msg = await h.collector.next_dispense()
             request_id = dispense_msg["request_id"]
@@ -617,7 +617,7 @@ class TestFullTransactionLoop:
                 ).model_dump_json(),
             )
             await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
-            assert vmc.credit_escrow == 2.00
+            assert vmc.credit_escrow_cents == 200
             assert vmc.faults.lockouts["ICE-SM"].value == "ICE-401"
             assert vmc.state != "error"
             h.collector.assert_one_dispense_per_sale([request_id])
@@ -691,7 +691,7 @@ class TestFailedVendLoop:
                 # select_product schedules process_payment a second
                 # later; with the fake runner the test fires it once
                 # the credit has landed in escrow.
-                await _wait_until(lambda: vmc.credit_escrow >= 2.00)
+                await _wait_until(lambda: vmc.credit_escrow_cents >= 200)
                 runner.fire("process_payment")
                 await _wait_for_state(vmc, "dispensing")
 
@@ -707,7 +707,7 @@ class TestFailedVendLoop:
             try:
                 await sale("jam")
                 await _wait_for_state(vmc, "interacting_with_user")
-                assert vmc.credit_escrow == 2.00
+                assert vmc.credit_escrow_cents == 200
                 assert vmc.faults.lockouts["ICE-SM"].value == "ICE-401"
                 assert h.health.get_summary()["active_faults"][0]["code"] == "ICE-401"
                 h.collector.assert_one_dispense_per_sale(request_ids)
@@ -965,7 +965,7 @@ class TestIM600XLSales:
         ) as h:
             request_id = await _im600xl_sale(h, "button_ice", 2.00, slot=0)
 
-            assert h.vmc.credit_escrow == 0.0
+            assert h.vmc.credit_escrow_cents == 0
             h.collector.assert_one_dispense_per_sale([request_id])
             assert _sales(recorder) == [("SAMPLE-ICE", 2.00)]
             assert "hardware/io/bin_half_full" not in h.published
@@ -977,7 +977,7 @@ class TestIM600XLSales:
         ) as h:
             request_id = await _im600xl_sale(h, "button_water_1gal", 1.50, slot=1)
 
-            assert h.vmc.credit_escrow == 0.0
+            assert h.vmc.credit_escrow_cents == 0
             h.collector.assert_one_dispense_per_sale([request_id])
             assert _sales(recorder) == [("SAMPLE-WATER-SM", 1.50)]
 

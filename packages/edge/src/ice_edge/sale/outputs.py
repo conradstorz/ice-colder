@@ -16,7 +16,7 @@ no-op or a logged warning -- with no sink attached at all, exactly as the
 VMC is usable before ``main.py`` finishes wiring MQTT/health/availability/
 session store/display onto it.
 
-``snapshot``/``credit_escrow``/``selected_product``/``fsm_state``/
+``snapshot``/``credit_escrow_cents``/``selected_product``/``fsm_state``/
 ``pay104_active`` are callables read at call time, not snapshotted at
 construction, mirroring the pattern already used for
 ``RefundProtocol.ack_timeout``/``max_attempts``: the live VMC's state
@@ -60,7 +60,7 @@ class StatusOutputs:
         self,
         *,
         snapshot: Callable[[str | None], SessionSnapshot],
-        credit_escrow: Callable[[], float],
+        credit_escrow_cents: Callable[[], int],
         selected_product: Callable[[], Product | None],
         fsm_state: Callable[[], str],
         pay104_active: Callable[[], bool],
@@ -69,7 +69,7 @@ class StatusOutputs:
         on_persist_ok: Callable[[], None] | None = None,
     ) -> None:
         self._snapshot = snapshot
-        self._credit_escrow = credit_escrow
+        self._credit_escrow_cents = credit_escrow_cents
         self._selected_product = selected_product
         self._fsm_state = fsm_state
         self._pay104_active = pay104_active
@@ -161,7 +161,8 @@ class StatusOutputs:
         product = self._selected_product()
         status = VMCStatus(
             state=state,
-            credit_escrow=self._credit_escrow(),
+            credit_escrow=self._credit_escrow_cents() / 100,  # deprecated field
+            credit_escrow_cents=self._credit_escrow_cents(),
             selected_product=product.name if product else None,
             uptime_seconds=self.uptime_seconds,
             version=BUILD_INFO.commit_short,
@@ -268,7 +269,7 @@ class StatusOutputs:
         logged and does not propagate out of this call."""
         if self.update_callback:
             self.update_callback(
-                self._fsm_state(), self._selected_product(), self._credit_escrow()
+                self._fsm_state(), self._selected_product(), self._credit_escrow_cents()
             )
 
     def show_qr(self, image) -> None:

@@ -22,7 +22,7 @@ after construction, via `Machine.set_availability`/`set_inventory_manager`.
 A handful of closures a collaborator needs are irreducibly about the live
 VMC's FSM state or its own private methods -- the FSM's current state
 (`outputs.fsm_state`, `faults.fsm_state`), a full session snapshot
-(`outputs.snapshot`, which reads `self.state`/`self.credit_escrow`/
+(`outputs.snapshot`, which reads `self.state`/`self.credit_escrow_cents`/
 `self.selected_product`/the in-flight sale), and the refund protocol's
 terminal callbacks (`refunds.on_confirmed`/`on_failed`, which are VMC's own
 `_refund_confirmed`/`_refund_failed` -- transaction-log lines, event-recorder
@@ -52,7 +52,7 @@ from dataclasses import asdict
 from loguru import logger
 
 from ice_common.config_model import ConfigModel
-from ice_contracts.money import dollars_to_cents
+from ice_contracts.money import format_cents
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.hal import mqtt_inbound
 from ice_edge.vend.dispense_cycle import DispenseCycle
@@ -116,7 +116,7 @@ class Machine:
         self._outputs = StatusOutputs(
             snapshot=lambda state: self.vmc.snapshot(state),
             fsm_state=lambda: self.vmc.state,
-            credit_escrow=lambda: self._escrow.total,
+            credit_escrow_cents=lambda: self._escrow.total_cents,
             selected_product=lambda: self.vmc.selected_product,
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
             tasks=self._tasks,
@@ -168,7 +168,7 @@ class Machine:
             takeover_idle=lambda: self.lease.MAINTENANCE_TAKEOVER_IDLE_SECONDS,
             sweep_seconds=lambda: self.lease.STANDBY_SWEEP_SECONDS,
             fsm_state=lambda: self.vmc.state,
-            escrow_is_empty=lambda: self.escrow.is_empty_within_tolerance,
+            escrow_is_empty=lambda: self.escrow.is_empty,
             make_idle_for_service=lambda: self.vmc.make_idle_for_service(),
         )
         self._recovery = SessionRecovery(
@@ -545,7 +545,7 @@ class Machine:
         self._faults.on_mqtt_connection(connected)
 
     def _sale_recorded(
-        self, sku: str, since_ts: float, methods: dict, window_seconds: float
+        self, sku: str, since_ts: float, methods: dict[str, int], window_seconds: float
     ) -> bool:
         recorder = self._event_recorder
         if recorder is None:
@@ -553,7 +553,7 @@ class Machine:
         return recorder.sale_recorded_since(
             sku,
             since_ts,
-            {k: dollars_to_cents(v) for k, v in methods.items()},  # cents-shim(T4)
+            methods,
             window_seconds=window_seconds,
         )
 
@@ -563,7 +563,7 @@ class Machine:
         evaluate_at_boot` already performs for the other two decision
         kinds) -- mirrors `VMC._flag_uncertain_session` exactly."""
         detail = snap.error or (
-            f"state={snap.state} escrow=${snap.credit_escrow:.2f} "
+            f"state={snap.state} escrow={format_cents(snap.credit_escrow_cents)} "
             f"sku={snap.selected_sku} refund={snap.pending_refund_request_id}"
         )
         logger.error(f"Transaction uncertain after restart: {detail}")
@@ -571,7 +571,7 @@ class Machine:
         if self._event_recorder:
             self._event_recorder.record(
                 "session_uncertain",
-                value=dollars_to_cents(snap.credit_escrow),  # cents-shim(T4)
+                value=snap.credit_escrow_cents,
                 metadata=asdict(snap),
             )
         availability = self._outputs.availability

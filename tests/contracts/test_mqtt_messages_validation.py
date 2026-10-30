@@ -75,6 +75,24 @@ class TestOtherMessageBounds:
         with pytest.raises(ValidationError):
             VMCStatus(state="idle")
 
+    def test_vmc_status_carries_both_escrow_fields(self):
+        status = VMCStatus(
+            state="idle", version="abc1234", credit_escrow=1.25, credit_escrow_cents=125
+        )
+        assert status.credit_escrow == 1.25
+        assert status.credit_escrow_cents == 125
+
+    def test_vmc_status_credit_escrow_cents_defaults_to_zero(self):
+        assert VMCStatus(state="idle", version="abc1234").credit_escrow_cents == 0
+
+    def test_vmc_status_credit_escrow_cents_rejects_floats(self):
+        with pytest.raises(ValidationError):
+            VMCStatus(state="idle", version="abc1234", credit_escrow_cents=1.25)
+
+    def test_vmc_status_credit_escrow_cents_rejects_negative(self):
+        with pytest.raises(ValidationError):
+            VMCStatus(state="idle", version="abc1234", credit_escrow_cents=-1)
+
     def test_contracts_module_has_no_runtime_build_info(self):
         import ice_contracts.board.mqtt_messages as mm
 
@@ -84,13 +102,13 @@ class TestOtherMessageBounds:
 class TestVMCDepositGuard:
     def test_deposit_ignores_negative(self):
         vmc = Machine(config=ConfigModel()).vmc
-        vmc.deposit_funds(-1.0)
-        assert vmc.credit_escrow == 0.0
+        vmc.deposit_funds(-100)
+        assert vmc.credit_escrow_cents == 0
 
     def test_deposit_ignores_zero(self):
         vmc = Machine(config=ConfigModel()).vmc
-        vmc.deposit_funds(0.0)
-        assert vmc.credit_escrow == 0.0
+        vmc.deposit_funds(0)
+        assert vmc.credit_escrow_cents == 0
 
     async def test_mqtt_handler_drops_invalid_payment(self):
         import asyncio
@@ -102,4 +120,4 @@ class TestVMCDepositGuard:
             await vmc.on_payment_credit(
                 "payment/credit", {"amount": -5.0, "method": "cash"}
             )
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0

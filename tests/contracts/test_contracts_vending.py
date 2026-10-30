@@ -35,8 +35,8 @@ def test_contract_version():
     # `dispense` params now require mechanism+profile, `cmd/dispense` is
     # removed, and DispenserStatus.request_id is now always set for sales.
     # 1.0.0 -> 2.0.0: ButtonPress.button is a channel id (breaking).
-    # 2.2.0 -> 2.3.0: DATA-105/DATA-106 (additive).
-    assert CONTRACT_VERSION == "2.3.0"
+    # 2.3.0 -> 2.4.0: VMCStatus.credit_escrow_cents (additive).
+    assert CONTRACT_VERSION == "2.4.0"
 
 
 def test_payment_contract_faults_registered():
@@ -212,7 +212,7 @@ class TestSubsystemCapabilities:
             )
 
     def test_contract_version_bumped(self):
-        assert CONTRACT_VERSION == "2.3.0"
+        assert CONTRACT_VERSION == "2.4.0"
 
     def test_expected_subsystems(self):
         assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")
@@ -236,7 +236,7 @@ def test_pay_104_is_a_machine_warning():
 def test_contract_version_bumped_for_new_code():
     from ice_contracts.board.vending_machine import CONTRACT_VERSION
 
-    assert CONTRACT_VERSION == "2.3.0"
+    assert CONTRACT_VERSION == "2.4.0"
 
 
 def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():

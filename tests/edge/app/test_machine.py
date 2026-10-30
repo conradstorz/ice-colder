@@ -166,7 +166,7 @@ class TestConstruction:
         state at all -- every cross-referencing closure is deferred."""
         machine = Machine(ConfigModel())
         assert machine.faults.active_faults() == []
-        assert machine.escrow.total == 0.0
+        assert machine.escrow.total_cents == 0.0
 
 
 class TestSetMqttClient:
@@ -200,7 +200,9 @@ class TestSetAvailability:
 class TestSetSessionStore:
     def test_open_production_snapshot_raises_pay104(self):
         machine = Machine(ConfigModel())
-        snap = SessionSnapshot(state="dispensing", credit_escrow=1.5, is_test=False)
+        snap = SessionSnapshot(
+            state="dispensing", credit_escrow_cents=150, is_test=False
+        )
         store = FakeSessionStore(snapshot=snap)
 
         machine.set_session_store(store)
@@ -210,7 +212,9 @@ class TestSetSessionStore:
 
     def test_test_snapshot_logs_and_clears_without_pay104(self):
         machine = Machine(ConfigModel())
-        snap = SessionSnapshot(state="dispensing", credit_escrow=1.5, is_test=True)
+        snap = SessionSnapshot(
+            state="dispensing", credit_escrow_cents=150, is_test=True
+        )
         store = FakeSessionStore(snapshot=snap)
 
         machine.set_session_store(store)
@@ -223,9 +227,9 @@ class TestBootAlreadyRecordedSale:
     def _snapshot(self, saved_at):
         return SessionSnapshot(
             state="dispensing",
-            credit_escrow=0.0,
+            credit_escrow_cents=0,
             selected_sku="ICE-1",
-            pending_sale_shares={"cash": 2.50},
+            pending_sale_shares={"cash": 250},
             saved_at=saved_at,
         )
 
@@ -320,14 +324,14 @@ class TestSessionSnapshotFault:
         store = FailingSaveStore()
         machine.set_session_store(store)
 
-        machine.vmc.deposit_funds(1.0, payment_method="cash")
+        machine.vmc.deposit_funds(100, payment_method="cash")
         await settle()
 
         assert machine.faults.has(FaultCode.DATA_104)
         assert availability.payment_enabled
 
         store.broken = False
-        machine.vmc.deposit_funds(1.0, payment_method="cash")
+        machine.vmc.deposit_funds(100, payment_method="cash")
         await settle()
 
         assert not machine.faults.has(FaultCode.DATA_104)
@@ -339,7 +343,7 @@ class TestCancelPendingTasks:
     def test_cancels_session_timeout(self):
         runner = FakeTaskRunner()
         machine = Machine(ConfigModel(), tasks=runner)
-        machine.vmc.deposit_funds(1.0, payment_method="cash")
+        machine.vmc.deposit_funds(100, payment_method="cash")
         assert any(c.label == "session_timeout" for c in runner.scheduled)
 
         machine.cancel_pending_tasks()
@@ -349,7 +353,7 @@ class TestCancelPendingTasks:
     def test_cancels_refund_deadline(self):
         runner = FakeTaskRunner()
         machine = Machine(ConfigModel(), tasks=runner)
-        machine.vmc.deposit_funds(1.0, payment_method="cash")
+        machine.vmc.deposit_funds(100, payment_method="cash")
         machine.vmc.request_refund(reason="test")
         assert any(c.label == "refund_deadline" for c in runner.scheduled)
 

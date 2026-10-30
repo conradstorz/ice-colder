@@ -24,8 +24,10 @@ def _screen_context(request: Request) -> dict:
     status = (
         context.vmc_instance.get_status()
         if context.vmc_instance
-        else {"state": "unknown", "credit_escrow": 0.0}
+        else {"state": "unknown", "credit_escrow_cents": 0}
     )
+    # Permanent: /screen is pinned to dollar floats (partials/screen_body.html).
+    status = {**status, "credit_escrow": status["credit_escrow_cents"] / 100}
     faults = context.vmc_instance.active_faults() if context.vmc_instance else []
     health = (
         context.health_monitor.get_summary()

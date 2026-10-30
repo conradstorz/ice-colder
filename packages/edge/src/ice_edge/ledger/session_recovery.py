@@ -22,7 +22,6 @@ from typing import Literal
 
 from loguru import logger
 
-from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.ledger.event_recorder import SALE_MATCH_WINDOW_SECONDS
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
@@ -64,7 +63,7 @@ class RecoveryDetail:
 
     sku: str | None
     sale_recorded: bool
-    credit_escrow: float
+    credit_escrow_cents: int
     pending_refund_request_id: str | None
     error: str | None
     is_test: bool
@@ -79,7 +78,7 @@ class SessionRecovery:
         store: Callable[[], SessionStore | None],
         product_name: Callable[[str | None], str | None],
         pay104_active: Callable[[], bool],
-        sale_recorded: Callable[[str, float, dict[str, float], float], bool] = (
+        sale_recorded: Callable[[str, float, dict[str, int], float], bool] = (
             lambda sku, since_ts, methods, window: False
         ),
         match_window_seconds: Callable[[], float] = lambda: SALE_MATCH_WINDOW_SECONDS,
@@ -146,7 +145,7 @@ class SessionRecovery:
         leftover credit (the price was already deducted from escrow), a
         pending refund, or an unreadable-file error."""
         return (
-            snap.credit_escrow <= EscrowLedger.TOLERANCE
+            snap.credit_escrow_cents <= 0
             and snap.pending_refund_request_id is None
             and not snap.error
         )
@@ -185,7 +184,7 @@ class SessionRecovery:
         return RecoveryDetail(
             sku=snap.selected_sku,
             sale_recorded=self._already_recorded(snap),
-            credit_escrow=snap.credit_escrow,
+            credit_escrow_cents=snap.credit_escrow_cents,
             pending_refund_request_id=snap.pending_refund_request_id,
             error=snap.error,
             is_test=snap.is_test,
@@ -252,7 +251,7 @@ class SessionRecovery:
             "sku": sku,
             "name": self._product_name(sku),
             "slot": snap.dispense_slot,
-            "price": round(sum(snap.pending_sale_shares.values()), 2),
+            "price_cents": sum(snap.pending_sale_shares.values()),
             "methods": dict(snap.pending_sale_shares),
             # Not part of the row this recovers and not shown anywhere --
             # carried only so reserve_pending_sale/pending_sale_already_

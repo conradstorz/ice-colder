@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
 from ice_contracts.board.vending_machine import FaultCode, Mechanism
 from ice_contracts.board.dispenser_schema import SlotProfile
+from ice_contracts.money import Cents
 
 
 def _utc_now() -> datetime:
@@ -211,7 +212,11 @@ class VMCStatus(BaseModel):
     """Periodic VMC status published for HA and owner dashboard."""
 
     state: str = Field(..., description="Current FSM state")
-    credit_escrow: float = Field(0.0)
+    credit_escrow: float = Field(
+        0.0,
+        description="Dollars. Deprecated: removed in 3.0.0; use credit_escrow_cents",
+    )
+    credit_escrow_cents: Cents = Field(0, description="Escrow in integer cents")
     selected_product: Optional[str] = Field(None)
     uptime_seconds: int = Field(0)
     version: str = Field(..., description="VMC build (short commit)")

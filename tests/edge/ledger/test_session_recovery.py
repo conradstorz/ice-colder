@@ -45,7 +45,7 @@ def test_evaluate_at_boot_none_with_no_file(tmp_path):
 
 def test_evaluate_at_boot_closed_clears_the_file(tmp_path):
     store = SessionStore(tmp_path / "session.json")
-    snap = SessionSnapshot(state="idle", credit_escrow=0.0)
+    snap = SessionSnapshot(state="idle", credit_escrow_cents=0)
     store.save(snap)
     recovery = make_recovery(store)
 
@@ -60,9 +60,9 @@ def test_evaluate_at_boot_discard_test_clears_the_file(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     snap = SessionSnapshot(
         state="dispensing",
-        credit_escrow=0.0,
+        credit_escrow_cents=0,
         selected_sku="ICE-1",
-        pending_sale_shares={"test": 2.50},
+        pending_sale_shares={"test": 250},
         is_test=True,
     )
     store.save(snap)
@@ -79,9 +79,9 @@ def test_evaluate_at_boot_uncertain_leaves_the_file(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     snap = SessionSnapshot(
         state="dispensing",
-        credit_escrow=2.50,
+        credit_escrow_cents=250,
         selected_sku="ICE-1",
-        pending_sale_shares={"cash_bill": 2.50},
+        pending_sale_shares={"cash_bill": 250},
     )
     store.save(snap)
     recovery = make_recovery(store)
@@ -111,9 +111,9 @@ def test_pending_sale_for_recovery_none_when_pay104_not_active(tmp_path):
     store.save(
         SessionSnapshot(
             state="dispensing",
-            credit_escrow=0.0,
+            credit_escrow_cents=0,
             selected_sku="ICE-1",
-            pending_sale_shares={"cash_bill": 2.50},
+            pending_sale_shares={"cash_bill": 250},
         )
     )
     recovery = make_recovery(store, pay104_active=False)
@@ -126,9 +126,9 @@ def test_pending_sale_for_recovery_none_for_test_snapshot(tmp_path):
     store.save(
         SessionSnapshot(
             state="dispensing",
-            credit_escrow=0.0,
+            credit_escrow_cents=0,
             selected_sku="ICE-1",
-            pending_sale_shares={"test": 2.50},
+            pending_sale_shares={"test": 250},
             is_test=True,
         )
     )
@@ -142,7 +142,7 @@ def test_pending_sale_for_recovery_none_when_shares_empty(tmp_path):
     store.save(
         SessionSnapshot(
             state="idle",
-            credit_escrow=0.0,
+            credit_escrow_cents=0,
             selected_sku="ICE-1",
             pending_sale_shares=None,
         )
@@ -156,10 +156,10 @@ def test_pending_sale_for_recovery_returns_dict_when_everything_lines_up(tmp_pat
     store = SessionStore(tmp_path / "session.json")
     snap = SessionSnapshot(
         state="dispensing",
-        credit_escrow=0.0,
+        credit_escrow_cents=0,
         selected_sku="ICE-1",
         dispense_slot=3,
-        pending_sale_shares={"cash_bill": 2.00, "card": 0.50},
+        pending_sale_shares={"cash_bill": 200, "card": 50},
     )
     store.save(snap)
     recovery = make_recovery(store, pay104_active=True)
@@ -170,8 +170,8 @@ def test_pending_sale_for_recovery_returns_dict_when_everything_lines_up(tmp_pat
         "sku": "ICE-1",
         "name": "Ice Bag",
         "slot": 3,
-        "price": 2.50,
-        "methods": {"cash_bill": 2.00, "card": 0.50},
+        "price_cents": 250,
+        "methods": {"cash_bill": 200, "card": 50},
         "saved_at": snap.saved_at,
     }
 
@@ -184,9 +184,9 @@ def test_reserve_then_already_recorded_true_for_same_pending(tmp_path):
     store.save(
         SessionSnapshot(
             state="dispensing",
-            credit_escrow=0.0,
+            credit_escrow_cents=0,
             selected_sku="ICE-1",
-            pending_sale_shares={"cash_bill": 2.50},
+            pending_sale_shares={"cash_bill": 250},
         )
     )
     recovery = make_recovery(store, pay104_active=True)
@@ -202,9 +202,9 @@ def test_already_recorded_false_for_different_saved_at(tmp_path):
     store.save(
         SessionSnapshot(
             state="dispensing",
-            credit_escrow=0.0,
+            credit_escrow_cents=0,
             selected_sku="ICE-1",
-            pending_sale_shares={"cash_bill": 2.50},
+            pending_sale_shares={"cash_bill": 250},
         )
     )
     recovery = make_recovery(store, pay104_active=True)
@@ -224,9 +224,9 @@ def test_mark_pending_sale_recorded_clears_shares_on_disk(tmp_path):
     store.save(
         SessionSnapshot(
             state="dispensing",
-            credit_escrow=0.0,
+            credit_escrow_cents=0,
             selected_sku="ICE-1",
-            pending_sale_shares={"cash_bill": 2.50},
+            pending_sale_shares={"cash_bill": 250},
         )
     )
     recovery = make_recovery(store, pay104_active=True)
@@ -251,9 +251,9 @@ def test_mark_pending_sale_recorded_false_with_no_store():
 def _open_snapshot(**kw):
     return SessionSnapshot(
         state="dispensing",
-        credit_escrow=0.0,
+        credit_escrow_cents=0,
         selected_sku="ICE-1",
-        pending_sale_shares={"cash": 2.50},
+        pending_sale_shares={"cash": 250},
         **kw,
     )
 
@@ -272,7 +272,7 @@ def test_uncertain_snapshot_whose_sale_is_recorded_is_closed(tmp_path):
 
     assert decision.kind == "closed"
     assert store.load() is None
-    assert calls == [("ICE-1", snap.saved_at, {"cash": 2.50})]
+    assert calls == [("ICE-1", snap.saved_at, {"cash": 250})]
 
 
 def test_uncertain_snapshot_not_recorded_stays_uncertain(tmp_path):
@@ -315,7 +315,7 @@ def test_pending_sale_for_recovery_returned_when_row_absent(tmp_path):
 
 def test_recorded_sale_with_leftover_credit_stays_uncertain(tmp_path):
     store = SessionStore(tmp_path / "session.json")
-    store.save(_open_snapshot_with(credit_escrow=2.50))
+    store.save(_open_snapshot_with(credit_escrow_cents=250))
     recovery = make_recovery(store, pay104_active=True, sale_recorded=lambda *a: True)
 
     assert recovery.evaluate_at_boot().kind == "uncertain"
@@ -335,7 +335,7 @@ def test_recorded_sale_with_pending_refund_stays_uncertain(tmp_path):
 
 def test_recorded_sale_with_zero_credit_is_closed(tmp_path):
     store = SessionStore(tmp_path / "session.json")
-    store.save(_open_snapshot_with(credit_escrow=0.001))
+    store.save(_open_snapshot_with(credit_escrow_cents=0))
 
     decision = make_recovery(store, sale_recorded=lambda *a: True).evaluate_at_boot()
 
@@ -347,8 +347,8 @@ def _open_snapshot_with(**kw):
     return SessionSnapshot(
         state="dispensing",
         selected_sku="ICE-1",
-        pending_sale_shares={"cash": 2.50},
-        **{"credit_escrow": 0.0, **kw},
+        pending_sale_shares={"cash": 250},
+        **{"credit_escrow_cents": 0, **kw},
     )
 
 
@@ -368,7 +368,7 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(
         _open_snapshot_with(
-            credit_escrow=2.50, pending_refund_request_id="r-1", error="bad json"
+            credit_escrow_cents=250, pending_refund_request_id="r-1", error="bad json"
         )
     )
     detail = make_recovery(store, sale_recorded=lambda *a: True).recovery_detail()
@@ -376,7 +376,7 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
     assert detail == RecoveryDetail(
         sku="ICE-1",
         sale_recorded=True,
-        credit_escrow=2.50,
+        credit_escrow_cents=250,
         pending_refund_request_id="r-1",
         error="bad json",
         is_test=False,
@@ -390,7 +390,7 @@ def test_recovery_detail_not_recorded(tmp_path):
 
     assert detail is not None
     assert detail.sale_recorded is False
-    assert detail.credit_escrow == 0.0
+    assert detail.credit_escrow_cents == 0
 
 
 def test_recovery_detail_test_snapshot(tmp_path):
@@ -416,3 +416,31 @@ def test_match_window_is_passed_to_sale_recorded(tmp_path):
     recovery.evaluate_at_boot()
 
     assert seen == [777.0]
+
+
+def test_legacy_dollar_snapshot_still_raises_uncertain_at_boot(tmp_path):
+    """A pre-cents session.json (dollar floats, no `units`) with credit in
+    escrow still evaluates to `uncertain` (PAY-104) and keeps its file."""
+    import json
+
+    path = tmp_path / "session.json"
+    path.write_text(
+        json.dumps(
+            {
+                "state": "interacting_with_user",
+                "credit_escrow": 2.5,
+                "selected_sku": "ICE-1",
+                "credits": [{"method": "cash", "amount": 2.5, "ts": 1.0}],
+                "pending_sale_shares": None,
+                "saved_at": 100.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = SessionStore(path)
+
+    decision = make_recovery(store).evaluate_at_boot()
+
+    assert decision.kind == "uncertain"
+    assert decision.snapshot.credit_escrow_cents == 250
+    assert path.exists()

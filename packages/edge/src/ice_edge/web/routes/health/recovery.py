@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
-from ice_contracts.money import dollars_to_cents
+from ice_contracts.money import format_cents
 from ice_contracts.board.vending_machine import (
     FaultCode,
 )
@@ -192,10 +192,8 @@ async def pay104_record_sale(request: Request):
                 pending["sku"],
                 pending["name"],
                 pending["slot"],
-                dollars_to_cents(pending["price"]),  # cents-shim(T4)
-                {
-                    k: dollars_to_cents(v) for k, v in pending["methods"].items()
-                },  # cents-shim(T4)
+                pending["price_cents"],
+                pending["methods"],
                 ts=pending["saved_at"],
                 idempotent=True,
             )
@@ -208,7 +206,7 @@ async def pay104_record_sale(request: Request):
             )
             vmc.raise_fault(
                 FaultCode.DATA_101,
-                outcome=f"sku={pending['sku']} price=${pending['price']:.2f}",
+                outcome=f"sku={pending['sku']} price={format_cents(pending['price_cents'])}",
             )
             raise HTTPException(
                 status_code=500,
@@ -240,7 +238,7 @@ async def pay104_record_sale(request: Request):
             vmc.raise_fault(
                 FaultCode.DATA_101,
                 outcome=(
-                    f"sku={pending['sku']} price=${pending['price']:.2f}; "
+                    f"sku={pending['sku']} price={format_cents(pending['price_cents'])}; "
                     "PAY-104 recovery marker could not be written"
                 ),
             )

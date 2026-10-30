@@ -33,12 +33,13 @@ from ice_contracts.board.vending_machine import (
     PaymentRefundResult,
     RefundStatus,
 )
+from ice_contracts.money import dollars_to_cents
 
 
 @dataclass
 class PendingRefund:
     request_id: str
-    amount: float
+    cents: int
     reason: str
     attempts: int = 1
     deadline_task: asyncio.Task | None = None
@@ -60,7 +61,7 @@ class RefundProtocol:
         *,
         publish: Callable[[PaymentRefundCommand], None],
         schedule: Callable[..., asyncio.Task | None],
-        on_confirmed: Callable[[PendingRefund, float], None],
+        on_confirmed: Callable[[PendingRefund, int], None],
         on_failed: Callable[[PendingRefund, str], None],
         ack_timeout: Callable[[], float],
         max_attempts: Callable[[], int],
@@ -74,16 +75,21 @@ class RefundProtocol:
         # Insertion-ordered -- first_request_id() below relies on that.
         self.pending: dict[str, PendingRefund] = {}
 
-    def begin(self, amount: float, reason: str) -> PendingRefund:
+    def begin(self, cents: int, reason: str) -> PendingRefund:
         """Mint a fresh request_id, track it, and send the first attempt."""
-        pending = PendingRefund(request_id=uuid4().hex, amount=amount, reason=reason)
+        pending = PendingRefund(request_id=uuid4().hex, cents=cents, reason=reason)
         self.pending[pending.request_id] = pending
         self._send(pending)
         return pending
 
     def _send(self, pending: PendingRefund) -> None:
+        # The legacy board refund command is in dollars: a permanent legacy
+        # boundary, removed with PaymentRefundCommand by payment spec B
+        # (docs/superpowers/specs/2026-10-30-payment-cutover-design.md).
         cmd = PaymentRefundCommand(
-            request_id=pending.request_id, amount=pending.amount, reason=pending.reason
+            request_id=pending.request_id,
+            amount=pending.cents / 100,
+            reason=pending.reason,
         )
         self._publish(cmd)
         pending.deadline_task = self._schedule(
@@ -99,7 +105,8 @@ class RefundProtocol:
             logger.warning(f"Refund ack for unknown request_id {result.request_id}")
             return
         if result.status is RefundStatus.ok:
-            self.confirmed(pending, result.amount_returned)
+            # Legacy dollar float from the board, converted once (spec B retires it).
+            self.confirmed(pending, dollars_to_cents(result.amount_returned))
         else:
             self.attempt_failed(pending, detail=result.detail or result.status.value)
 
@@ -115,10 +122,10 @@ class RefundProtocol:
             pending.deadline_task.cancel()
         pending.deadline_task = None
 
-    def confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
+    def confirmed(self, pending: PendingRefund, returned_cents: int) -> None:
         self._cancel_deadline(pending)
         self.pending.pop(pending.request_id, None)
-        self._on_confirmed(pending, amount_returned)
+        self._on_confirmed(pending, returned_cents)
 
     def attempt_failed(self, pending: PendingRefund, detail: str) -> None:
         self._cancel_deadline(pending)

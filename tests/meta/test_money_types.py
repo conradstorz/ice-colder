@@ -32,14 +32,10 @@ ALLOWLIST: dict[str, str] = {
     # PERMANENT: an average of money is float cents (renamed *_cents later, entry key changes then).
     "ice_contracts.cloud.report.KpiAverage.money_in": "PERMANENT (average; float cents)",
     # Converted by later tasks; remove each entry when its rename lands.
-    "ice_contracts.board.mqtt_messages.VMCStatus.credit_escrow": "T3/T4",
+    "ice_contracts.board.mqtt_messages.VMCStatus.credit_escrow": "PERMANENT (deprecated; removed in vending contract 3.0.0)",
     "ice_contracts.cloud.report.KpiWindow.money_in": "T5",
     "ice_contracts.cloud.report.PendingSaleView.price": "T5",
     "ice_contracts.cloud.report.StatusView.credit_escrow": "T5",
-    "ice_edge.ledger.session_recovery.RecoveryDetail.credit_escrow": "T3/T4",
-    "ice_edge.ledger.session_store.Credit.amount": "T3",
-    "ice_edge.ledger.session_store.SessionSnapshot.credit_escrow": "T3",
-    "ice_edge.payment.refund_protocol.PendingRefund.amount": "T3",
 }
 
 

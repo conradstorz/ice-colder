@@ -452,7 +452,7 @@ class TestVMCMQTTWiring:
         await vmc.on_payment_credit(
             "payment/credit", {"amount": 2.50, "method": "card"}
         )
-        assert vmc.credit_escrow == 2.50
+        assert vmc.credit_escrow_cents == 250
         assert vmc.last_payment_method == "card"
 
     @pytest.mark.asyncio

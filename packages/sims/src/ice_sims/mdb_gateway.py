@@ -111,10 +111,13 @@ class MDBGatewaySimulator(ESP32Simulator):
         self.accepting = False
         self._last_status: dict | None = None
         self.devices = [{"name": name, "state": "ready"} for name in DEVICE_NAMES]
-        # Build a lookup of product name -> price from config
+        # Build a lookup of product name -> price from config. The simulator
+        # still publishes the LEGACY dollar PaymentEvent, so this cents->dollars
+        # conversion is the legacy payment boundary; payment spec B removes it
+        # (docs/superpowers/specs/2026-10-30-payment-cutover-design.md).
         self._product_prices = {
             p.name: p.price_cents / 100 for p in self.config.products
-        }  # cents-shim(T4)
+        }
         self._vmc_status: asyncio.Queue = asyncio.Queue()
         # request_id -> result, so a repeated refund command is never paid twice
         self._refund_results: OrderedDict[str, PaymentRefundResult] = OrderedDict()

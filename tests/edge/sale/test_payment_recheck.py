@@ -33,20 +33,20 @@ def _selected(tmp_path, price: float = 2.50):
 async def test_happy_path_still_dispenses(tmp_path):
     machine, runner, _ = _selected(tmp_path)
     vmc = machine.vmc
-    vmc.credit_escrow = 5.00
+    vmc.credit_escrow_cents = 500
     runner.fire("process_payment")
     assert vmc.state == "dispensing"
-    assert vmc.credit_escrow == 2.50
+    assert vmc.credit_escrow_cents == 250
 
 
 async def test_machine_fault_after_selection_blocks_payment(tmp_path):
     machine, runner, messages = _selected(tmp_path)
     vmc = machine.vmc
     machine.set_availability(_BlockedAvailability())
-    vmc.credit_escrow = 5.00
+    vmc.credit_escrow_cents = 500
     runner.fire("process_payment")
     assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == 5.00
+    assert vmc.credit_escrow_cents == 500
     assert vmc.selected_product is None
     assert any("unavailable" in m.lower() for m in messages)
 
@@ -55,10 +55,10 @@ async def test_lockout_after_selection_blocks_payment(tmp_path):
     machine, runner, messages = _selected(tmp_path)
     vmc = machine.vmc
     vmc.raise_fault(FaultCode.ICE_101, sku="ICE-1")
-    vmc.credit_escrow = 5.00
+    vmc.credit_escrow_cents = 500
     runner.fire("process_payment")
     assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == 5.00
+    assert vmc.credit_escrow_cents == 500
     assert vmc.selected_product is None
     assert any("unavailable" in m.lower() for m in messages)
 
@@ -67,10 +67,10 @@ async def test_sold_out_after_selection_blocks_payment(tmp_path):
     machine, runner, messages = _selected(tmp_path)
     vmc = machine.vmc
     machine.set_inventory_manager(FakeSoldOutInventory())
-    vmc.credit_escrow = 5.00
+    vmc.credit_escrow_cents = 500
     runner.fire("process_payment")
     assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == 5.00
+    assert vmc.credit_escrow_cents == 500
     assert vmc.selected_product is None
     assert any("sold out" in m.lower() for m in messages)
 
@@ -92,7 +92,7 @@ async def test_insufficient_funds_rearms_single_timer(tmp_path):
 async def test_no_payment_timer_pending_after_vend_leaves_change(tmp_path):
     machine, runner, _ = _selected(tmp_path)
     vmc = machine.vmc
-    vmc.credit_escrow = 5.00
+    vmc.credit_escrow_cents = 500
     runner.fire("process_payment")
     assert vmc.state == "dispensing"
     assert _labels(runner, "process_payment") == 0
@@ -124,7 +124,7 @@ async def test_test_sale_refused_at_payment_settles_and_releases_lease(tmp_path)
     assert result.fault_code == FaultCode.ICE_101.value
     assert not any(t == "cmd/payment/refund" for t, *_ in client.published)
     assert machine.lease.hold.runs_in_flight == 0
-    assert vmc.credit_escrow == 0
+    assert vmc.credit_escrow_cents == 0
     assert vmc.test_sale_in_progress is False
     machine.cancel_pending_tasks()
 

@@ -77,7 +77,11 @@ from ice_contracts.board.common import ChannelDescriptor, _utc_now
 # could not be written; KPIs and history may be incomplete) and DATA-106
 # (inventory counts could not be saved; stock levels revert on restart).
 # Both alert-class, not payment-blocking.
-CONTRACT_VERSION = "2.3.0"
+#
+# 2.3.0 -> 2.4.0 (2026-10-30): minor bump, additive. VMCStatus gains
+# credit_escrow_cents (integer cents); the float credit_escrow stays,
+# deprecated, and is removed in 3.0.0.
+CONTRACT_VERSION = "2.4.0"
 
 
 class DispenserOutcome(str, Enum):

@@ -50,7 +50,7 @@ async def test_standby_from_interacting_with_user_refunds_and_idles():
     machine.set_mqtt_client(client)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 1.00
+    vmc.credit_escrow_cents = 100
 
     granted, reason = machine.lease.begin_standby("user-1", "sess-1")
     await asyncio.sleep(0)  # let the fire-and-forget refund publish run
@@ -62,7 +62,7 @@ async def test_standby_from_interacting_with_user_refunds_and_idles():
     assert refunds[0].amount == 1.00
     assert refunds[0].reason == "maintenance"
     assert vmc.state == "idle"
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert vmc.selected_product is None
     hold = machine.maintenance_hold
     assert hold is not None
@@ -81,7 +81,7 @@ async def test_standby_from_idle_refunds_stranded_escrow_and_cancels_timer():
     client = RecordingClient()
     machine.set_mqtt_client(client)
     assert vmc.state == "idle"
-    vmc.deposit_funds(2.00, payment_method="cash_coin")
+    vmc.deposit_funds(200, payment_method="cash_coin")
     assert any(c.label == "session_timeout" for c in runner.scheduled)
 
     granted, reason = machine.lease.begin_standby("user-1", "sess-1")
@@ -94,7 +94,7 @@ async def test_standby_from_idle_refunds_stranded_escrow_and_cancels_timer():
     assert refunds[0].amount == 2.00
     assert refunds[0].reason == "maintenance"
     assert vmc.state == "idle"
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert not any(c.label == "session_timeout" for c in runner.scheduled)
     assert machine.maintenance_hold is not None
     assert machine.maintenance_hold.standby is True
@@ -108,7 +108,7 @@ async def test_standby_from_error_refunds_and_stays_in_error():
     client = RecordingClient()
     machine.set_mqtt_client(client)
     vmc.set_state("error")
-    vmc.credit_escrow = 1.50
+    vmc.credit_escrow_cents = 150
 
     granted, reason = machine.lease.begin_standby("user-1", "sess-1")
     await asyncio.sleep(0)
@@ -120,7 +120,7 @@ async def test_standby_from_error_refunds_and_stays_in_error():
     assert refunds[0].amount == 1.50
     assert refunds[0].reason == "maintenance"
     assert vmc.state == "error"  # the fault that parked it there is still admin's
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert machine.maintenance_hold is not None
     assert machine.maintenance_hold.standby is True
     machine.cancel_pending_tasks()
@@ -133,7 +133,7 @@ async def test_standby_refused_while_dispensing():
     client = RecordingClient()
     machine.set_mqtt_client(client)
     vmc.set_state("dispensing")
-    vmc.credit_escrow = 3.00
+    vmc.credit_escrow_cents = 300
 
     granted, reason = machine.lease.begin_standby("user-1", "sess-1")
     await asyncio.sleep(0)
@@ -141,7 +141,7 @@ async def test_standby_refused_while_dispensing():
     assert granted is False
     assert reason == "vend finishing, tap again"
     assert client.refund_commands() == []
-    assert vmc.credit_escrow == 3.00  # untouched
+    assert vmc.credit_escrow_cents == 300  # untouched
     assert machine.maintenance_hold is None
     machine.cancel_pending_tasks()
 

@@ -95,13 +95,13 @@ def _profile_for(tmp_path, product) -> object:
 
 
 def not_open_snapshot(state: str | None) -> SessionSnapshot:
-    return SessionSnapshot(state=state or "idle", credit_escrow=0.0)
+    return SessionSnapshot(state=state or "idle", credit_escrow_cents=0)
 
 
 def make_outputs(runner: FakeTaskRunner, *, session_store=None) -> StatusOutputs:
     outputs = StatusOutputs(
         snapshot=not_open_snapshot,
-        credit_escrow=lambda: 0.0,
+        credit_escrow_cents=lambda: 0,
         selected_product=lambda: None,
         fsm_state=lambda: "idle",
         pay104_active=lambda: False,
@@ -185,7 +185,7 @@ async def test_snapshot_save_failure_fails_with_pay102(tmp_path):
         on_failed=failures,
     )
 
-    cycle.start(lambda state: SessionSnapshot(state=state, credit_escrow=2.0))
+    cycle.start(lambda state: SessionSnapshot(state=state, credit_escrow_cents=200))
     await asyncio.sleep(0)
 
     assert failures.calls == [(cycle, FaultCode.PAY_102, "snapshot_failed")]
@@ -495,7 +495,7 @@ async def test_record_writes_sale_with_share_sum_price():
     recorder = FakeRecorder()
     cycle, _ = make_cycle(
         product=ICE,
-        shares={"cash": 1.00, "card": 0.75},
+        shares={"cash": 100, "card": 75},
         recorder=lambda: recorder,
     )
 
@@ -540,7 +540,7 @@ async def test_record_raises_data101_on_generic_failure():
     faults = FakeFaults()
     cycle, _ = make_cycle(
         product=ICE,
-        shares={"cash": 2.0},
+        shares={"cash": 200},
         recorder=lambda: recorder,
         faults=faults,
     )
@@ -558,7 +558,7 @@ async def test_record_raises_pay104_and_sets_transaction_uncertain():
     certain_calls: list[bool] = []
     cycle, _ = make_cycle(
         product=ICE,
-        shares={"cash": 2.0},
+        shares={"cash": 200},
         recorder=lambda: recorder,
         faults=faults,
         set_transaction_certain=certain_calls.append,

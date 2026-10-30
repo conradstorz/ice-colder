@@ -41,7 +41,7 @@ from uuid import uuid4
 
 from loguru import logger
 
-from ice_contracts.money import dollars_to_cents
+from ice_contracts.money import format_cents
 from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     FaultCode,
@@ -440,13 +440,8 @@ class DispenseCycle:
         # the price while this sale is mid-dispense. The shares are what
         # was actually deducted from escrow and must be what gets
         # recorded.
-        fallback = round(product.price_cents / 100, 2)  # cents-shim(T4)
-        methods = self.sale.shares or {"unknown": fallback}
-        price = round(sum(methods.values()), 2)
-        price_cents = dollars_to_cents(price)  # cents-shim(T4)
-        methods_cents = {
-            k: dollars_to_cents(v) for k, v in methods.items()
-        }  # cents-shim(T4)
+        methods = self.sale.shares or {"unknown": product.price_cents}
+        price_cents = sum(methods.values())
         try:
             await asyncio.to_thread(
                 recorder.record_sale,
@@ -454,7 +449,7 @@ class DispenseCycle:
                 product.name,
                 product.slot,
                 price_cents,
-                methods_cents,
+                methods,
             )
         except SaleRecordingFailed:
             logger.exception(
@@ -467,7 +462,7 @@ class DispenseCycle:
             self._set_transaction_certain(False)
             self._faults.raise_fault(
                 FaultCode.PAY_104,
-                outcome=f"sku={product.sku} price=${price:.2f} unrecorded",
+                outcome=f"sku={product.sku} price={format_cents(price_cents)} unrecorded",
             )
             return False
         except Exception:
@@ -478,7 +473,7 @@ class DispenseCycle:
             )
             self._faults.raise_fault(
                 FaultCode.DATA_101,
-                outcome=f"sku={product.sku} price=${price:.2f}",
+                outcome=f"sku={product.sku} price={format_cents(price_cents)}",
             )
         return True
 

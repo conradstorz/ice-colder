@@ -232,7 +232,8 @@ async def build_health_summary(
     return HealthSummary(
         vmc_missing=False,
         status={
-            **status,
+            **{k: v for k, v in status.items() if k != "credit_escrow_cents"},
+            "credit_escrow": status["credit_escrow_cents"] / 100,  # cents-shim(T5)
             "selected_product": clip(status.get("selected_product")),
         },
         is_healthy=is_healthy,
@@ -268,8 +269,11 @@ def build_fault_views(active_faults: list[dict]) -> list[FaultView]:
                 pending_sale=(
                     PendingSaleView(
                         sku=pending["sku"],
-                        price=pending["price"],
-                        methods=pending["methods"],
+                        price=pending["price_cents"] / 100,  # cents-shim(T5)
+                        methods={
+                            k: m / 100  # cents-shim(T5)
+                            for k, m in pending["methods"].items()
+                        },
                     )
                     if pending is not None
                     else None

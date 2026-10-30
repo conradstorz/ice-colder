@@ -376,7 +376,7 @@ def test_hold_dataclass_defaults():
 #     take_over_maintenance (Task 11, lease-preconditions) ------------------
 #
 # These four moved onto MaintenanceLease verbatim from VMC; the FSM reads
-# that used to be `self.state`/`self._escrow.is_empty_within_tolerance`
+# that used to be `self.state`/`self._escrow.is_empty`
 # are now the `fsm_state`/`escrow_is_empty` callables `make_lease` wires in
 # above, and `begin_standby`'s own per-state refund/cancel block is now a
 # single call to `make_idle_for_service` (recorded below via a custom

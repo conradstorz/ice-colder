@@ -78,7 +78,7 @@ def test_begin_publishes_one_command_and_arms_deadline():
     clock = FakeClock()
     protocol, _, _, _ = make_protocol(clock, ack_timeout=5.0)
 
-    pending = protocol.begin(12.50, "admin")
+    pending = protocol.begin(1250, "admin")
 
     assert len(clock.published) == 1
     cmd = clock.published[0]
@@ -98,12 +98,12 @@ def test_begin_publishes_one_command_and_arms_deadline():
 def test_ok_ack_confirms_pops_and_cancels_deadline():
     clock = FakeClock()
     protocol, confirmed, failed, _ = make_protocol(clock)
-    pending = protocol.begin(5.00, "admin")
+    pending = protocol.begin(500, "admin")
     deadline_task = pending.deadline_task
 
     protocol.handle_ack(ok_ack(pending.request_id, 5.00))
 
-    assert confirmed == [(pending, 5.00)]
+    assert confirmed == [(pending, 500)]
     assert failed == []
     assert pending.request_id not in protocol.pending
     assert deadline_task.cancelled is True
@@ -115,7 +115,7 @@ def test_ok_ack_confirms_pops_and_cancels_deadline():
 def test_failed_ack_below_max_attempts_retries_with_same_request_id():
     clock = FakeClock()
     protocol, confirmed, failed, _ = make_protocol(clock, max_attempts=2)
-    pending = protocol.begin(5.00, "admin")
+    pending = protocol.begin(500, "admin")
     first_request_id = pending.request_id
 
     protocol.handle_ack(failed_ack(pending.request_id, "changer_empty"))
@@ -134,7 +134,7 @@ def test_failed_ack_below_max_attempts_retries_with_same_request_id():
 def test_second_failure_at_max_attempts_reaches_on_failed_and_pops():
     clock = FakeClock()
     protocol, confirmed, failed, _ = make_protocol(clock, max_attempts=2)
-    pending = protocol.begin(5.00, "admin")
+    pending = protocol.begin(500, "admin")
 
     protocol.handle_ack(failed_ack(pending.request_id, "changer_empty"))
     protocol.handle_ack(failed_ack(pending.request_id, "changer_empty"))
@@ -153,7 +153,7 @@ def test_second_failure_at_max_attempts_reaches_on_failed_and_pops():
 def test_firing_the_deadline_callback_behaves_as_ack_timeout():
     clock = FakeClock()
     protocol, confirmed, failed, _ = make_protocol(clock, max_attempts=1)
-    pending = protocol.begin(5.00, "admin")
+    pending = protocol.begin(500, "admin")
     _delay, callback = clock.scheduled[0]
 
     callback()
@@ -172,7 +172,7 @@ def test_firing_the_deadline_callback_behaves_as_ack_timeout():
 def test_ack_for_unknown_request_id_is_ignored():
     clock = FakeClock()
     protocol, confirmed, failed, _ = make_protocol(clock)
-    protocol.begin(5.00, "admin")
+    protocol.begin(500, "admin")
 
     protocol.handle_ack(ok_ack("not-a-real-request-id", 5.00))
 
@@ -186,8 +186,8 @@ def test_ack_for_unknown_request_id_is_ignored():
 def test_cancel_all_cancels_every_live_deadline_task():
     clock = FakeClock()
     protocol, _, _, _ = make_protocol(clock)
-    first = protocol.begin(5.00, "admin")
-    second = protocol.begin(2.00, "admin")
+    first = protocol.begin(500, "admin")
+    second = protocol.begin(200, "admin")
 
     protocol.cancel_all()
 
@@ -208,8 +208,8 @@ def test_first_request_id_is_none_when_empty():
 def test_first_request_id_is_the_earliest_request():
     clock = FakeClock()
     protocol, _, _, _ = make_protocol(clock)
-    first = protocol.begin(5.00, "admin")
-    protocol.begin(2.00, "admin")
+    first = protocol.begin(500, "admin")
+    protocol.begin(200, "admin")
 
     assert protocol.first_request_id() == first.request_id
 
@@ -220,7 +220,7 @@ def test_first_request_id_is_the_earliest_request():
 def test_ack_timeout_is_read_fresh_on_each_send():
     clock = FakeClock()
     protocol, _, _, state = make_protocol(clock, ack_timeout=5.0)
-    pending = protocol.begin(5.00, "admin")
+    pending = protocol.begin(500, "admin")
     assert clock.scheduled[0][0] == 5.0
 
     state["ack_timeout"] = 0.01
@@ -232,7 +232,7 @@ def test_ack_timeout_is_read_fresh_on_each_send():
 def test_max_attempts_is_read_fresh_on_each_failure():
     clock = FakeClock()
     protocol, confirmed, failed, state = make_protocol(clock, max_attempts=1)
-    pending = protocol.begin(5.00, "admin")
+    pending = protocol.begin(500, "admin")
 
     # max_attempts raised between the first attempt and its failure: the
     # protocol should see the NEW value and retry instead of giving up.
