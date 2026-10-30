@@ -337,6 +337,29 @@ class MDBDevice(BaseModel):
     )
 
 
+class MdbPolicyConfig(BaseModel):
+    """Acceptance policy sent to the MDB board (payment contract SetPolicyParams)."""
+
+    coin_enabled: List[int] = Field(
+        default_factory=lambda: [5, 10, 25, 100],
+        description="Coin denominations to accept, in cents",
+    )
+    bill_enabled: List[int] = Field(
+        default_factory=lambda: [100, 500, 1000, 2000],
+        description="Bill denominations to accept, in cents",
+    )
+    max_escrow_cents: int = Field(2000, gt=0, description="Escrow cap in cents")
+    change_threshold_cents: int = Field(
+        500, ge=0, description="Bills above this are refused when change is low"
+    )
+    edge_timeout_s: int = Field(
+        30, ge=5, le=120, description="Board fail-safe timeout on edge silence"
+    )
+    return_bill_on_lever: bool = Field(
+        True, description="Return an escrowed bill when the lever is pressed"
+    )
+
+
 class MDBDevicesConfig(BaseModel):
     """
     MDB bus polling and device list
@@ -345,6 +368,9 @@ class MDBDevicesConfig(BaseModel):
     polling_interval: float = Field(0.5, description="Polling interval in seconds")
     devices: List[MDBDevice] = Field(
         default_factory=list, description="List of MDB devices on the bus"
+    )
+    policy: MdbPolicyConfig = Field(
+        default_factory=MdbPolicyConfig, description="MDB acceptance policy"
     )
 
 

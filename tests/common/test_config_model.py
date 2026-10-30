@@ -412,3 +412,19 @@ class TestProductPriceCents:
     def test_unparsable_or_negative_legacy_price_refused(self, bad):
         with pytest.raises(ValidationError):
             Product.model_validate({"price": bad})
+
+
+def test_mdb_policy_defaults():
+    p = ConfigModel().payment.mdb.policy
+    assert p.coin_enabled == [5, 10, 25, 100]
+    assert p.bill_enabled == [100, 500, 1000, 2000]
+    assert p.max_escrow_cents == 2000
+    assert p.change_threshold_cents == 500
+    assert p.edge_timeout_s == 30
+    assert p.return_bill_on_lever is True
+
+
+def test_old_config_without_policy_loads():
+    cfg = ConfigModel.model_validate({"payment": {"mdb": {"polling_interval": 1.0}}})
+    assert cfg.payment.mdb.polling_interval == 1.0
+    assert cfg.payment.mdb.policy.max_escrow_cents == 2000
