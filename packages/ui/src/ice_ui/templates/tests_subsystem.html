@@ -27,6 +27,15 @@
         <option value="{{ product.slot }}">{{ product.slot }} — {{ product.name }} ({{ product.sku }})</option>
         {% endfor %}
       </select>
+      {% elif cmd.widget.kind == "device" %}
+      <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide"
+             for="device-{{ cmd.name }}">Device</label>
+      <select id="device-{{ cmd.name }}" name="device"
+              class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900">
+        {% for option in cmd.widget.options %}
+        <option value="{{ option }}">{{ option }}</option>
+        {% endfor %}
+      </select>
       {% elif cmd.widget.kind == "seconds" %}
       <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide"
              for="seconds-{{ cmd.name }}">Seconds</label>

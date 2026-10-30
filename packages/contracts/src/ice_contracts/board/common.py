@@ -246,8 +246,9 @@ _STANDARD_COMMANDS_SET: frozenset[str] = frozenset(STANDARD_COMMANDS)
 TESTABLE_COMMANDS: dict[str, frozenset[str]] = {
     "vending": _STANDARD_COMMANDS_SET | frozenset({"dispense", "water_valve"}),
     "ice_maker": _STANDARD_COMMANDS_SET | frozenset({"power_cycle"}),
-    "mdb": _STANDARD_COMMANDS_SET
-    | frozenset({"bill_acceptor_test", "coin_return_test", "card_reader_test"}),
+    # `payment.MDB_TESTABLE_COMMANDS` aliases this entry (payment.py imports
+    # this module, so the literal lives here to avoid an import cycle).
+    "mdb": _STANDARD_COMMANDS_SET | frozenset({"device_reset", "payout"}),
 }
 
 

@@ -1,0 +1,76 @@
+{#
+  Retained `payment/state` document from the MDB board (payment cutover
+  spec 6). `payment_state` is a PaymentState, or None/undefined when the
+  board has not published one (or the page is rendered where there is no
+  gateway), which renders the "No payment state yet." line.
+#}
+{% macro device_row(label, dev) %}
+<div class="flex flex-wrap items-center gap-3 text-sm">
+  <span class="text-gray-900 font-medium">{{ label }}</span>
+  {% if dev.present %}
+  <span class="{% if dev.status.value in ('jammed', 'error', 'tilt', 'offline') %}text-red-600{% else %}text-green-600{% endif %} font-medium">{{ dev.status.value }}</span>
+  <span class="text-gray-700">{{ dev.model or "—" }}</span>
+  <span class="text-gray-400 font-mono">level {{ dev.level or "—" }}</span>
+  {% else %}
+  <span class="text-gray-400">not present</span>
+  {% endif %}
+</div>
+{% endmacro %}
+<div id="payment-state" class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-3">
+  <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Payment state</h2>
+  {% if payment_state %}
+  {% set ps = payment_state %}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+    <div>
+      <div class="text-xs text-gray-400 uppercase tracking-wide">Accepting</div>
+      <div class="{% if ps.accepting %}text-green-600{% else %}text-red-600{% endif %} font-medium">
+        {% if ps.accepting %}Accepting{% else %}Inhibited: {{ ps.inhibited_reason.value }}{% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="text-xs text-gray-400 uppercase tracking-wide">Policy</div>
+      <div class="font-mono text-gray-900 break-all">{{ ps.policy_id or "—" }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-gray-400 uppercase tracking-wide">Escrow</div>
+      <div class="text-gray-900">{{ ps.escrow_cents|money }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-gray-400 uppercase tracking-wide">Bill in escrow</div>
+      <div class="text-gray-900">{% if ps.bill_in_escrow_cents is not none %}{{ ps.bill_in_escrow_cents|money }}{% else %}—{% endif %}</div>
+    </div>
+    <div>
+      <div class="text-xs text-gray-400 uppercase tracking-wide">Stacker</div>
+      <div class="text-gray-900">{% if ps.stacker %}<span>{{ ps.stacker.count }}</span> bills{% if ps.stacker.full %} · <span class="text-red-600 font-medium">full</span>{% endif %}{% else %}—{% endif %}</div>
+    </div>
+    <div>
+      <div class="text-xs text-gray-400 uppercase tracking-wide">Exact change</div>
+      <div class="{% if ps.exact_change %}text-red-600{% else %}text-gray-900{% endif %}">{% if ps.exact_change %}Exact change only{% else %}Change available{% endif %}</div>
+    </div>
+  </div>
+
+  <div class="space-y-1">
+    <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Devices</h3>
+    {{ device_row("Coin changer", ps.devices.coin) }}
+    {{ device_row("Bill validator", ps.devices.bill) }}
+    {{ device_row("Cashless reader", ps.devices.cashless) }}
+  </div>
+
+  <div class="space-y-1">
+    <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Tubes</h3>
+    {% if ps.tubes %}
+    {% for tube in ps.tubes %}
+    <div class="flex flex-wrap items-center gap-3 text-sm">
+      <span class="text-gray-900 font-medium">{{ tube.cents|money }}</span>
+      <span class="text-gray-700">{{ tube.count }} coins</span>
+      {% if tube.full %}<span class="text-red-600 font-medium">full</span>{% endif %}
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="text-sm text-gray-400">No tube data.</div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="text-sm text-gray-400">No payment state yet.</div>
+  {% endif %}
+</div>

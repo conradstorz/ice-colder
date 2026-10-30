@@ -21,6 +21,7 @@ from ice_contracts.board.common import TESTABLE_COMMANDS
 from ice_contracts.board.ice_maker_monitor import (
     CONTRACT_VERSION as ICE_MAKER_CONTRACT_VERSION,
 )
+from ice_contracts.board.payment import CONTRACT_VERSION as MDB_CONTRACT_VERSION
 from ice_contracts.board.vending_machine import (
     CONTRACT_VERSION as VENDING_CONTRACT_VERSION,
 )
@@ -46,8 +47,8 @@ AUTOMATIC_COMMANDS: frozenset[str] = frozenset({"ping", "self_test", "force_repo
 
 # Which contract a subsystem's reported contract_version is compared
 # against for the /tests card's "contract match" field. "vending" and
-# "mdb" both speak the vending-machine contract; "ice_maker" speaks its
-# own -- see ice_contracts/board/vending_machine.py's EXPECTED_SUBSYSTEMS and
+# speaks the vending-machine contract, "mdb" the payment contract, and
+# "ice_maker" its own -- see ice_contracts/board/vending_machine.py's EXPECTED_SUBSYSTEMS and
 # ice_contracts/board/ice_maker_monitor.py's own CONTRACT_VERSION.
 #
 # No existing code computes this: ice_edge/web/routes/health/subsystems.py (the
@@ -60,7 +61,7 @@ AUTOMATIC_COMMANDS: frozenset[str] = frozenset({"ping", "self_test", "force_repo
 # task-13a-report.md.
 _EXPECTED_CONTRACT_VERSION: dict[str, str] = {
     "vending": VENDING_CONTRACT_VERSION,
-    "mdb": VENDING_CONTRACT_VERSION,
+    "mdb": MDB_CONTRACT_VERSION,
     "ice_maker": ICE_MAKER_CONTRACT_VERSION,
 }
 
@@ -115,10 +116,16 @@ POWER_CYCLE_DWELL_RANGE: tuple[int, int] = (5, 300)
 POWER_CYCLE_DWELL_DEFAULT: int = 30
 
 
+# `device_reset` offers the two cash devices only (no cashless reader is fitted).
+MDB_RESET_DEVICES: tuple[str, ...] = ("coin", "bill")
+
+
 def _params_widget(command: str, products: list) -> dict | None:
     """The params widget spec for *command*, or None for a command that
-    takes no params (every automatic command, and mdb's three actuator
-    commands, which are all bare triggers per §1.3's table)."""
+    takes no params (every automatic command, and mdb's `payout`, whose
+    amount and reason are fixed server-side)."""
+    if command == "device_reset":
+        return {"kind": "device", "options": list(MDB_RESET_DEVICES)}
     if command == "dispense":
         return {"kind": "slot", "products": products}
     if command == "water_valve":
@@ -144,6 +151,7 @@ def _parse_command_params(
     slot: str | None,
     seconds: str | None,
     dwell_seconds: str | None,
+    device: str | None = None,
     valid_slots: frozenset[int] = frozenset(),
 ) -> dict:
     """Build the params dict for *command* from its raw form fields,
@@ -196,6 +204,23 @@ def _parse_command_params(
             "mechanism": profile.mechanism,
             "profile": profile.model_dump(mode="json"),
         }
+    if command == "device_reset":
+        if device not in MDB_RESET_DEVICES:
+            raise ValueError(f"device must be one of: {', '.join(MDB_RESET_DEVICES)}")
+        return {"device": device}
+    if command == "payout":
+        # Nothing the client posts reaches the wire: one smallest enabled coin,
+        # reason admin, no sale. The test runs as a board command through the
+        # dispatcher (not `gateway.pay_out`), so it makes no PendingPayout, no
+        # on_paid escrow bookkeeping and no PAY-103 path; but it must not
+        # interleave with a queued payout/cash_sale, so refuse while one is.
+        machine = context.machine_instance
+        if machine is not None and not machine.gateway.payouts.idle:
+            raise RuntimeError("a payout is already in progress; try again shortly")
+        coins = context.config.payment.mdb.policy.coin_enabled if context.config else []
+        if not coins:
+            raise RuntimeError("no coin denomination is enabled in the MDB policy")
+        return {"cents": min(coins), "reason": "admin", "sale_id": None}
     if command == "water_valve":
         lo, hi = WATER_VALVE_SECONDS_RANGE
         try:
@@ -475,6 +500,7 @@ async def post_test_command(
     slot: str | None = Form(None),
     seconds: str | None = Form(None),
     dwell_seconds: str | None = Form(None),
+    device: str | None = Form(None),
 ):
     """Run one command test (system-tests design §3's "Run" row).
 
@@ -513,6 +539,7 @@ async def post_test_command(
             slot=slot,
             seconds=seconds,
             dwell_seconds=dwell_seconds,
+            device=device,
             valid_slots=valid_slots,
         )
     except ValueError as exc:

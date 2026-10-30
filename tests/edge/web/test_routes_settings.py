@@ -741,3 +741,32 @@ class TestWebPage:
         assert cfg.web.trusted_proxies == ["10.0.0.0/8", "172.16.0.0/12"]
         saved = (tmp_path / "config.json").read_text(encoding="utf-8")
         assert "10.0.0.0/8" in saved
+
+
+class TestPaymentsMdbPolicyReadOnly:
+    def test_policy_shown_read_only(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        cfg.payment.mdb.policy.coin_enabled = [10, 25]
+        cfg.payment.mdb.policy.bill_enabled = [100, 500]
+        cfg.payment.mdb.policy.max_escrow_cents = 1500
+        cfg.payment.mdb.policy.change_threshold_cents = 300
+        cfg.payment.mdb.policy.edge_timeout_s = 45
+        cfg.payment.mdb.policy.return_bill_on_lever = False
+        text = client.get("/settings/payments").text
+        assert "MDB acceptance policy" in text
+        assert "$0.10" in text and "$0.25" in text
+        assert "$1.00" in text and "$5.00" in text
+        assert "$15.00" in text  # max escrow
+        assert "$3.00" in text  # change threshold
+        assert "45" in text
+        for field in ("coin_enabled", "max_escrow_cents", "edge_timeout_s"):
+            assert f'name="{field}"' not in text
+
+    def test_posting_policy_fields_changes_nothing(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        before = cfg.payment.mdb.policy.model_dump()
+        client.post(
+            "/settings/payments",
+            data={"max_escrow_cents": "9999", "coin_enabled": "1"},
+        )
+        assert cfg.payment.mdb.policy.model_dump() == before

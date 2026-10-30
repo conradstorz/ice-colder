@@ -279,10 +279,8 @@ today but the old contract never listed.
    exact `paid_cents`.
 
 **Testable set.** `payment.MDB_TESTABLE_COMMANDS` (`STANDARD_COMMANDS` plus
-`device_reset` and `payout`) is the future allowlist for the Tests level.
-`TESTABLE_COMMANDS["mdb"]` in `common.py` still holds the legacy counters
-today; it flips to `MDB_TESTABLE_COMMANDS` when the simulator that advertises
-the new commands ships (spec 2). The Tests level caps a test `payout` at one
+`device_reset` and `payout`) is the allowlist for the Tests level
+(`TESTABLE_COMMANDS["mdb"]` in `common.py` is the same set). The Tests level caps a test `payout` at one
 smallest enabled coin (an edge rule, recorded in the edge-migration spec).
 
 ## Reference flows (normative)

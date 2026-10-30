@@ -25,7 +25,7 @@ from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, StrictInt, model_validator
 
-from ice_contracts.board.common import STANDARD_COMMANDS, _utc_now
+from ice_contracts.board.common import TESTABLE_COMMANDS, _utc_now
 from ice_contracts.money import Cents, PositiveCents
 
 CONTRACT_VERSION = "1.1.0"
@@ -436,12 +436,10 @@ PARAM_MODELS: dict[str, type[BaseModel]] = {
     "cash_sale": CashSaleParams,
 }
 
-# The future testable set for the `mdb` subsystem. `TESTABLE_COMMANDS["mdb"]`
-# in common.py is flipped to this by spec 2, not here.
-MDB_TESTABLE_COMMANDS: frozenset[str] = frozenset(STANDARD_COMMANDS) | {
-    "device_reset",
-    "payout",
-}
+# The testable set for the `mdb` subsystem: the same object as
+# `TESTABLE_COMMANDS["mdb"]`, which holds the literal because this module
+# imports `common` (the reverse import would be a cycle).
+MDB_TESTABLE_COMMANDS: frozenset[str] = TESTABLE_COMMANDS["mdb"]
 
 # Fixed completion timeouts (durations, not money), read by
 # `common.COMPLETION_TIMEOUTS`.

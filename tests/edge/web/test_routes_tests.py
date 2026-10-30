@@ -245,8 +245,8 @@ class TestDiscoveryIntersection:
     def test_intersection_helper_directly(self):
         """Unit-level check of the helper itself, independent of HTML --
         reaches ice_contracts.board.common.TESTABLE_COMMANDS directly."""
-        result = compute_testable("mdb", ["ping", "refund", "coin_return_test"])
-        assert result == {"ping", "coin_return_test"}
+        result = compute_testable("mdb", ["ping", "refund", "device_reset"])
+        assert result == {"ping", "device_reset"}
         assert "refund" not in result
 
 
@@ -1237,6 +1237,8 @@ class TestResultRendering:
 
     def _post_with_ack(self, client, subsystem, command, dispatcher, **form):
         routes.set_command_dispatcher(dispatcher)
+        if command == "device_reset":
+            form.setdefault("device", "coin")
         return client.post(f"/tests/{subsystem}/{command}", data=form)
 
     def test_ok_ack_status_ok(self, client, wired, wire_subsystem, wire_event_recorder):
@@ -1250,11 +1252,11 @@ class TestResultRendering:
     def test_rejected_ack_shows_detail_verbatim(
         self, client, wired, wire_subsystem, wire_event_recorder
     ):
-        wire_subsystem("mdb", ["coin_return_test"])
+        wire_subsystem("mdb", ["device_reset"])
         resp = self._post_with_ack(
             client,
             "mdb",
-            "coin_return_test",
+            "device_reset",
             FakeAckDispatcher(status="rejected", detail="blocked by service door"),
         )
         assert resp.status_code == 200
@@ -1264,11 +1266,11 @@ class TestResultRendering:
     def test_failed_ack_shows_detail_verbatim(
         self, client, wired, wire_subsystem, wire_event_recorder
     ):
-        wire_subsystem("mdb", ["coin_return_test"])
+        wire_subsystem("mdb", ["device_reset"])
         resp = self._post_with_ack(
             client,
             "mdb",
-            "coin_return_test",
+            "device_reset",
             FakeAckDispatcher(status="failed", detail="motor stalled"),
         )
         assert resp.status_code == 200
@@ -1278,11 +1280,11 @@ class TestResultRendering:
     def test_unsupported_ack_shows_detail_verbatim(
         self, client, wired, wire_subsystem, wire_event_recorder
     ):
-        wire_subsystem("mdb", ["card_reader_test"])
+        wire_subsystem("mdb", ["device_reset"])
         resp = self._post_with_ack(
             client,
             "mdb",
-            "card_reader_test",
+            "device_reset",
             FakeAckDispatcher(status="unsupported", detail="firmware too old"),
         )
         assert resp.status_code == 200
@@ -1972,3 +1974,98 @@ class TestActuatorLeaseHeldForRealLifetime:
         assert (
             context.machine_instance.maintenance_hold.runs_in_flight == 0
         )  # freed immediately
+
+
+# --- MDB test commands (payment cutover, task 11) ------------------------
+
+
+class RecordingDispatcher(FakeAckDispatcher):
+    """Records the (subsystem, command, params) of every send."""
+
+
+class TestMdbTestCommands:
+    def test_mdb_card_offers_only_the_payment_set(self, client, wired, wire_subsystem):
+        wire_subsystem(
+            "mdb", ["ping", "device_reset", "payout", "vend_request", "set_policy"]
+        )
+        resp = client.get("/tests/mdb")
+        assert resp.status_code == 200
+        assert 'hx-post="/tests/mdb/device_reset"' in resp.text
+        assert 'hx-post="/tests/mdb/payout"' in resp.text
+        assert 'hx-post="/tests/mdb/vend_request"' not in resp.text
+        assert 'hx-post="/tests/mdb/set_policy"' not in resp.text
+        # device_reset offers a coin/bill select; payout has no amount input.
+        assert 'name="device"' in resp.text
+        assert 'name="cents"' not in resp.text
+
+    def test_payout_sends_smallest_coin_reason_admin_ignoring_posted_amount(
+        self, client, wired, wire_subsystem, wire_event_recorder
+    ):
+        cfg, _vmc, _inv, _store = wired
+        cfg.payment.mdb.policy.coin_enabled = [25, 10, 100]
+        wire_subsystem("mdb", ["payout"])
+        disp = RecordingDispatcher()
+        routes.set_command_dispatcher(disp)
+        resp = client.post("/tests/mdb/payout", data={"cents": "500", "amount": "9999"})
+        assert resp.status_code == 200
+        assert disp.calls == [
+            ("mdb", "payout", {"cents": 10, "reason": "admin", "sale_id": None})
+        ]
+
+    def test_payout_refused_when_a_payout_is_already_queued(
+        self, client, wired, wire_subsystem, wire_event_recorder
+    ):
+        _cfg, _vmc, _inv, _store = wired
+        machine = context.machine_instance
+        machine.gateway.pay_out(100, "change", None)  # board not alive: stays queued
+        wire_subsystem("mdb", ["payout"])
+        disp = RecordingDispatcher()
+        routes.set_command_dispatcher(disp)
+        resp = client.post("/tests/mdb/payout")
+        assert resp.status_code == 200
+        assert disp.calls == []
+        assert "payout" in resp.text.lower()
+
+    @pytest.mark.parametrize("device", ["coin", "bill"])
+    def test_device_reset_sends_the_device(
+        self, client, wired, wire_subsystem, wire_event_recorder, device
+    ):
+        wire_subsystem("mdb", ["device_reset"])
+        disp = RecordingDispatcher()
+        routes.set_command_dispatcher(disp)
+        resp = client.post("/tests/mdb/device_reset", data={"device": device})
+        assert resp.status_code == 200
+        assert disp.calls == [("mdb", "device_reset", {"device": device})]
+
+    @pytest.mark.parametrize("device", ["", "cashless", "stacker", "COIN"])
+    def test_device_reset_rejects_other_devices(
+        self, client, wired, wire_subsystem, device
+    ):
+        wire_subsystem("mdb", ["device_reset"])
+        disp = RecordingDispatcher()
+        routes.set_command_dispatcher(disp)
+        resp = client.post("/tests/mdb/device_reset", data={"device": device})
+        assert resp.status_code == 400
+        assert disp.calls == []
+
+    def test_device_reset_missing_device_is_400(self, client, wired, wire_subsystem):
+        wire_subsystem("mdb", ["device_reset"])
+        assert client.post("/tests/mdb/device_reset").status_code == 400
+
+    @pytest.mark.parametrize(
+        "command", ["vend_request", "set_policy", "cash_sale", "bill_acceptor_test"]
+    )
+    def test_unlisted_mdb_command_is_403(self, client, wired, wire_subsystem, command):
+        wire_subsystem("mdb", ["ping", command])
+        disp = RecordingDispatcher()
+        routes.set_command_dispatcher(disp)
+        assert client.post(f"/tests/mdb/{command}").status_code == 403
+        assert disp.calls == []
+
+    def test_mdb_expected_contract_version_is_the_payment_one(self):
+        from ice_contracts.board.payment import CONTRACT_VERSION
+        from ice_edge.web.routes.tests_level.commands import (
+            _EXPECTED_CONTRACT_VERSION,
+        )
+
+        assert _EXPECTED_CONTRACT_VERSION["mdb"] == CONTRACT_VERSION
