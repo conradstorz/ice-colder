@@ -416,3 +416,106 @@ async def test_seed_drops_poison_item_raises_pay103_and_does_not_wedge(env):
     assert (FaultCode.PAY_103, "invalid_pending:" + "p" * 8) in env.faults.raised
     assert (FaultCode.PAY_103, "invalid_pending:" + "q" * 8) in env.faults.raised
     assert env.proto.idle
+
+
+# --- C1: never re-mint after a possibly delivered send ---------------------------
+
+
+async def test_timeout_then_no_policy_rejection_never_reminted_payout(env):
+    env.disp.replies = [
+        CommandTimeout("mdb", "payout"),
+        lambda rid: plain(rid, "rejected", "no_policy", "payout"),
+    ]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    await settle(4)
+    first = env.disp.sent[0][2]
+    assert env.proto.pending()[0].maybe_delivered is True
+    env.runner.fire("payout_retry")
+    await settle(6)
+    assert [r for _, _, r in env.disp.sent] == [first, first]  # same id, no re-mint
+    assert env.faults.raised == [(FaultCode.PAY_103, f"unconfirmed:{first}")]
+    assert env.paid == []
+    assert env.proto.idle
+    env.proto.kick()
+    await settle()
+    assert len(env.disp.sent) == 2
+
+
+async def test_timeout_then_rejection_never_reminted_cash_sale(env):
+    env.disp.replies = [
+        CommandTimeout("mdb", "cash_sale"),
+        lambda rid: plain(rid, "rejected", "no_policy"),
+    ]
+    env.proto.cash_sale(50, None)
+    await settle(4)
+    env.runner.fire("payout_retry")
+    await settle(6)
+    assert len(env.disp.sent) == 2
+    assert env.faults.raised == [
+        (FaultCode.PAY_104, "escrow_mismatch:cash_sale_unconfirmed")
+    ]
+    assert env.proto.idle
+
+
+@pytest.mark.parametrize("detail", ["busy", "expired", "no_policy"])
+async def test_seeded_item_is_maybe_delivered_and_never_reminted(env, detail):
+    from ice_edge.payment.ports import PendingPayout
+
+    env.disp.replies = [lambda rid: plain(rid, "rejected", detail, "payout")]
+    env.proto.seed([PendingPayout("s" * 8, "payout", 100, "cancel", None)])
+    await settle(6)
+    assert [r for _, _, r in env.disp.sent] == ["s" * 8]
+    assert env.faults.raised == [(FaultCode.PAY_103, "unconfirmed:" + "s" * 8)]
+    assert env.proto.idle
+
+
+async def test_generic_send_failure_marks_maybe_delivered(env):
+    env.disp.replies = [RuntimeError("boom")]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    await settle(4)
+    assert env.proto.pending()[0].maybe_delivered is True
+
+
+async def test_fresh_item_rejection_is_still_reminted(env):
+    env.disp.replies = [lambda rid: plain(rid, "rejected", "busy", "payout")]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    await settle(4)
+    assert env.proto.pending()[0].maybe_delivered is False
+
+
+async def test_expired_retries_are_capped_at_five_payout(env):
+    env.disp.replies = [
+        lambda rid: plain(rid, "rejected", "expired", "payout") for _ in range(5)
+    ]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    for _ in range(4):
+        await settle(4)
+        env.runner.fire("payout_retry")
+    await settle(6)
+    assert len(env.disp.sent) == 5
+    last = env.disp.sent[-1][2]
+    assert env.faults.raised == [(FaultCode.PAY_103, f"expired:{last}")]
+    assert env.proto.idle
+
+
+async def test_expired_retries_are_capped_at_five_cash_sale(env):
+    env.disp.replies = [lambda rid: plain(rid, "rejected", "expired") for _ in range(5)]
+    env.proto.cash_sale(50, None)
+    for _ in range(4):
+        await settle(4)
+        env.runner.fire("payout_retry")
+    await settle(6)
+    assert len(env.disp.sent) == 5
+    assert env.faults.raised == [
+        (FaultCode.PAY_104, "escrow_mismatch:cash_sale_expired")
+    ]
+    assert env.proto.idle
+
+
+def test_old_snapshot_dict_loads_with_maybe_delivered_false():
+    from ice_edge.payment.ports import PendingPayout
+
+    item = PendingPayout(
+        **{"request_id": "r" * 8, "kind": "payout", "cents": 5, "reason": "cancel"}
+    )
+    assert item.maybe_delivered is False

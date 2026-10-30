@@ -3,9 +3,13 @@
 One command is in flight at a time. ``request_id`` is minted at enqueue and
 reused on every re-send (the board dedupes on it, firmware rule 5), so no path
 here ever pays twice: an unconfirmed payout raises PAY-103 and is dropped, it
-is never re-sent under a new id. The one exception is a ``rejected`` ack: the
-board did nothing and caches the rejection by ``request_id``, so the item is
-re-minted before it is retried.
+is never re-sent under a new id. The one exception is a ``rejected`` ack for an
+item that was never possibly delivered: the board did nothing and caches the
+rejection by ``request_id``, so the item is re-minted before it is retried. Once
+an item *may* have reached the board (a timeout, an unexpected send failure, or
+a reload from a snapshot) a rejection proves nothing about the earlier send
+(the board may have paid, then rebooted and lost its RAM ack cache), so it is
+never re-minted: it is reported unconfirmed and dropped.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from ice_edge.payment.ports import PendingPayout
 
 BUSY_RETRY_SECONDS = 2.0
 TIMEOUT_RETRY_SECONDS = 5.0
+MAX_EXPIRED_ATTEMPTS = 5
 
 
 class PayoutProtocol:
@@ -110,7 +115,7 @@ class PayoutProtocol:
                 logger.error(f"dropping invalid pending {item.kind} {item.request_id}")
                 self._pay103(f"invalid_pending:{item.request_id}")
                 continue
-            valid.append(item)
+            valid.append(replace(item, maybe_delivered=True))
         self._queue.extendleft(reversed(valid))
         if valid:
             self._on_changed()
@@ -163,9 +168,16 @@ class PayoutProtocol:
         except Exception as exc:  # noqa: BLE001 - the queue state is already right
             logger.error(f"payout on_changed failed: {exc!r}")
 
-    def _requeue_head(self, *, remint: bool = False) -> None:
+    def _requeue_head(
+        self, *, remint: bool = False, maybe_delivered: bool = False, **changes
+    ) -> None:
         item = self._inflight
         if item is not None:
+            if maybe_delivered and not item.maybe_delivered:
+                item = replace(item, maybe_delivered=True)
+                self._inflight = item
+            if changes:
+                item = replace(item, **changes)
             if remint:
                 # The firmware caches every ack by request_id, rejections
                 # included, so a re-send of a rejected id would replay the
@@ -174,8 +186,8 @@ class PayoutProtocol:
                 item = replace(item, request_id=uuid.uuid4().hex)
             self._queue.appendleft(item)
             self._inflight = None
-            if remint:
-                self._notify_changed()  # the snapshot must carry the new id
+            if remint or changes or maybe_delivered:
+                self._notify_changed()  # the snapshot must carry the new state
 
     def _pay103(self, outcome: str) -> None:
         self._raise(FaultCode.PAY_103, outcome)
@@ -210,7 +222,7 @@ class PayoutProtocol:
                 except Exception as exc:  # noqa: BLE001 - last resort, keep the item
                     logger.error(f"MDB send of {item.request_id} failed: {exc!r}")
                     if self._inflight is item:
-                        self._requeue_head()
+                        self._requeue_head(maybe_delivered=True)
                         self._arm_retry(TIMEOUT_RETRY_SECONDS)
         finally:
             self._draining = False
@@ -242,13 +254,13 @@ class PayoutProtocol:
             # Never acked (even after the dispatcher's same-id retry): keep it
             # at the head under the same id and try again shortly.
             logger.warning(f"MDB {command} {item.request_id} not acked; will resend")
-            self._requeue_head()
+            self._requeue_head(maybe_delivered=True)
             self._arm_retry(TIMEOUT_RETRY_SECONDS)
             return
         except Exception as exc:  # noqa: BLE001
             # No ack was seen, so the board may not have acted: same id, retry.
             logger.error(f"MDB {command} {item.request_id} send failed: {exc!r}")
-            self._requeue_head()
+            self._requeue_head(maybe_delivered=True)
             self._arm_retry(TIMEOUT_RETRY_SECONDS)
             return
         try:
@@ -265,20 +277,41 @@ class PayoutProtocol:
                     self._pay104("escrow_mismatch:cash_sale_unconfirmed")
                 self._finish()
 
+    def _give_up(self, item: PendingPayout, kind: str) -> None:
+        """Drop an item that cannot be safely re-sent, and say so."""
+        if item.kind == "payout":
+            self._pay103(f"{kind}:{item.request_id}")
+        else:
+            self._pay104(f"escrow_mismatch:cash_sale_{kind}")
+        self._finish()
+
     def _reject(self, item: PendingPayout, ack: Any) -> bool:
         """Handle a rejecting ack that left the command unexecuted."""
         detail = getattr(ack, "detail", None)
+        if detail not in ("busy", "expired", "no_policy"):
+            return False
+        if item.maybe_delivered:
+            # An earlier send may have been executed; only a rejection of that
+            # very send would prove otherwise. Never mint a second payout.
+            logger.error(
+                f"MDB {item.kind} {item.request_id} rejected ({detail}) after a "
+                "possible delivery; not re-sending"
+            )
+            self._give_up(item, "unconfirmed")
+            return True
         if detail == "busy":
             self._requeue_head(remint=True)
             self._arm_retry(BUSY_RETRY_SECONDS)
-            return True
-        if detail == "expired":
+        elif detail == "expired":
             # The command's timestamp was stale; the policy is fine and no
             # policy toggle will come, so retry on our own with a fresh id.
-            self._requeue_head(remint=True)
+            attempts = item.expired_attempts + 1
+            if attempts >= MAX_EXPIRED_ATTEMPTS:
+                self._give_up(item, "expired")
+                return True
+            self._requeue_head(remint=True, expired_attempts=attempts)
             self._arm_retry(BUSY_RETRY_SECONDS)
-            return True
-        if detail == "no_policy":
+        else:
             self._requeue_head(remint=True)  # waits for the next policy_acked
             self._policy_hold = True
             if self._on_no_policy is not None:
@@ -286,8 +319,7 @@ class PayoutProtocol:
                     self._on_no_policy()
                 except Exception as exc:  # noqa: BLE001
                     logger.error(f"no_policy hook failed: {exc!r}")
-            return True
-        return False
+        return True
 
     def _settle_payout(self, item: PendingPayout, ack: Any) -> None:
         if ack.status == "rejected":
