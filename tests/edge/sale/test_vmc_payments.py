@@ -131,6 +131,16 @@ async def test_lever_during_dispensing_is_ignored():
     assert payments.payouts == [] and vmc.credit_escrow_cents == 100
 
 
+async def test_lever_during_a_test_sale_is_ignored():
+    machine, vmc, payments = build()
+    assert vmc.begin_test_sale(vmc.find_product("ICE-1")) is True
+    vmc.on_payment_lever()
+    assert payments.payouts == []
+    assert not vmc.faults.has(FaultCode.PAY_103)  # no non_cash_refund
+    assert vmc.credit_escrow_cents > 0  # the test credit is untouched
+    vmc.end_test_sale()
+
+
 async def test_lever_with_nothing_in_escrow_pays_nothing():
     machine, vmc, payments = build()
     vmc.on_payment_lever()

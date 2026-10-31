@@ -239,6 +239,12 @@ async def test_older_boot_echo_does_not_count(env):
     assert len(env.disp.policies()) == 2
 
 
+async def test_any_send_error_arms_the_retry(env):
+    env.disp.replies = [RuntimeError("publish blew up")]
+    await env.sync.sync("t")
+    assert [c.label for c in env.runner.scheduled] == ["policy_retry"]
+
+
 async def test_timeout_retries_only_while_alive(env):
     env.disp.replies = [CommandTimeout("mdb", "set_policy")]
     await env.sync.sync("t")

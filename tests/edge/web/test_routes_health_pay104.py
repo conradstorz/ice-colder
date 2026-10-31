@@ -200,6 +200,9 @@ class TestFaultsListRendersPendingSale:
         assert 'id="clear-PAY-104"' in text
         assert 'id="record-sale-PAY-104"' not in text
         assert 'id="discard-PAY-104"' not in text
+        # The generic Clear behaves like Discard, and says so.
+        assert "Clear (as Discard)" in text
+        assert "Clearing acts like Discard" in text
 
     def test_clearing_a_pay104_with_no_pending_sale_writes_no_row(
         self, wired, login_as, tmp_path

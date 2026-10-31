@@ -255,6 +255,18 @@ async def test_seeded_snapshot_ids_prevent_double_credit(tmp_path):
     assert len(rig.acks) == 1
 
 
+async def test_seeded_duplicate_advances_the_cursor_so_the_next_event_is_no_gap(
+    tmp_path,
+):
+    rig = Rig(tmp_path / "c.json")
+    rig.intake.seed([f"evt-{BOOT}-0001"])
+    await rig.send(1, COIN)  # the replayed, already-credited event
+    await rig.send(2, COIN)
+    assert not rig.faults.has(FaultCode.PAY_105)
+    assert len(rig.deposits) == 1  # only seq 2 is new
+    assert rig.intake.caught_up_to(BOOT) == 2
+
+
 async def test_corrupt_cursor_at_boot_raises_pay105(tmp_path):
     p = tmp_path / "c.json"
     p.write_text("garbage", encoding="utf-8")

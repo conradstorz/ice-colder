@@ -88,10 +88,11 @@
           {% include "partials/confirm_button.html" with context %}
         </div>
         {% else %}
+        {% if f.key == "PAY-104" %}<span class="text-xs text-gray-500">Clearing acts like Discard: the sale is not recorded and any cash the board still holds is paid back out.</span>{% endif %}
         {% set target = "#clear-" ~ f.dom_key %}
         {% set confirm_url = "/health/faults/" ~ f.key ~ "/clear/confirm" %}
         {% set post_url = "/health/faults/" ~ f.key ~ "/clear" %}
-        {% set label = "Clear" %}
+        {% set label = "Clear (as Discard)" if f.key == "PAY-104" else "Clear" %}
         {% set confirm_label = "Confirm" %}
         {% set confirming = false %}
         {% include "partials/confirm_button.html" with context %}

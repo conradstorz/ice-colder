@@ -756,7 +756,13 @@ class VMC:
 
     def on_payment_lever(self) -> None:
         """The customer pressed the coin-return lever: refund, unless a vend is running."""
-        if self.state == "dispensing" or self._escrow.is_empty:
+        if (
+            self.state == "dispensing"
+            or self._escrow.is_empty
+            or (self.sale is not None and self.sale.is_test)
+        ):
+            # A test sale's "test" credit is not cash: refunding it would
+            # raise PAY-103 (non_cash_refund).
             logger.info(f"Coin-return lever ignored (state={self.state})")
             return
         self.request_refund(reason="customer")

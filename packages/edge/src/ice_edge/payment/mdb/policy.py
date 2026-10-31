@@ -190,6 +190,8 @@ class PolicySync:
             ok = getattr(ack, "status", None) == "ok"
         except CommandTimeout:
             logger.warning("MDB set_policy timed out")
+        except Exception:  # noqa: BLE001 - a send error must still arm the retry
+            logger.exception("MDB set_policy failed")
         if ok:
             self._ack_ok_id = params.policy_id
             self._acked_boot = self._last_boot

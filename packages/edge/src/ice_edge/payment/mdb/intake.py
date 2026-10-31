@@ -112,8 +112,16 @@ class EventIntake:
         st = self._state
         boot, seq = header.boot_id, header.seq
         known = boot in st.seqs
-        if header.event_id in st.recent_ids or (known and seq <= st.seqs[boot]):
+        seq_dup = known and seq <= st.seqs[boot]
+        if seq_dup or header.event_id in st.recent_ids:
             logger.info(f"Duplicate payment event {header.event_id}; re-acking")
+            expected = (known and seq == st.seqs[boot] + 1) or (not known and seq == 1)
+            if not seq_dup and expected:
+                # A seeded id (held as a credit by the crashed session): the
+                # event is processed already, so the cursor moves past it or
+                # the next event would read as a gap (spurious PAY-105).
+                st.advance(boot, seq, header.event_id)
+                await self._save_cursor(st)
             self._publish_ack(PaymentEventAck(boot_id=boot, seq=seq))
             return
 
@@ -135,6 +143,10 @@ class EventIntake:
                 await self._persist_session()
             except Exception as exc:  # noqa: BLE001 - upstream raises DATA-104
                 logger.error(f"Session snapshot after deposit failed: {exc!r}")
+        await self._save_cursor(st)
+        self._publish_ack(PaymentEventAck(boot_id=boot, seq=seq))
+
+    async def _save_cursor(self, st) -> None:
         try:
             await self._store.save_async(st)
         except Exception as exc:  # noqa: BLE001 - ack must still go out
@@ -142,7 +154,6 @@ class EventIntake:
             self._on_cursor_saved(False)
         else:
             self._on_cursor_saved(True)
-        self._publish_ack(PaymentEventAck(boot_id=boot, seq=seq))
 
     @staticmethod
     def _safe(fn: Callable, *args) -> None:

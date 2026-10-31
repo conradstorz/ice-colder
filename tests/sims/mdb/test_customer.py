@@ -123,13 +123,23 @@ async def test_run_pays_when_acceptance_resumes_mid_interaction():
 
     class ResumingPort(ScriptedPort):
         calls = 0
+        paid = None
+
+        async def insert_coin(self, cents):
+            ok = await super().insert_coin(cents)
+            if self.escrow_cents >= 300:
+                self.paid.set()
+            return ok
 
         async def next_status(self):
             self.calls += 1
             if self.calls == 1:
+                self.paid = asyncio.Event()
                 return INTERACTING
             self.accepting = True  # the policy arrives after the status did
-            await asyncio.sleep(0.2)
+            # End the stream once the customer has paid (event, not a clock;
+            # the timeout only bounds a regression).
+            await asyncio.wait_for(self.paid.wait(), timeout=5)
             raise StopAsyncIteration
 
     port = ResumingPort([], accepting=False)
