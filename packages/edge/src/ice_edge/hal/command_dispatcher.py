@@ -94,6 +94,13 @@ class CommandTimeout(Exception):
         )
 
 
+class CommandNotSent(CommandTimeout):
+    """Subclass of ``CommandTimeout`` raised when nothing was published at all
+    (broker disconnected, or no dispatcher attached yet): the subsystem
+    provably never saw the command, so a caller may treat a retry as a first
+    send. Existing ``except CommandTimeout`` handlers keep working."""
+
+
 class CompletionTimeout(Exception):
     """*command* on *subsystem* was accepted (its ack arrived), but no
     completion signal arrived within its own, separate completion timeout
@@ -276,7 +283,7 @@ class CommandDispatcher:
                 f"CommandDispatcher: broker not connected; refusing to send "
                 f"{command!r} to {subsystem!r}"
             )
-            raise CommandTimeout(subsystem, command)
+            raise CommandNotSent(subsystem, command)
 
         request_id = request_id or uuid.uuid4().hex
         cmd = SubsystemCommand(

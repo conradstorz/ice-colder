@@ -391,10 +391,10 @@ gaps. Never retried with a new id. An `ok` with `detail: "queued"` counts as del
   `find_payout` replay, and a reboot clears the ack cache, so after a lost ack a rejection proves nothing
   about the earlier send. `PendingPayout.maybe_delivered` (persisted; set after a `CommandTimeout`, an
   unexpected send failure, and on every item reloaded from a snapshot) therefore forbids re-minting:
-  such an item raises PAY-103 `unconfirmed:<request_id>` (payout) or PAY-104
+  such an item raises PAY-103 `unconfirmed:<cents>:<request_id>` (payout) or PAY-104
   `escrow_mismatch:cash_sale_unconfirmed` (`cash_sale`) and is dropped.
 - **`expired` retries after 2 s** with a fresh id (never a delivered one), at most 5 attempts per item,
-  then PAY-103 `expired:<request_id>` / PAY-104 `escrow_mismatch:cash_sale_expired` and the item is dropped.
+  then PAY-103 `expired:<cents>:<request_id>` / PAY-104 `escrow_mismatch:cash_sale_expired` and the item is dropped.
 - **The board's escrow is per boot** (a correction of a spec premise): the firmware spec (§11, "Escrow
   restarts at 0 on every boot. It is RAM only.") means a rebooted board holds none of the cash the edge
   credited on its previous boot. Reconciliation (§5.5) compares `state.escrow_cents` only with edge cash
@@ -427,6 +427,23 @@ gaps. Never retried with a new id. An `ok` with `detail: "queued"` counts as del
 - **Re-queued boot `cash_sale`s rely only on the board's 32-entry RAM ack cache**: the firmware's
   `do_cash_sale` has no idempotency store (unlike `payout`), so a late duplicate is clamped by the board's
   escrow floor and the edge raises `PAY-104`. Visible to the operator, and it moves no money.
+- **Unsent commands are not "maybe delivered"** (final round C): `CommandDispatcher.send` (broker down) and the
+  not-yet-attached `_LateDispatcher` raise `CommandNotSent`, a `CommandTimeout` subclass, before anything is
+  published; `PayoutProtocol` requeues the item under the same id without setting `maybe_delivered` and arms
+  `payout_retry`, so a later `rejected` ack may still re-mint it.
+- **A queued `cash_sale` carries the board boot its amount was computed for** (`PendingPayout.boot_id`,
+  persisted, `None` for old snapshots or an unknown boot). If the board's current boot differs at send time the
+  cash is gone from its RAM escrow, so the item is dropped with an info log (no fault); a payout is never dropped
+  this way. Residual: if the board is "alive" before its new-boot `payment/state` arrives, the stale item is
+  still sent and the board clamps it (visible `cash_sale_clamped` PAY-104).
+- **Recovery cards need held evidence** (final round C): `pending_sale_for_recovery` and `recovery_detail` are
+  gated on `evidence_held`, not on `PAY-104` being active, so a runtime `PAY-104` over a live dispensing
+  snapshot never offers "Record as sale".
+- **Known residuals:** the closed-path boot `cash_sale` can re-send one already published in the milliseconds
+  between publish and the fire-and-forget snapshot write (visible clamp); a boot `PAY-104` freezes persistence
+  of new sales until the operator resolves it (pre-existing); recovery `cash_sale`s (boot closed path, Record
+  as sale) send the full cash share because the snapshot holds no pieces, so a board reboot in between yields a
+  visible clamp.
 - **Firmware recommendations (not implemented):** check the persisted payout result before the
   `expired`/`no_policy` gates, and do not cache rejections in the RAM ack cache. Either would let the edge
   drop the `maybe_delivered` PAY-103 fallback.

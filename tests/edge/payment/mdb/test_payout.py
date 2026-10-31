@@ -5,7 +5,11 @@ import pytest
 from ice_contracts.board.common import CommandAck
 from ice_contracts.board.payment import PayoutReason
 from ice_contracts.board.vending_machine import FaultCode
-from ice_edge.hal.command_dispatcher import CommandTimeout, CompletionTimeout
+from ice_edge.hal.command_dispatcher import (
+    CommandNotSent,
+    CommandTimeout,
+    CompletionTimeout,
+)
 from ice_edge.payment.mdb.payout import PayoutProtocol
 from tests.fakes import FakeTaskRunner, settle
 
@@ -74,6 +78,7 @@ class Env:
         self.faults = FakeFaults()
         self.paid = []
         self.changed = 0
+        self.boot = None
         self.proto = PayoutProtocol(
             dispatcher=self.disp,
             policy_acked=lambda: self.acked,
@@ -82,6 +87,7 @@ class Env:
             faults=self.faults,
             on_paid=lambda item, cents: self.paid.append((item.request_id, cents)),
             on_changed=self._changed,
+            boot_id=lambda: self.boot,
         )
 
     def _changed(self):
@@ -433,7 +439,7 @@ async def test_timeout_then_no_policy_rejection_never_reminted_payout(env):
     env.runner.fire("payout_retry")
     await settle(6)
     assert [r for _, _, r in env.disp.sent] == [first, first]  # same id, no re-mint
-    assert env.faults.raised == [(FaultCode.PAY_103, f"unconfirmed:{first}")]
+    assert env.faults.raised == [(FaultCode.PAY_103, f"unconfirmed:100:{first}")]
     assert env.paid == []
     assert env.proto.idle
     env.proto.kick()
@@ -465,7 +471,7 @@ async def test_seeded_item_is_maybe_delivered_and_never_reminted(env, detail):
     env.proto.seed([PendingPayout("s" * 8, "payout", 100, "cancel", None)])
     await settle(6)
     assert [r for _, _, r in env.disp.sent] == ["s" * 8]
-    assert env.faults.raised == [(FaultCode.PAY_103, "unconfirmed:" + "s" * 8)]
+    assert env.faults.raised == [(FaultCode.PAY_103, "unconfirmed:100:" + "s" * 8)]
     assert env.proto.idle
 
 
@@ -494,7 +500,7 @@ async def test_expired_retries_are_capped_at_five_payout(env):
     await settle(6)
     assert len(env.disp.sent) == 5
     last = env.disp.sent[-1][2]
-    assert env.faults.raised == [(FaultCode.PAY_103, f"expired:{last}")]
+    assert env.faults.raised == [(FaultCode.PAY_103, f"expired:100:{last}")]
     assert env.proto.idle
 
 
@@ -519,3 +525,82 @@ def test_old_snapshot_dict_loads_with_maybe_delivered_false():
         **{"request_id": "r" * 8, "kind": "payout", "cents": 5, "reason": "cancel"}
     )
     assert item.maybe_delivered is False
+
+
+# --- final round C: not-published sends, stale boot ------------------------------------
+
+
+async def test_not_sent_command_is_not_maybe_delivered_and_keeps_its_id(env):
+    env.disp.replies = [CommandNotSent("mdb", "payout")]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    await settle(4)
+    head = env.proto.pending()[0]
+    assert head.maybe_delivered is False
+    env.runner.fire("payout_retry")
+    await settle(6)
+    assert [r for _, _, r in env.disp.sent] == [head.request_id, head.request_id]
+    assert env.faults.raised == []
+    assert env.proto.idle
+
+
+async def test_not_sent_then_rejection_is_still_reminted(env):
+    env.disp.replies = [
+        CommandNotSent("mdb", "payout"),
+        lambda rid: plain(rid, "rejected", "busy", "payout"),
+    ]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    await settle(4)
+    env.runner.fire("payout_retry")
+    await settle(4)
+    assert env.proto.pending()[0].maybe_delivered is False
+    assert env.faults.raised == []
+
+
+async def test_plain_timeout_is_still_maybe_delivered(env):
+    env.disp.replies = [CommandTimeout("mdb", "payout")]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    await settle(4)
+    assert env.proto.pending()[0].maybe_delivered is True
+
+
+async def test_cash_sale_is_dropped_when_the_board_rebooted_since_enqueue(env):
+    env.alive = False
+    env.boot = "boot-a"
+    env.proto.cash_sale(150, "s1")
+    await settle(4)
+    assert env.proto.pending()[0].boot_id == "boot-a"
+    env.boot = "boot-b"  # board rebooted and is back
+    env.alive = True
+    env.proto.kick()
+    await settle(6)
+    assert env.disp.sent == []
+    assert env.faults.raised == []
+    assert env.proto.idle
+
+
+async def test_cash_sale_is_sent_when_the_boot_is_unchanged_or_unknown(env):
+    env.boot = "boot-a"
+    env.proto.cash_sale(150, "s1")
+    await settle(6)
+    env.boot = None
+    env.proto.cash_sale(50, "s2")
+    await settle(6)
+    assert [p["cents"] for _, p, _ in env.disp.sent] == [150, 50]
+
+
+async def test_payout_is_never_dropped_for_a_boot_change(env):
+    env.alive = False
+    env.boot = "boot-a"
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    env.boot = "boot-b"
+    env.alive = True
+    env.proto.kick()
+    await settle(6)
+    assert len(env.disp.sent) == 1
+
+
+def test_old_snapshot_dict_loads_with_no_boot_id():
+    from ice_edge.payment.ports import PendingPayout
+
+    item = PendingPayout(**{"request_id": "r" * 8, "kind": "cash_sale", "cents": 5})
+    assert item.boot_id is None

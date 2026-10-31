@@ -29,6 +29,9 @@ class PendingPayout:
     sale_id: str | None = None
     maybe_delivered: bool = False
     expired_attempts: int = 0
+    #: Board boot id a ``cash_sale`` amount was computed for (the board's
+    #: escrow is per boot); ``None`` when unknown or for a ``payout``.
+    boot_id: str | None = None
 
 
 class Payments(Protocol):

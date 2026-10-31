@@ -31,7 +31,11 @@ from ice_contracts.board.payment import (
     PayoutStatus,
 )
 from ice_contracts.board.vending_machine import FaultCode
-from ice_edge.hal.command_dispatcher import CommandTimeout, CompletionTimeout
+from ice_edge.hal.command_dispatcher import (
+    CommandNotSent,
+    CommandTimeout,
+    CompletionTimeout,
+)
 from ice_edge.payment.ports import PendingPayout
 
 BUSY_RETRY_SECONDS = 2.0
@@ -51,7 +55,9 @@ class PayoutProtocol:
         on_paid: Callable[[PendingPayout, int], None],
         on_changed: Callable[[], None],
         on_no_policy: Callable[[], None] | None = None,
+        boot_id: Callable[[], str | None] = lambda: None,
     ) -> None:
+        self._boot_id = boot_id
         self._dispatcher = dispatcher
         self._policy_acked = policy_acked
         self._board_alive = board_alive
@@ -90,7 +96,14 @@ class PayoutProtocol:
     def cash_sale(self, cents: int, sale_id: str | None) -> None:
         CashSaleParams(cents=cents, sale_id=sale_id)
         self._enqueue(
-            PendingPayout(uuid.uuid4().hex, "cash_sale", cents, None, sale_id)
+            PendingPayout(
+                uuid.uuid4().hex,
+                "cash_sale",
+                cents,
+                None,
+                sale_id,
+                boot_id=self._boot_id(),
+            )
         )
 
     def seed(self, pending: list[PendingPayout]) -> None:
@@ -235,6 +248,20 @@ class PayoutProtocol:
             ).model_dump(mode="json")
         else:
             command = "cash_sale"
+            current = self._boot_id()
+            if (
+                item.boot_id is not None
+                and current is not None
+                and item.boot_id != current
+            ):
+                # The board's escrow is RAM, per boot: the cash this amount
+                # reported is gone, so reporting it now would only clamp.
+                logger.info(
+                    f"dropping cash_sale {item.request_id} ({item.cents}c): the "
+                    f"board rebooted since it was queued ({item.boot_id} -> {current})"
+                )
+                self._finish()
+                return
             params = CashSaleParams(cents=item.cents, sale_id=item.sale_id).model_dump(
                 mode="json"
             )
@@ -249,6 +276,13 @@ class PayoutProtocol:
             else:
                 self._pay104("escrow_mismatch:cash_sale_unconfirmed")
             self._finish()
+            return
+        except CommandNotSent:
+            # Nothing was published (broker down / no dispatcher yet): the
+            # board cannot have seen it, so it is not "maybe delivered".
+            logger.warning(f"MDB {command} {item.request_id} not sent; will retry")
+            self._requeue_head()
+            self._arm_retry(TIMEOUT_RETRY_SECONDS)
             return
         except CommandTimeout:
             # Never acked (even after the dispatcher's same-id retry): keep it
@@ -280,7 +314,7 @@ class PayoutProtocol:
     def _give_up(self, item: PendingPayout, kind: str) -> None:
         """Drop an item that cannot be safely re-sent, and say so."""
         if item.kind == "payout":
-            self._pay103(f"{kind}:{item.request_id}")
+            self._pay103(f"{kind}:{item.cents}:{item.request_id}")
         else:
             self._pay104(f"escrow_mismatch:cash_sale_{kind}")
         self._finish()

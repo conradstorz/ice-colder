@@ -789,3 +789,28 @@ async def test_complete_for_unknown_request_id_is_buffered_then_evicted():
     task2 = await _start_dispense(dispatcher, mqtt, ids[-1])
     ack = await asyncio.wait_for(task2, timeout=2.0)
     assert ack.request_id == ids[-1]
+
+
+async def test_disconnected_send_raises_command_not_sent_a_timeout_subclass():
+    from ice_edge.hal.command_dispatcher import CommandNotSent
+
+    mqtt = FakeMQTTClient(connected=False)
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=FakeClock())
+    with pytest.raises(CommandNotSent) as excinfo:
+        await dispatcher.send("mdb", "payout")
+    assert isinstance(excinfo.value, CommandTimeout)
+    assert mqtt.published == []
+
+
+async def test_a_real_ack_timeout_is_not_command_not_sent():
+    from ice_edge.hal.command_dispatcher import CommandNotSent
+
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, retries=0, clock=clock)
+    task = asyncio.ensure_future(dispatcher.send("ice_maker", "self_test"))
+    await _wait_for_attempt(clock, 1)
+    clock.fire_next()
+    with pytest.raises(CommandTimeout) as excinfo:
+        await asyncio.wait_for(task, timeout=2.0)
+    assert not isinstance(excinfo.value, CommandNotSent)

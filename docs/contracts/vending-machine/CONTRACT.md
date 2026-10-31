@@ -57,9 +57,6 @@ The fix adds a **second, independent timeout**, and a field on the ack that says
 | mdb | `ping` | immediate | the ack itself | — |
 | mdb | `self_test` | immediate | the ack itself | — |
 | mdb | `force_report` | immediate | the ack itself | — |
-| mdb | `bill_acceptor_test` | immediate | the ack itself | — |
-| mdb | `coin_return_test` | immediate | the ack itself | — |
-| mdb | `card_reader_test` | immediate | the ack itself | — |
 | ice_maker | `power_cycle` | **long-running** | a SECOND ack on `cmd/ice_maker/ack`, same `request_id`, `phase="completed"` | `dwell_seconds` (param, 5–300) **+ 30 s margin** → 35–330 s (see [ice-maker-monitor CONTRACT.md](../ice-maker-monitor/CONTRACT.md)) |
 | ice_maker | `ping` / `self_test` / `force_report` | immediate | the ack itself | — |
 
@@ -96,7 +93,7 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 
 ### Capabilities advertisement
 
-`SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `packages/contracts/src/ice_contracts/board/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+`SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `packages/contracts/src/ice_contracts/board/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
 
 ## 3.0.0 (2026-10-30, breaking)
 

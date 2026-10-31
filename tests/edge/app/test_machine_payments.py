@@ -734,3 +734,44 @@ async def test_sale_recording_failed_still_offers_the_recovery_card(tmp_path):
     pending = machine.pending_sale_for_recovery()
     assert pending is not None
     assert pending["price_cents"] == 250
+
+
+# --- final round C: stale-boot cash_sale, unsent commands --------------------------------
+
+
+async def test_queued_cash_sale_is_dropped_when_the_board_reboots_before_it_is_sent(
+    tmp_path,
+):
+    machine, cfg, avail, dispatcher = build(tmp_path)
+    policy_id = build_policy(cfg.payment.mdb.policy, avail.payment_enabled).policy_id
+    machine.on_mqtt_connection(True)
+    await settle(6)
+    # Boot A is known, but the policy is not acked yet, so nothing is sent.
+    await machine.gateway.state_consumer.handle("payment/state", state_doc(None))
+    machine.gateway.cash_sale(150, "s1")
+    await settle(4)
+    assert [p.boot_id for p in machine.gateway.pending_payouts()] == [BOOT]
+
+    # The board reboots (its escrow, including that cash, is gone) and returns.
+    await machine.gateway.state_consumer.handle(
+        "payment/state", state_doc(None, boot=BOOT_B)
+    )
+    await machine.gateway.state_consumer.handle(
+        "payment/state", state_doc(policy_id, boot=BOOT_B)
+    )
+    await settle(10)
+
+    assert dispatcher.commands("cash_sale") == []
+    assert machine.gateway.pending_payouts() == []
+    assert not machine.faults.has(FaultCode.PAY_104)
+    assert dispatcher.commands("payout") == []
+
+
+async def test_payout_with_no_dispatcher_attached_is_not_maybe_delivered(tmp_path):
+    machine, cfg, avail, dispatcher = build(tmp_path)
+    await ack_policy(machine, cfg, avail)
+    machine.set_command_dispatcher(None)  # the payout's send finds none
+    machine.gateway.pay_out(100, "cancel", None)
+    await settle(6)
+    pending = machine.gateway.pending_payouts()
+    assert [(p.kind, p.maybe_delivered) for p in pending] == [("payout", False)]

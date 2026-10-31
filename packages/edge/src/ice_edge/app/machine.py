@@ -70,7 +70,7 @@ from ice_contracts.board.payment import (
     PAYMENT_EVENT_ACK_TOPIC,
     PaymentEventAck,
 )
-from ice_edge.hal.command_dispatcher import CommandTimeout
+from ice_edge.hal.command_dispatcher import CommandNotSent
 from ice_edge.ledger import payment_cursor
 from ice_edge.ledger.payment_cursor import PaymentCursorStore
 from ice_edge.faults.fault_service import FaultChange
@@ -116,7 +116,7 @@ class _LateDispatcher:
     def _live(self, command: str) -> Any:
         dispatcher = self._get()
         if dispatcher is None:
-            raise CommandTimeout("mdb", command)
+            raise CommandNotSent("mdb", command)
         return dispatcher
 
     async def send(self, subsystem, command, params=None, request_id=None):
