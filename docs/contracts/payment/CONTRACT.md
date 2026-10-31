@@ -196,7 +196,11 @@ Edge mapping, fixed here and inherited by the edge-migration spec:
 - `payment_devices_ready` becomes three rows, one per device the policy
   declares present, failing on `offline | error | tilt | jammed`; `full` and
   `empty` are alert-only. A missing cashless reader fails only cashless
-  sales; cash still sells.
+  sales; cash still sells. These per-device rows are alert-gate rows (they
+  block nothing machine-wide), and the edge derives one further
+  fulfillment-gate row, `cash_accepting`, from the coin/bill device rows and
+  `inhibited_reason`: it fails when no cash device is usable, so one jammed
+  device does not stop sales the other can still take.
 - New machine-scope `warning` faults, raised from `device_status`:
   `PAY-106` coin changer fault, `PAY-107` bill validator fault, `PAY-108`
   cashless reader fault. None is payment-blocking.

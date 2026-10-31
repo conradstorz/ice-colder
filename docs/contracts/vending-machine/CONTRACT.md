@@ -90,14 +90,6 @@ An unknown command answered with status `unsupported`.
 - **`dispense`** — parameters: [`DispenseCommand`](schemas/dispense_command.schema.json): `{slot: int, mechanism: "bagged_ice" | "water_fill", profile: <SlotProfile>}` — all three required, no defaults; `profile` is the slot's whole validated [`SlotProfile`](schemas/slot_profile.schema.json) (`packages/contracts/src/ice_contracts/board/dispenser_schema.py`), carried with every dispense so the board is stateless about configuration. `profile.mechanism` must equal `mechanism` or the payload is rejected. Runs the slot's mechanism one cycle, publishing `hardware/dispenser` with the outcome — identical whether this is a test run or a production sale (v1.0.0: there is no longer a separate production path). Acked and idempotent, like every other command channel command. **Long-running (v0.6.0): acks `phase="accepted"` as soon as the mechanism actually starts, then runs it; completion is the terminal `hardware/dispenser` report — see the completion table above.**
 - **`water_valve`** — parameters: `{seconds: int, range 1–10}`. Opens the water valve for the specified duration. Validation failure (`seconds` outside [1, 10]) returns ack status `rejected` with detail message. **Long-running (v0.6.0): acks `phase="accepted"` once the valve has actually opened, then a second, `phase="completed"` ack once it has closed again — see the completion table above.**
 
-### MDB-specific commands
-
-**Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. The new `cmd/mdb` command set (`set_policy`, `payout`, `vend_request`, `vend_result`, `end_session`, `return_escrow`, `device_reset`) is defined there.
-
-- **`bill_acceptor_test`** — no parameters. Cycles the bill acceptor's stacker motor; ack status `ok` with no result.
-- **`coin_return_test`** — no parameters. Actuates the coin return; ack status `ok` with no result.
-- **`card_reader_test`** — no parameters. Asks the card reader to run its own diagnostic; ack status `ok` with **`result`** carrying the reader's status text as a dict (e.g. `{"status": "reader OK, firmware 3.2"}`) — the only MDB command whose ack carries a `result`.
-
 ### Validation failures
 
 A command whose parameters fail the contract's bounds (e.g., `water_valve` with `seconds: 0` or `11`, or `power_cycle` with `dwell_seconds` outside [5, 300]) is answered with status `rejected` and a detail message — never silently. A payload with no usable `request_id` (e.g., empty, missing, or not a string) is dropped with **no ack at all**, because no ack can be correlated to it.

@@ -414,6 +414,23 @@ gaps. Never retried with a new id. An `ok` with `detail: "queued"` counts as del
 - **`PolicySync` verifies with a 5 s `policy_verify` timer** after an `ok` ack: the policy is in force
   only once a `payment/state` from the acked boot echoes the `policy_id`, and the timer re-sends if none does.
 
+- **Session evidence is frozen on held evidence, not on `PAY-104`** (final review I1): the edge raises
+  `PAY-104` at runtime too (escrow mismatch, `cash_sale` outcomes), and freezing persistence on the fault
+  silently dropped deposits and pending payouts while one stood, and its clearing deleted the live session
+  file. `Machine.evidence_held` is set only by an uncertain boot snapshot and by `SaleRecordingFailed`;
+  `StatusOutputs` freezes on it, and clearing `PAY-104` removes the session file only while it is held.
+- **Boot `cash_sale` recovery on the closed path** (final review I3): when a boot snapshot's sale already has
+  a `sales` row (so no `PAY-104`), `Machine` queues the snapshot's cash share as a `cash_sale` inside
+  `set_session_store`, before edge-start reconciliation can evaluate. Without it, a crash between the
+  `sales` insert and the `cash_sale` enqueue made reconciliation pay the delivered product's price back
+  out. The snapshot has no event ids, so the full cash share is sent.
+- **Re-queued boot `cash_sale`s rely only on the board's 32-entry RAM ack cache**: the firmware's
+  `do_cash_sale` has no idempotency store (unlike `payout`), so a late duplicate is clamped by the board's
+  escrow floor and the edge raises `PAY-104`. Visible to the operator, and it moves no money.
+- **Firmware recommendations (not implemented):** check the persisted payout result before the
+  `expired`/`no_policy` gates, and do not cache rejections in the RAM ack cache. Either would let the edge
+  drop the `maybe_delivered` PAY-103 fallback.
+
 ## 12. Out of scope
 
 Cashless (next spec, including PAY-108 and the cashless availability row), virtual-gateway credit and
