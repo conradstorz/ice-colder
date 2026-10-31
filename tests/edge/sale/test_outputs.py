@@ -58,9 +58,10 @@ def make_outputs(
     credit_escrow_cents=lambda: 0,
     selected_product=lambda: None,
     fsm_state=lambda: "idle",
-    pay104_active=lambda: False,
+    evidence_held=lambda: False,
     on_persist_failed=None,
     on_persist_ok=None,
+    on_evidence_released=None,
 ) -> tuple[StatusOutputs, FakeTaskRunner]:
     runner = tasks if tasks is not None else FakeTaskRunner()
     outputs = StatusOutputs(
@@ -68,10 +69,11 @@ def make_outputs(
         credit_escrow_cents=credit_escrow_cents,
         selected_product=selected_product,
         fsm_state=fsm_state,
-        pay104_active=pay104_active,
+        evidence_held=evidence_held,
         tasks=runner,
         on_persist_failed=on_persist_failed,
         on_persist_ok=on_persist_ok,
+        on_evidence_released=on_evidence_released,
     )
     return outputs, runner
 
@@ -179,9 +181,9 @@ async def test_persist_without_session_store_is_a_no_op():
     assert runner.persist == []
 
 
-async def test_persist_skips_while_pay104_is_active():
+async def test_persist_skips_while_evidence_is_held():
     store = FakeStore()
-    outputs, runner = make_outputs(pay104_active=lambda: True, snapshot=open_snapshot)
+    outputs, runner = make_outputs(evidence_held=lambda: True, snapshot=open_snapshot)
     runner.attach(asyncio.get_running_loop())
     outputs.attach_session_store(store)
 
@@ -323,9 +325,9 @@ async def test_save_snapshot_async_with_none_snapshot_is_a_no_op():
     assert store.saved == []
 
 
-async def test_save_snapshot_async_skips_while_pay104_is_active():
+async def test_save_snapshot_async_skips_while_evidence_is_held():
     store = FakeStore()
-    outputs, runner = make_outputs(pay104_active=lambda: True)
+    outputs, runner = make_outputs(evidence_held=lambda: True)
     runner.attach(asyncio.get_running_loop())
     outputs.attach_session_store(store)
 
@@ -334,7 +336,7 @@ async def test_save_snapshot_async_skips_while_pay104_is_active():
     assert store.saved == []
 
 
-async def test_save_snapshot_async_saves_when_no_pay104():
+async def test_save_snapshot_async_saves_when_no_evidence_held():
     store = FakeStore()
     outputs, runner = make_outputs()
     runner.attach(asyncio.get_running_loop())
@@ -355,9 +357,33 @@ def test_clear_session_evidence_without_store_returns_true():
     assert outputs.clear_session_evidence() is True
 
 
+def test_clear_session_evidence_leaves_the_live_session_when_nothing_is_held():
+    store = FakeStore()
+    released = []
+    outputs, _runner = make_outputs(on_evidence_released=lambda: released.append(1))
+    outputs.attach_session_store(store)
+
+    assert outputs.clear_session_evidence() is True
+    assert store.clear_calls == 0
+    assert released == []
+
+
+def test_clear_session_evidence_releases_the_hold_after_removing_the_file():
+    store = FakeStore()
+    released = []
+    outputs, _runner = make_outputs(
+        evidence_held=lambda: True, on_evidence_released=lambda: released.append(1)
+    )
+    outputs.attach_session_store(store)
+
+    assert outputs.clear_session_evidence() is True
+    assert store.clear_calls == 1
+    assert released == [1]
+
+
 def test_clear_session_evidence_returns_the_stores_own_answer():
     store = FakeStore(clear_result=False)
-    outputs, _runner = make_outputs()
+    outputs, _runner = make_outputs(evidence_held=lambda: True)
     outputs.attach_session_store(store)
 
     assert outputs.clear_session_evidence() is False

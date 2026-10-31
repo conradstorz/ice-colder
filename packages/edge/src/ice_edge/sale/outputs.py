@@ -17,7 +17,7 @@ VMC is usable before ``main.py`` finishes wiring MQTT/health/availability/
 session store/display onto it.
 
 ``snapshot``/``credit_escrow_cents``/``selected_product``/``fsm_state``/
-``pay104_active`` are callables read at call time, not snapshotted at
+``evidence_held`` are callables read at call time, not snapshotted at
 construction, mirroring the pattern already used for
 the dispense timeout lookups: the live VMC's state
 changes between construction and any given call, so this class must
@@ -62,16 +62,18 @@ class StatusOutputs:
         credit_escrow_cents: Callable[[], int],
         selected_product: Callable[[], Product | None],
         fsm_state: Callable[[], str],
-        pay104_active: Callable[[], bool],
+        evidence_held: Callable[[], bool],
         tasks: TaskRunner,
         on_persist_failed: Callable[[], None] | None = None,
         on_persist_ok: Callable[[], None] | None = None,
+        on_evidence_released: Callable[[], None] | None = None,
     ) -> None:
         self._snapshot = snapshot
         self._credit_escrow_cents = credit_escrow_cents
         self._selected_product = selected_product
         self._fsm_state = fsm_state
-        self._pay104_active = pay104_active
+        self._evidence_held = evidence_held
+        self._on_evidence_released = on_evidence_released
         self._tasks = tasks
         self._on_persist_failed = on_persist_failed
         self._on_persist_ok = on_persist_ok
@@ -169,11 +171,11 @@ class StatusOutputs:
 
     def persist(self, state: str | None = None) -> None:
         """Save the live session, or remove the file once nothing is in
-        flight. A no-op without a session store; while PAY-104 is active
-        the evidence file is left untouched for the operator."""
+        flight. A no-op without a session store; while evidence is held
+        the file is left untouched for the operator (an uncertain boot snapshot or an unrecorded sale; a runtime PAY-104 holds nothing)."""
         if self._session_store is None:
             return
-        if self._pay104_active():
+        if self._evidence_held():
             return
         snap = self._snapshot(state)
         store = self._session_store
@@ -223,7 +225,7 @@ class StatusOutputs:
             return
         if self._session_store is None:
             return
-        if self._pay104_active():
+        if self._evidence_held():
             return
         try:
             await self._session_store.save_async(snap)
@@ -233,11 +235,16 @@ class StatusOutputs:
         self._notify(self._on_persist_ok)
 
     def clear_session_evidence(self) -> bool:
-        """Remove the session evidence file. Returns ``True`` without a
-        store (nothing to clear), else the store's own answer."""
-        if self._session_store is None:
+        """Remove the held evidence file (PAY-104 resolution). Returns
+        ``True`` without a store or when no evidence is held (the live
+        session file is not evidence and is left alone), else the store's
+        own answer; the hold is released only when the removal worked."""
+        if self._session_store is None or not self._evidence_held():
             return True
-        return self._session_store.clear()
+        if not self._session_store.clear():
+            return False
+        self._notify(self._on_evidence_released)
+        return True
 
     # --- customer-facing display / UI ---
 

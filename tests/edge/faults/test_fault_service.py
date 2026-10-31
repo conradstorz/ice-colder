@@ -82,7 +82,7 @@ def make_service(
         credit_escrow_cents=lambda: 0,
         selected_product=lambda: None,
         fsm_state=fsm_state,
-        pay104_active=lambda: registry.has(FaultCode.PAY_104),
+        evidence_held=lambda: registry.has(FaultCode.PAY_104),
         tasks=runner,
     )
     if mqtt is not None:

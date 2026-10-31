@@ -174,6 +174,11 @@ class Machine:
         """`payments` replaces the MDB gateway as the VMC's payout path (a
         seam for tests; the gateway is built and wired regardless)."""
         self._config = config
+        # True while session.json is crash evidence the operator must see
+        # (an uncertain boot snapshot, or a sale recorded nowhere durable).
+        # A runtime PAY-104 (escrow mismatch, cash_sale outcome) does not
+        # set it: persistence continues and clearing never deletes the file.
+        self._evidence_held = False
         self._data104_sources: set[str] = set()
         self._mdb_alive = False
         self._tasks = tasks if tasks is not None else TaskRunner()
@@ -195,8 +200,9 @@ class Machine:
             fsm_state=lambda: self.vmc.state,
             credit_escrow_cents=lambda: self._escrow.total_cents,
             selected_product=lambda: self.vmc.selected_product,
-            pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
+            evidence_held=lambda: self._evidence_held,
             tasks=self._tasks,
+            on_evidence_released=self._release_evidence,
             on_persist_failed=self._raise_session_unsaved,
             on_persist_ok=self._clear_session_unsaved,
         )
@@ -305,6 +311,7 @@ class Machine:
                 else None
             ),
             tasks=self._tasks,
+            hold_evidence=self._hold_evidence,
             timeout_seconds=lambda: self.vmc.dispense_timeout_seconds,
             on_failed=self.vmc.on_dispense_failed,
             on_request_id=self.vmc.note_dispense_request,
@@ -758,6 +765,12 @@ class Machine:
             window_seconds=window_seconds,
         )
 
+    def _hold_evidence(self) -> None:
+        self._evidence_held = True
+
+    def _release_evidence(self) -> None:
+        self._evidence_held = False
+
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
         """Side effects of an 'uncertain' boot decision other than
         `SessionStore.clear()` itself (which `SessionRecovery.
@@ -779,6 +792,7 @@ class Machine:
                 value=snap.credit_escrow_cents,
                 metadata=asdict(snap),
             )
+        self._hold_evidence()
         availability = self._outputs.availability
         if availability:
             availability.set_transaction_certain(False)

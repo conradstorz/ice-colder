@@ -104,7 +104,7 @@ def make_outputs(runner: FakeTaskRunner, *, session_store=None) -> StatusOutputs
         credit_escrow_cents=lambda: 0,
         selected_product=lambda: None,
         fsm_state=lambda: "idle",
-        pay104_active=lambda: False,
+        evidence_held=lambda: False,
         tasks=runner,
     )
     if session_store is not None:
@@ -125,6 +125,7 @@ def make_cycle(
     on_failed=None,
     on_request_id=None,
     set_transaction_certain=None,
+    hold_evidence=None,
     timeout_seconds=90.0,
 ) -> tuple[DispenseCycle, FakeTaskRunner]:
     runner = runner if runner is not None else FakeTaskRunner()
@@ -141,6 +142,7 @@ def make_cycle(
         timeout_seconds=lambda: timeout_seconds,
         on_failed=on_failed if on_failed is not None else FailureRecorder(),
         on_request_id=on_request_id or (lambda rid, mech: None),
+        hold_evidence=hold_evidence,
     )
     return cycle, runner
 
@@ -556,17 +558,20 @@ async def test_record_raises_pay104_and_sets_transaction_uncertain():
     recorder.fail_with = SaleRecordingFailed("nowhere durable")
     faults = FakeFaults()
     certain_calls: list[bool] = []
+    held: list[int] = []
     cycle, _ = make_cycle(
         product=ICE,
         shares={"cash": 200},
         recorder=lambda: recorder,
         faults=faults,
         set_transaction_certain=certain_calls.append,
+        hold_evidence=lambda: held.append(1),
     )
 
     recorded = await cycle.record()  # must not raise
 
     assert recorded is False
+    assert held == [1]  # the on-disk snapshot is now the sale's only record
     assert certain_calls == [False]
     assert faults.raised == [
         (FaultCode.PAY_104, None, "sku=ICE-1 price=$2.00 unrecorded")

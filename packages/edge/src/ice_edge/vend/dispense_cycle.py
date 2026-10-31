@@ -114,6 +114,7 @@ class DispenseCycle:
         timeout_seconds: Callable[[], float],
         on_failed: Callable[["DispenseCycle", FaultCode, str], Awaitable[None]],
         on_request_id: Callable[[str, str], None],
+        hold_evidence: Callable[[], None] | None = None,
     ) -> None:
         self.sale = sale
         self._dispatcher = dispatcher
@@ -126,6 +127,7 @@ class DispenseCycle:
         self._timeout_seconds = timeout_seconds
         self._on_failed = on_failed
         self._on_request_id = on_request_id
+        self._hold_evidence = hold_evidence
 
         self._request_id: str | None = None
         self._mechanism: str | None = None
@@ -460,6 +462,8 @@ class DispenseCycle:
                 "remaining record of this sale."
             )
             self._set_transaction_certain(False)
+            if self._hold_evidence is not None:
+                self._hold_evidence()
             self._faults.raise_fault(
                 FaultCode.PAY_104,
                 outcome=f"sku={product.sku} price={format_cents(price_cents)} unrecorded",
