@@ -14,7 +14,7 @@ from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
 
 def make_recovery(
-    store: SessionStore | None, *, pay104_active: bool = False, sale_recorded=None
+    store: SessionStore | None, *, evidence_held: bool = False, sale_recorded=None
 ):
     names: dict[str, str] = {"ICE-1": "Ice Bag"}
 
@@ -26,7 +26,7 @@ def make_recovery(
     return SessionRecovery(
         store=lambda: store,
         product_name=product_name,
-        pay104_active=lambda: pay104_active,
+        evidence_held=lambda: evidence_held,
         **({} if sale_recorded is None else {"sale_recorded": sale_recorded}),
     )
 
@@ -116,7 +116,7 @@ def test_pending_sale_for_recovery_none_when_pay104_not_active(tmp_path):
             pending_sale_shares={"cash_bill": 250},
         )
     )
-    recovery = make_recovery(store, pay104_active=False)
+    recovery = make_recovery(store, evidence_held=False)
 
     assert recovery.pending_sale_for_recovery() is None
 
@@ -132,7 +132,7 @@ def test_pending_sale_for_recovery_none_for_test_snapshot(tmp_path):
             is_test=True,
         )
     )
-    recovery = make_recovery(store, pay104_active=True)
+    recovery = make_recovery(store, evidence_held=True)
 
     assert recovery.pending_sale_for_recovery() is None
 
@@ -147,7 +147,7 @@ def test_pending_sale_for_recovery_none_when_shares_empty(tmp_path):
             pending_sale_shares=None,
         )
     )
-    recovery = make_recovery(store, pay104_active=True)
+    recovery = make_recovery(store, evidence_held=True)
 
     assert recovery.pending_sale_for_recovery() is None
 
@@ -162,7 +162,7 @@ def test_pending_sale_for_recovery_returns_dict_when_everything_lines_up(tmp_pat
         pending_sale_shares={"cash_bill": 200, "card": 50},
     )
     store.save(snap)
-    recovery = make_recovery(store, pay104_active=True)
+    recovery = make_recovery(store, evidence_held=True)
 
     pending = recovery.pending_sale_for_recovery()
 
@@ -189,7 +189,7 @@ def test_reserve_then_already_recorded_true_for_same_pending(tmp_path):
             pending_sale_shares={"cash_bill": 250},
         )
     )
-    recovery = make_recovery(store, pay104_active=True)
+    recovery = make_recovery(store, evidence_held=True)
     pending = recovery.pending_sale_for_recovery()
 
     assert recovery.pending_sale_already_recorded(pending) is False
@@ -207,7 +207,7 @@ def test_already_recorded_false_for_different_saved_at(tmp_path):
             pending_sale_shares={"cash_bill": 250},
         )
     )
-    recovery = make_recovery(store, pay104_active=True)
+    recovery = make_recovery(store, evidence_held=True)
     pending = recovery.pending_sale_for_recovery()
     recovery.reserve_pending_sale(pending)
 
@@ -229,7 +229,7 @@ def test_mark_pending_sale_recorded_clears_shares_on_disk(tmp_path):
             pending_sale_shares={"cash_bill": 250},
         )
     )
-    recovery = make_recovery(store, pay104_active=True)
+    recovery = make_recovery(store, evidence_held=True)
     assert recovery.pending_sale_for_recovery() is not None
 
     assert recovery.mark_pending_sale_recorded() is True
@@ -240,7 +240,7 @@ def test_mark_pending_sale_recorded_clears_shares_on_disk(tmp_path):
 
 
 def test_mark_pending_sale_recorded_false_with_no_store():
-    recovery = make_recovery(None, pay104_active=True)
+    recovery = make_recovery(None, evidence_held=True)
 
     assert recovery.mark_pending_sale_recorded() is False
 
@@ -300,7 +300,7 @@ def test_test_snapshot_never_consults_sale_recorded(tmp_path):
 def test_pending_sale_for_recovery_none_when_row_exists(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(_open_snapshot())
-    recovery = make_recovery(store, pay104_active=True, sale_recorded=lambda *a: True)
+    recovery = make_recovery(store, evidence_held=True, sale_recorded=lambda *a: True)
 
     assert recovery.pending_sale_for_recovery() is None
 
@@ -308,7 +308,7 @@ def test_pending_sale_for_recovery_none_when_row_exists(tmp_path):
 def test_pending_sale_for_recovery_returned_when_row_absent(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(_open_snapshot())
-    recovery = make_recovery(store, pay104_active=True, sale_recorded=lambda *a: False)
+    recovery = make_recovery(store, evidence_held=True, sale_recorded=lambda *a: False)
 
     assert recovery.pending_sale_for_recovery()["sku"] == "ICE-1"
 
@@ -316,7 +316,7 @@ def test_pending_sale_for_recovery_returned_when_row_absent(tmp_path):
 def test_recorded_sale_with_leftover_credit_stays_uncertain(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(_open_snapshot_with(credit_escrow_cents=250))
-    recovery = make_recovery(store, pay104_active=True, sale_recorded=lambda *a: True)
+    recovery = make_recovery(store, evidence_held=True, sale_recorded=lambda *a: True)
 
     assert recovery.evaluate_at_boot().kind == "uncertain"
     assert store.load() is not None
@@ -376,7 +376,9 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
             error="bad json",
         )
     )
-    detail = make_recovery(store, sale_recorded=lambda *a: True).recovery_detail()
+    detail = make_recovery(
+        store, evidence_held=True, sale_recorded=lambda *a: True
+    ).recovery_detail()
 
     assert detail == RecoveryDetail(
         sku="ICE-1",
@@ -394,7 +396,9 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
 def test_recovery_detail_not_recorded(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(_open_snapshot_with())
-    detail = make_recovery(store, sale_recorded=lambda *a: False).recovery_detail()
+    detail = make_recovery(
+        store, evidence_held=True, sale_recorded=lambda *a: False
+    ).recovery_detail()
 
     assert detail is not None
     assert detail.sale_recorded is False
@@ -404,7 +408,7 @@ def test_recovery_detail_not_recorded(tmp_path):
 def test_recovery_detail_test_snapshot(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(_open_snapshot_with(is_test=True))
-    detail = make_recovery(store).recovery_detail()
+    detail = make_recovery(store, evidence_held=True).recovery_detail()
 
     assert detail is not None
     assert detail.is_test is True
@@ -417,7 +421,7 @@ def test_match_window_is_passed_to_sale_recorded(tmp_path):
     recovery = SessionRecovery(
         store=lambda: store,
         product_name=lambda s: s,
-        pay104_active=lambda: False,
+        evidence_held=lambda: False,
         sale_recorded=lambda sku, ts, methods, window: seen.append(window) or False,
         match_window_seconds=lambda: 777.0,
     )
@@ -452,3 +456,18 @@ def test_legacy_dollar_snapshot_still_raises_uncertain_at_boot(tmp_path):
     assert decision.kind == "uncertain"
     assert decision.snapshot.credit_escrow_cents == 250
     assert path.exists()
+
+
+def test_recovery_detail_and_card_are_none_without_held_evidence(tmp_path):
+    store = SessionStore(tmp_path / "s.json")
+    store.save(
+        SessionSnapshot(
+            state="dispensing",
+            credit_escrow_cents=0,
+            selected_sku="ICE-1",
+            pending_sale_shares={"cash_coin": 250},
+        )
+    )
+    recovery = make_recovery(store, evidence_held=False)
+    assert recovery.recovery_detail() is None
+    assert recovery.pending_sale_for_recovery() is None

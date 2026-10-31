@@ -249,7 +249,7 @@ class Machine:
         self._recovery = SessionRecovery(
             store=lambda: self._outputs.session_store,
             product_name=self._product_name,
-            pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
+            evidence_held=lambda: self._evidence_held,
             sale_recorded=self._sale_recorded,
             match_window_seconds=lambda: (
                 self._config.physical.dispense_timeout_seconds

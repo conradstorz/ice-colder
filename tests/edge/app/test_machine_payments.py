@@ -660,3 +660,77 @@ async def test_record_as_sale_sends_its_cash_sale_besides_an_unrelated_queued_on
     assert [c[1]["cents"] for c in sent] == [200, 200]
     ids = [c[2] for c in sent]
     assert "c" * 32 in ids and len(set(ids)) == 2
+
+
+# --- recovery cards appear only for HELD evidence (final round C, N1) -------------------
+
+
+async def test_runtime_pay104_with_a_live_dispensing_snapshot_offers_no_recovery(
+    tmp_path,
+):
+    path = tmp_path / "session.json"
+    machine, *_ = build(tmp_path, store=SessionStore(path))
+    machine.faults.raise_fault(
+        FaultCode.PAY_104, outcome="escrow_mismatch:cash_sale_clamped"
+    )
+    await machine.outputs.save_snapshot_async(
+        SessionSnapshot(
+            state="dispensing",
+            credit_escrow_cents=0,
+            selected_sku="ICE-1",
+            pending_sale_shares={"cash_coin": 250},
+        )
+    )
+    assert path.exists()
+    assert machine.pending_sale_for_recovery() is None
+    assert machine.recovery_detail() is None
+
+
+async def test_boot_uncertain_snapshot_still_offers_the_recovery_card(tmp_path):
+    path = _pay104_snapshot(tmp_path)
+    machine, *_ = build(tmp_path, store=SessionStore(path))
+    assert machine.faults.has(FaultCode.PAY_104)
+    assert machine.pending_sale_for_recovery() is not None
+    assert machine.recovery_detail() is not None
+
+
+async def test_sale_recording_failed_still_offers_the_recovery_card(tmp_path):
+    from ice_edge.ledger.event_recorder import SaleRecordingFailed
+
+    class Recorder:
+        def record(self, *a, **k):
+            pass
+
+        def record_sale(self, *a, **k):
+            raise SaleRecordingFailed("both failed")
+
+        def sale_recorded_since(self, *a, **k):
+            return False
+
+    from tests.dispenser_fixtures import profiles_for
+
+    machine, cfg, avail, dispatcher = build(
+        tmp_path, store=SessionStore(tmp_path / "s.json")
+    )
+    machine.set_dispenser_profiles(profiles_for(cfg.physical.products, tmp_path))
+    machine.set_event_recorder(Recorder())
+    for name in ("vending", "ice_maker"):
+        machine.health_monitor.record_heartbeat(name, {"uptime_seconds": 1})
+    set_coin_status(avail, "ready")
+    await machine.telemetry.handle_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    await ack_policy(machine, cfg, avail)
+    vmc = machine.vmc
+    await machine.gateway.intake.handle("payment/event", event(1, "bill_stacked", 250))
+    vmc.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.process_payment()
+    await settle(6)
+    await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
+    await settle(12)
+    await machine.drain_persistence()
+    assert machine.faults.has(FaultCode.PAY_104)
+    pending = machine.pending_sale_for_recovery()
+    assert pending is not None
+    assert pending["price_cents"] == 250

@@ -8,7 +8,7 @@ the refund path (see ``CLAUDE.md``'s
 decision over a loaded ``SessionSnapshot`` plus the read-only PAY-104
 recovery accessor and its record-once guards (``_recorded_pay104_keys``, now
 this class's own state). It knows nothing about MQTT, the FSM, the event
-recorder, or the health monitor: ``store``/``product_name``/``pay104_active``
+recorder, or the health monitor: ``store``/``product_name``/``evidence_held``
 are injected callables, and every side effect of a boot decision other than
 ``SessionStore.clear()`` itself (the event-recorder row, the availability
 gate, raising ``PAY-104``) stays on ``VMC`` via ``_flag_uncertain_session``.
@@ -78,7 +78,7 @@ class SessionRecovery:
         *,
         store: Callable[[], SessionStore | None],
         product_name: Callable[[str | None], str | None],
-        pay104_active: Callable[[], bool],
+        evidence_held: Callable[[], bool],
         sale_recorded: Callable[[str, float, dict[str, int], float], bool] = (
             lambda sku, since_ts, methods, window: False
         ),
@@ -86,7 +86,7 @@ class SessionRecovery:
     ) -> None:
         self._store = store
         self._product_name = product_name
-        self._pay104_active = pay104_active
+        self._evidence_held = evidence_held
         # (sku, since_ts, methods) -> True when the live path already
         # committed this snapshot's sale (crash between the insert and the
         # idle snapshot clear). Default: never.
@@ -173,7 +173,11 @@ class SessionRecovery:
         """Read-only view of the current snapshot for the PAY-104 fault row:
         whether its sale already has a ``sales`` row, and any credit, pending
         refund or read error it still carries. ``None`` with no store or no
-        snapshot (or an unreadable store). Never mutates anything."""
+        snapshot (or an unreadable store), and unless the evidence is held:
+        a live sale's snapshot is not recovery evidence. Never mutates
+        anything."""
+        if not self._evidence_held():
+            return None
         store = self._store()
         if store is None:
             return None
@@ -198,8 +202,9 @@ class SessionRecovery:
         any -- feeds the Health > Faults PAY-104 card's "record this sale"
         / "discard" choice (Task 14).
 
-        Returns ``None`` unless ``PAY-104`` is currently an active machine
-        fault *and* the on-disk snapshot carries a non-empty
+        Returns ``None`` unless the session evidence is held (boot-uncertain or
+        ``SaleRecordingFailed`` -- a runtime PAY-104 alone leaves the LIVE
+        snapshot on disk, which is not a recoverable sale) *and* the on-disk snapshot carries a non-empty
         ``pending_sale_shares``; a card whose snapshot carries no pending
         sale (or whose fault has already been cleared, including by a
         replayed record/discard) keeps the plain Clear button instead of
@@ -215,7 +220,7 @@ class SessionRecovery:
         display, falling back to the SKU itself when the product no
         longer exists -- reads the catalog straight off the config.
         """
-        if not self._pay104_active():
+        if not self._evidence_held():
             return None
         store = self._store()
         if store is None:
