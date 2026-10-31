@@ -66,3 +66,84 @@ async def test_boot_pay104_freezes_evidence_until_resolved(tmp_path):
     await settle(6)
     await machine.drain_persistence()
     assert path.exists()
+
+
+# --- boot recovery of a recorded sale's cash_sale ----------------------------------
+
+
+class RecordedSaleRecorder:
+    """An event recorder whose `sales` table already holds the crashed sale."""
+
+    def record(self, *a, **k):
+        pass
+
+    def sale_recorded_since(self, *a, **k):
+        return True
+
+
+def _recorded_sale_snapshot(path, *, pending_payouts=()):
+    SessionStore(path).save(
+        SessionSnapshot(
+            state="idle",
+            credit_escrow_cents=0,
+            selected_sku="ICE-1",
+            dispense_slot=0,
+            pending_sale_shares={"cash_bill": 250},
+            pending_payouts=list(pending_payouts),
+        )
+    )
+
+
+def _boot_with_recorder(tmp_path, path):
+    from tests.edge.app.test_machine_payments import build as _build
+
+    machine, cfg, avail, dispatcher = _build(tmp_path)
+    machine.set_event_recorder(RecordedSaleRecorder())
+    machine.set_session_store(SessionStore(path))
+    return machine, cfg, avail, dispatcher
+
+
+async def test_boot_queues_the_cash_sale_of_an_already_recorded_sale(tmp_path):
+    from ice_edge.payment.mdb.policy import build_policy
+    from tests.edge.app.test_machine_payments import ack_policy, state_doc
+
+    path = tmp_path / "session.json"
+    _recorded_sale_snapshot(path)
+    machine, cfg, avail, dispatcher = _boot_with_recorder(tmp_path, path)
+    assert not machine.faults.has(FaultCode.PAY_104)  # closed, not uncertain
+    assert [p.kind for p in machine.gateway.pending_payouts()] == ["cash_sale"]
+
+    # The board still holds the sale's 250: edge-start reconciliation must
+    # find the cash_sale queued and pay nothing out.
+    await ack_policy(machine, cfg, avail)
+    policy_id = build_policy(cfg.payment.mdb.policy, avail.payment_enabled).policy_id
+    doc = state_doc(policy_id)
+    doc["escrow_cents"] = 250
+    await machine.gateway.state_consumer.handle("payment/state", doc)
+    await settle(12)
+
+    assert [c[1]["cents"] for c in dispatcher.commands("cash_sale")] == [250]
+    assert dispatcher.commands("payout") == []
+    assert not machine.faults.has(FaultCode.PAY_104)
+
+
+async def test_boot_does_not_double_queue_a_snapshot_cash_sale(tmp_path):
+    from tests.edge.app.test_machine_payments import ack_policy
+
+    path = tmp_path / "session.json"
+    _recorded_sale_snapshot(
+        path,
+        pending_payouts=[
+            {"request_id": "cs1", "kind": "cash_sale", "cents": 250, "sale_id": None}
+        ],
+    )
+    machine, cfg, avail, dispatcher = _boot_with_recorder(tmp_path, path)
+    # A pending payout is evidence: uncertain, nothing queued by the boot path.
+    assert machine.faults.has(FaultCode.PAY_104)
+    assert machine.gateway.pending_payouts() == []
+    await ack_policy(machine, cfg, avail)
+
+    machine.vmc.clear_fault(FaultCode.PAY_104.value, by="admin")
+    await settle(12)
+
+    assert [c[2] for c in dispatcher.commands("cash_sale")] == ["cs1"]

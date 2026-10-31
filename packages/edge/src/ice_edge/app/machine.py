@@ -724,6 +724,8 @@ class Machine:
         elif decision.kind == "uncertain":
             self._boot_snapshot = decision.snapshot
             self._flag_uncertain_session(decision.snapshot)
+        elif decision.kind == "closed" and decision.snapshot.pending_sale_shares:
+            self._recover_closed_cash_sale(decision.snapshot)
         logger.debug("Machine attached session store.")
 
     def set_command_dispatcher(self, dispatcher) -> None:
@@ -764,6 +766,23 @@ class Machine:
             methods,
             window_seconds=window_seconds,
         )
+
+    def _recover_closed_cash_sale(self, snap: SessionSnapshot) -> None:
+        """The crash fell after the sales row was written but before the
+        sale's cash_sale was queued (a closed snapshot holds no pending
+        payouts, so none was). Tell the board the cash share left its escrow,
+        queued here -- before edge-start reconciliation can evaluate -- so it
+        is not paid back out as an excess. The snapshot carries no event ids,
+        so the full cash share is sent; if the board rebooted meanwhile the
+        board clamps it and PAY-104 is raised (visible, moves no money)."""
+        cents = cash_share(snap.pending_sale_shares)
+        if cents <= 0:
+            return
+        logger.warning(
+            f"Recovering the cash_sale of an already-recorded sale at boot: "
+            f"{format_cents(cents)} (sku={snap.selected_sku!r})"
+        )
+        self._payments.cash_sale(cents, None)
 
     def _hold_evidence(self) -> None:
         self._evidence_held = True
