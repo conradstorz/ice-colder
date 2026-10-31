@@ -118,7 +118,7 @@ class Env:
             on_cursor_saved=lambda ok: None,
             fsm_idle=lambda: True,
             pay104_active=lambda: False,
-            edge_cash_escrow=lambda: self.edge_cash,
+            edge_cash_escrow=lambda boot: self.edge_cash,
             publish_ack=self.acks.append,
             cursor=PaymentCursorStore(tmp_path / "cur.json"),
         )

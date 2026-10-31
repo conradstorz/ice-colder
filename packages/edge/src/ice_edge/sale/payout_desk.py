@@ -14,7 +14,12 @@ from loguru import logger
 from ice_contracts.board.payment import PayoutReason
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.ledger.escrow_ledger import EscrowLedger
-from ice_edge.payment.ports import Payments, cash_cents, cash_share
+from ice_edge.payment.ports import (
+    Payments,
+    cash_cents,
+    cash_share,
+    current_boot_cash,
+)
 from ice_edge.sale.sale_context import SaleContext
 from ice_edge.sale.sale_journal import SaleJournal
 
@@ -72,8 +77,16 @@ class PayoutDesk:
             self._raise(FaultCode.PAY_103, outcome="non_cash_refund")
 
     def cash_sale(self, sale: SaleContext) -> None:
-        """Tell the board the sale's cash left its escrow (cash share only)."""
-        cents = cash_share(sale.shares)
+        """Tell the board the sale's cash left its escrow (cash share only).
+
+        The board's escrow restarts at 0 on every boot, so only cash that
+        arrived on its current boot is reported; earlier-boot cash is paid
+        back as change from the tubes (the board floors escrow at 0).
+        """
+        if sale.pieces is None:
+            cents = cash_share(sale.shares)
+        else:
+            cents = current_boot_cash(sale.pieces, self._payments.board_boot_id())
         if cents <= 0:
             return
         try:

@@ -57,6 +57,7 @@ class Env:
         self.state = mk_state(board)
         self.state_ts = 10.0
         self.edge = edge
+        self.edge_by_boot = lambda boot: self.edge
         self.idle = True
         self.pay104 = False
         self.intake = FakeIntake()
@@ -69,7 +70,7 @@ class Env:
             payouts=self.payouts,
             fsm_idle=lambda: self.idle,
             pay104_active=lambda: self.pay104,
-            edge_cash_escrow=lambda: self.edge,
+            edge_cash_escrow=lambda boot: self.edge_by_boot(boot),
             faults=self.faults,
         )
         self.rec.arm("t")
@@ -181,3 +182,28 @@ def test_new_boot_id_arms():
     assert len(e.payouts.calls) == 1
     e.rec.on_state(mk_state(150, boot="boot-0002"))
     assert len(e.payouts.calls) == 2
+
+
+def test_edge_cash_is_asked_for_the_boards_current_boot():
+    asked = []
+    e = Env(board=100, edge=100)
+    e.edge_by_boot = lambda boot: asked.append(boot) or 100
+    e.rec.maybe_run()
+    assert asked == [BOOT]
+
+
+def test_earlier_boot_cash_is_not_counted_against_the_new_boot():
+    # The board rebooted: its escrow is 0 and only current-boot cash counts, so
+    # the edge's earlier-boot cash causes neither PAY-104 nor a payout.
+    e = Env(board=0, edge=0)
+    e.edge_by_boot = lambda boot: {"boot-0002": 0, BOOT: 300}.get(boot, 0)
+    e.state = mk_state(0, boot="boot-0002")
+    e.rec.maybe_run()
+    assert e.faults.raised == [] and e.payouts.calls == []
+
+
+def test_mixed_boot_credits_reconcile_on_the_current_boot_part_only():
+    e = Env(board=150, edge=0)
+    e.edge_by_boot = lambda boot: {BOOT: 100}.get(boot, 0)
+    e.rec.maybe_run()
+    assert e.payouts.calls == [(50, PayoutReason.error, None)]

@@ -54,7 +54,7 @@ class MdbGateway:
         on_cursor_saved: Callable[[bool], None],
         fsm_idle: Callable[[], bool],
         pay104_active: Callable[[], bool],
-        edge_cash_escrow: Callable[[], int],
+        edge_cash_escrow: Callable[[str], int],
         publish_ack: Callable[[PaymentEventAck], None],
         cursor: Any,
     ) -> None:
@@ -152,6 +152,10 @@ class MdbGateway:
 
     def pending_payouts(self) -> list[PendingPayout]:
         return self._payouts.pending()
+
+    def board_boot_id(self) -> str | None:
+        state = self._state.state
+        return state.boot_id if state is not None else None
 
     def seed_payouts(self, pending: list[PendingPayout]) -> None:
         """Re-queue payouts / cash_sales a previous run left unconfirmed."""

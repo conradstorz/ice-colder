@@ -597,8 +597,9 @@ class VMC:
             self._cycle.cancel()
         self._cycle = None
         shares = self.pending_sale_shares
+        pieces = self._sale.pieces if self._sale is not None else None
         if self._sale is not None:
-            self._sale = self._sale.with_(shares=None)
+            self._sale = self._sale.with_(shares=None, pieces=None)
         if shares is None:
             # Unreachable guard: consume_fifo sets the shares before dispensing.
             price = product.price_cents if product else 0
@@ -609,7 +610,7 @@ class VMC:
             # price can be edited mid-dispense.
             price = sum(shares.values())
         now = time.time()
-        self._escrow.restore(shares, now, price)
+        self._escrow.restore(shares, now, price, pieces)
         is_test = self._sale is not None and self._sale.is_test
         self.selected_product = None
         self.last_insufficient_message = ""
@@ -663,7 +664,10 @@ class VMC:
         if written:
             self._journal.error_during_sale_write(self.selected_product)
         elif shares := self.pending_sale_shares:
-            self._journal.error_restored(self._escrow.restore_shares(shares))
+            restored = self._escrow.restore_shares(
+                shares, sale.pieces if sale else None
+            )
+            self._journal.error_restored(restored)
         if sale is not None:
             shares_kept = sale.shares if written else None
             sale = self._sale = sale.with_(
@@ -912,7 +916,8 @@ class VMC:
         escrow = self.credit_escrow_cents
         if escrow >= price:
             self._journal.payment_sufficient(escrow, price, self.selected_product)
-            self._sale = self._sale.with_(shares=self._escrow.consume_fifo(price))
+            shares, pieces = self._escrow.consume_fifo_pieces(price)
+            self._sale = self._sale.with_(shares=shares, pieces=tuple(pieces))
             self.credit_escrow_cents -= price
             logger.debug(
                 f"Deducted price from escrow. New escrow cents: {self.credit_escrow_cents} "

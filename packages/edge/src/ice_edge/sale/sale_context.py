@@ -34,6 +34,9 @@ Fields, and who sets them:
   between methods (CLAUDE.md's FIFO method attribution invariant). ``None``
   until payment is processed, and cleared once the sale is recorded or has
   failed.
+- ``pieces``: the escrow credits (with their board ``event_id``) that
+  ``shares`` was consumed from; lets the cash_sale count only the board's
+  current-boot cash and a failed vend restore the same event ids.
 - ``is_test``: true only for ``TestSaleRunner.run_test_sale``'s simulated sale. Lives on
   the sale, never derived from the maintenance lease, so a lease release or
   idle-timeout mid-run cannot flip a test sale into a production one.
@@ -58,12 +61,14 @@ import uuid
 from dataclasses import dataclass, field
 
 from ice_common.config_model import Product
+from ice_edge.ledger.session_store import Credit
 
 
 @dataclass(frozen=True)
 class SaleContext:
     product: Product
     shares: dict[str, float] | None = None
+    pieces: tuple[Credit, ...] | None = None
     is_test: bool = False
     mechanism: str | None = None
     request_id: str | None = None

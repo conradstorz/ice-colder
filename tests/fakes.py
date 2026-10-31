@@ -198,6 +198,11 @@ class FakePayments:
         self.payouts: list[tuple[int, str, str | None]] = []
         self.cash_sales: list[tuple[int, str | None]] = []
         self._pending: list[PendingPayout] = []
+        # The board's current boot id; None = unknown (all cash counts).
+        self.boot_id: str | None = None
+
+    def board_boot_id(self) -> str | None:
+        return self.boot_id
 
     def pay_out(self, cents, reason, sale_id) -> None:
         value = getattr(reason, "value", reason)

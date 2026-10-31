@@ -252,3 +252,55 @@ async def test_payout_enqueue_failure_restores_escrow_and_raises_pay103():
     assert vmc.credit_escrow_cents == 300
     assert [(c.cents, c.event_id) for c in vmc.escrow_credits] == [(300, "evt-1")]
     assert vmc.faults.has(FaultCode.PAY_103)
+
+
+# --- the board's escrow is per boot (firmware spec: RAM only) ----------------------
+
+
+async def vend_ev(vmc, *deposits):
+    """`vend` for deposits carrying board event ids: (cents, method, event_id)."""
+    vmc.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    for cents, method, event_id in deposits:
+        vmc.deposit_funds(cents, method, event_id=event_id)
+    vmc.process_payment()
+    assert vmc.state == "dispensing"
+    sale_id = vmc.sale.sale_id
+    await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
+    return sale_id
+
+
+async def test_cash_sale_counts_only_the_current_boot_cash(tmp_path):
+    machine, vmc, payments = build_vendable(tmp_path)
+    payments.boot_id = "boot-B"
+    # 100 arrived before the board rebooted, 200 after: the price is 250.
+    sale_id = await vend_ev(
+        vmc, (100, "cash_coin", "boot-A-1"), (200, "cash_coin", "boot-B-1")
+    )
+    assert payments.cash_sales == [(150, sale_id)]
+    assert payments.payouts == [(50, "change", sale_id)]
+
+
+async def test_cash_sale_from_earlier_boot_cash_only_sends_none(tmp_path):
+    machine, vmc, payments = build_vendable(tmp_path)
+    payments.boot_id = "boot-B"
+    await vend_ev(vmc, (300, "cash_bill", "boot-A-1"))
+    assert payments.cash_sales == []
+    assert [p[0] for p in payments.payouts] == [50]  # change comes from the tubes
+
+
+async def test_failed_vend_restore_keeps_event_ids_so_the_cash_still_counts(tmp_path):
+    machine, vmc, payments = build_vendable(
+        tmp_path,
+        [
+            Product(sku="ICE-1", name="Ice", price_cents=250, slot=0, kind="ice"),
+            Product(sku="ICE-2", name="Ice2", price_cents=250, slot=1, kind="ice"),
+        ],
+    )
+    payments.boot_id = "boot-B"
+    vmc.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.deposit_funds(250, "cash_coin", event_id="boot-B-1")
+    vmc.process_payment()
+    await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "jam"})
+    assert [(c.cents, c.event_id) for c in vmc.escrow_credits] == [(250, "boot-B-1")]

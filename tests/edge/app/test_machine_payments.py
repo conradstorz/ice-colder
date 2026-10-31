@@ -28,7 +28,7 @@ def event(seq, kind, cents, boot=BOOT, **extra):
     if kind == "coin_accepted":
         body.setdefault("routed", "tubes")
     return {
-        "event_id": f"evt-{boot}-{seq:04d}",
+        "event_id": f"{boot}-{seq:04d}",
         "boot_id": boot,
         "seq": seq,
         "ts": "2026-10-30T12:00:00Z",
@@ -217,7 +217,7 @@ async def test_deposit_from_intake_records_event_id_on_the_credit(tmp_path):
     assert (credit.method, credit.cents, credit.event_id) == (
         "cash_coin",
         25,
-        f"evt-{BOOT}-0001",
+        f"{BOOT}-0001",
     )
 
 
@@ -227,7 +227,7 @@ async def test_boot_seeds_dedup_from_snapshot_credit_event_ids(tmp_path):
         SessionSnapshot(
             state="interacting_with_user",
             credit_escrow_cents=500,
-            credits=[Credit("cash_bill", 500, 1.0, event_id=f"evt-{BOOT}-0001")],
+            credits=[Credit("cash_bill", 500, 1.0, event_id=f"{BOOT}-0001")],
         )
     )
     machine, *_ = build(tmp_path, store=SessionStore(path))
@@ -376,6 +376,79 @@ async def test_overpay_vend_payout_ok_removes_session_json(tmp_path):
     assert [c[1]["cents"] for c in dispatcher.commands("cash_sale")] == [250]
     assert machine.gateway.pending_payouts() == []
     assert not path.exists()  # no stale open snapshot: no spurious PAY-104 next boot
+
+
+# --- the board's escrow is per boot --------------------------------------------------
+
+BOOT_B = "boot-9b-0002"
+
+
+async def test_board_reboot_while_edge_holds_cash_raises_no_pay104_and_pays_change(
+    tmp_path,
+):
+    from tests.dispenser_fixtures import profiles_for
+
+    machine, cfg, avail, dispatcher = build(
+        tmp_path, store=SessionStore(tmp_path / "s.json")
+    )
+    machine.set_dispenser_profiles(profiles_for(cfg.physical.products, tmp_path))
+    for name in ("vending", "ice_maker"):
+        machine.health_monitor.record_heartbeat(name, {"uptime_seconds": 1})
+    set_coin_status(avail, "ready")
+    await machine.telemetry.handle_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    await ack_policy(machine, cfg, avail)
+    vmc = machine.vmc
+    policy_id = build_policy(cfg.payment.mdb.policy, avail.payment_enabled).policy_id
+
+    # 100 cents arrive on boot A and sit in edge escrow.
+    await machine.gateway.intake.handle("payment/event", event(1, "bill_stacked", 100))
+    assert machine.escrow.total_cents == 100
+
+    # The board reboots: escrow 0, policy lost; the edge re-acks the policy.
+    await machine.gateway.state_consumer.handle(
+        "payment/state", state_doc(None, boot=BOOT_B)
+    )
+    await machine.gateway.state_consumer.handle(
+        "payment/state", state_doc(policy_id, boot=BOOT_B)
+    )
+    await settle(6)
+    # 200 more arrive on boot B; the sale costs 250.
+    await machine.gateway.intake.handle(
+        "payment/event", event(1, "bill_stacked", 200, boot=BOOT_B)
+    )
+    vmc.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.process_payment()
+    await settle(6)
+    assert vmc.state == "dispensing"
+    await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
+    await settle(12)
+    await machine.drain_persistence()
+
+    assert vmc.state == "idle"
+    assert not machine.faults.has(FaultCode.PAY_104)
+    # Only the boot-B cash (150 of the 250 price) left the board's escrow.
+    assert [c[1]["cents"] for c in dispatcher.commands("cash_sale")] == [150]
+    # The 50 left over is change, paid from the tubes.
+    assert [c[1]["cents"] for c in dispatcher.commands("payout")] == [50]
+
+
+async def test_reconciliation_after_a_reboot_ignores_earlier_boot_cash(tmp_path):
+    machine, cfg, avail, dispatcher = build(tmp_path)
+    await ack_policy(machine, cfg, avail)
+    policy_id = build_policy(cfg.payment.mdb.policy, avail.payment_enabled).policy_id
+    await machine.gateway.intake.handle("payment/event", event(1, "bill_stacked", 100))
+    machine.vmc.set_state("idle")
+    machine.escrow.take_all()  # (customer abandons; irrelevant to the check below)
+    machine.escrow.deposit("cash_bill", 100, 1.0, f"{BOOT}-0001")
+    await machine.gateway.state_consumer.handle(
+        "payment/state", state_doc(policy_id, boot=BOOT_B)
+    )
+    await settle(10)
+    assert not machine.faults.has(FaultCode.PAY_104)
+    assert dispatcher.commands("payout") == []
 
 
 # --- PAY-104 recovery drives the board ------------------------------------------------

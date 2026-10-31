@@ -152,6 +152,9 @@ class _GatewayPayments:
     def pending_payouts(self) -> list[PendingPayout]:
         return self._get().pending_payouts()
 
+    def board_boot_id(self) -> str | None:
+        return self._get().board_boot_id()
+
 
 class Machine:
     """Builds the VMC and every collaborator; owns the service wiring that
@@ -381,7 +384,7 @@ class Machine:
             on_cursor_saved=lambda ok: self._set_data104_source(_CURSOR_SOURCE, not ok),
             fsm_idle=lambda: self._vmc.state == "idle",
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
-            edge_cash_escrow=lambda: cash_cents(self._escrow.credits),
+            edge_cash_escrow=lambda boot: cash_cents(self._escrow.credits, boot),
             publish_ack=self._publish_event_ack,
             cursor=cursor,
         )

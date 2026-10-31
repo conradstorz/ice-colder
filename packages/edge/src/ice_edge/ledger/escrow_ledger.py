@@ -59,6 +59,12 @@ class EscrowLedger:
         )
 
     def consume_fifo(self, price_cents: int) -> dict[str, int]:
+        """`consume_fifo_pieces` without the pieces."""
+        return self.consume_fifo_pieces(price_cents)[0]
+
+    def consume_fifo_pieces(
+        self, price_cents: int
+    ) -> tuple[dict[str, int], list[Credit]]:
         """Consume credits FIFO for `price_cents`, returning consumed shares.
 
         Mutates `credits` in place: fully-consumed credits are removed, a
@@ -81,6 +87,10 @@ class EscrowLedger:
         booked to the single method "unknown" instead of silently
         misattributing it to whatever methods happen to be in the (wrong)
         list. This is a bug guard, not an expected path.
+
+        Also returns the consumed pieces, one `Credit` per (partial) credit
+        taken, carrying its `event_id`: a sale can tell which board boot its
+        cash came from, and a failed vend can restore the same ids.
         """
         ledger_total = sum(c.cents for c in self.credits)
         if ledger_total != self.total_cents:
@@ -89,10 +99,11 @@ class EscrowLedger:
                 f"credit_escrow ({format_cents(self.total_cents)}); booking "
                 f"{format_cents(price_cents)} to 'unknown' rather than misattribute it"
             )
-            return {"unknown": price_cents}
+            return {"unknown": price_cents}, []
 
         remaining = price_cents
         shares: dict[str, int] = {}
+        pieces: list[Credit] = []
         kept: list[Credit] = []
         for credit in self.credits:
             if remaining <= 0:
@@ -101,6 +112,14 @@ class EscrowLedger:
             take = min(credit.cents, remaining)
             shares[credit.method] = shares.get(credit.method, 0) + take
             remaining -= take
+            pieces.append(
+                Credit(
+                    method=credit.method,
+                    cents=take,
+                    ts=credit.ts,
+                    event_id=credit.event_id,
+                )
+            )
             leftover = credit.cents - take
             if leftover > 0:
                 kept.append(
@@ -112,25 +131,45 @@ class EscrowLedger:
                     )
                 )
         self.credits = kept
-        return shares
+        return shares, pieces
 
-    def restore(self, shares: dict[str, int], ts: float, price_cents: int) -> None:
+    def restore(
+        self,
+        shares: dict[str, int],
+        ts: float,
+        price_cents: int,
+        pieces: list[Credit] | tuple[Credit, ...] | None = None,
+    ) -> None:
         """Re-credit `price_cents` as separate Credits, one per (method, cents)
         share, in the same order, all stamped with `ts`.
 
         A zero-cent share is skipped (it contributes nothing to add), but
         `price_cents` is still added to `total_cents` in full -- matching
         `VMC.on_vend_failed`'s pre-extraction behavior exactly.
+
+        ``pieces`` (from `consume_fifo_pieces`) are restored instead, each
+        keeping its `event_id`, when they sum to exactly the shares.
         """
         self.total_cents += price_cents
+        if pieces and sum(c.cents for c in pieces) == sum(shares.values()):
+            for c in pieces:
+                if c.cents > 0:
+                    self.credits.append(
+                        Credit(c.method, c.cents, ts, event_id=c.event_id)
+                    )
+            return
         for method, cents in shares.items():
             if cents > 0:
                 self.credits.append(Credit(method=method, cents=cents, ts=ts))
 
-    def restore_shares(self, shares: dict[str, int]) -> int:
+    def restore_shares(
+        self,
+        shares: dict[str, int],
+        pieces: list[Credit] | tuple[Credit, ...] | None = None,
+    ) -> int:
         """`restore` for a whole sale's shares; returns the cents restored."""
         price = sum(shares.values())
-        self.restore(shares, time.time(), price)
+        self.restore(shares, time.time(), price, pieces)
         return price
 
     def take_all(self) -> int:

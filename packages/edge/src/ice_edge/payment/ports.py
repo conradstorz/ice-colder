@@ -40,11 +40,33 @@ class Payments(Protocol):
 
     def pending_payouts(self) -> list[PendingPayout]: ...
 
+    def board_boot_id(self) -> str | None:
+        """The board's current boot id (its escrow is RAM only, per boot), or
+        None while unknown."""
+        ...
 
-def cash_cents(credits: Iterable[Credit]) -> int:
+
+def cash_cents(credits: Iterable[Credit], boot_id: str | None = None) -> int:
     """The part of ``credits`` that arrived as cash, i.e. the only money the
-    MDB board can pay back out."""
-    return sum(c.cents for c in credits if is_cash(c.method))
+    MDB board can pay back out. With ``boot_id`` only cash whose board event id
+    belongs to that boot counts (the board's escrow is per boot)."""
+    return current_boot_cash(credits, boot_id)
+
+
+def current_boot_cash(pieces: Iterable[Credit], boot_id: str | None) -> int:
+    """Cash among ``pieces`` that arrived on the board's current boot.
+
+    The board's escrow restarts at 0 on every boot, so only such cash can be
+    reported to it with ``cash_sale``; earlier-boot cash is paid back as change
+    from the tubes. With ``boot_id`` unknown every cash piece counts; a credit
+    without an event id never belongs to a known boot.
+    """
+    return sum(
+        c.cents
+        for c in pieces
+        if is_cash(c.method)
+        and (boot_id is None or (c.event_id or "").startswith(f"{boot_id}-"))
+    )
 
 
 def cash_share(shares: dict[str, int] | None) -> int:

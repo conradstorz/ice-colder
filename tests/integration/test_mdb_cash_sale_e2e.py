@@ -368,3 +368,85 @@ async def test_payout_executed_ack_lost_board_reboots_pays_exactly_once(tmp_path
                 assert sim.cash.tube_total_cents() == tubes_before - 300  # paid once
         finally:
             await stop(sim_task)
+
+
+async def test_board_reboot_while_edge_holds_cash_sells_without_pay104(tmp_path):
+    async with _edge(tmp_path) as (machine, prefix, probe, collector):
+        vmc = machine.vmc
+        sim = MdbSimulator(
+            machine_id="test-mdb-e2e",
+            customer=_IdleCustomer(),
+            username=AUTH["username"],
+            password=AUTH["password"],
+        )
+        sim.PAYOUT_DELAY_RANGE = (0.0, 0.0)
+        sim_task = asyncio.create_task(sim.run())
+        try:
+            async with aiomqtt.Client(
+                hostname="localhost", port=1883, identifier="e2e-mdb-hands", **AUTH
+            ) as hands:
+                for name in ("vending", "ice_maker"):
+                    await probe.publish(
+                        f"{prefix}/heartbeat/{name}",
+                        json.dumps({"subsystem": name, "uptime_seconds": 1}),
+                    )
+                await probe.publish(
+                    f"{prefix}/hardware/io/bin_half_full",
+                    json.dumps({"device": "bin_half_full", "state": True}),
+                )
+                await wait_until(
+                    lambda: sim.policy.acked_in_boot and sim.policy.policy.accept,
+                    timeout=20.0,
+                )
+                # 100 cents on the first boot ...
+                assert await sim.insert_coin(hands, 100)
+                await wait_until(lambda: vmc.credit_escrow_cents == 100)
+                # ... then the board reboots: its escrow is gone, the edge's is not.
+                await sim.reboot(hands)
+                assert sim.cash.escrow_cents == 0
+                await wait_until(
+                    lambda: sim.policy.acked_in_boot and sim.policy.policy.accept,
+                    timeout=20.0,
+                )
+                for _ in range(2):
+                    assert await sim.insert_coin(hands, 100)
+                await wait_until(lambda: vmc.credit_escrow_cents == 300)
+                await probe.publish(
+                    f"{prefix}/hardware/buttons",
+                    ButtonPress(button="button_ice").model_dump_json(),
+                )
+                await wait_until(lambda: vmc.state == "dispensing", timeout=15.0)
+                dispense = await collector.next_dispense()
+                request_id = dispense["request_id"]
+                await probe.publish(
+                    f"{prefix}/cmd/vending/ack",
+                    CommandAck(
+                        request_id=request_id,
+                        command="dispense",
+                        status="ok",
+                        phase="accepted",
+                    ).model_dump_json(),
+                )
+                # Deliberate fixed sleep, as in the other e2e test.
+                await asyncio.sleep(0.3)
+                await probe.publish(
+                    f"{prefix}/hardware/dispenser",
+                    json.dumps(
+                        {"slot": 0, "state": "complete", "request_id": request_id}
+                    ),
+                )
+                await wait_until(lambda: vmc.state == "idle", timeout=15.0)
+                await wait_until(
+                    lambda: not vmc.snapshot().pending_payouts, timeout=15.0
+                )
+                await wait_until(lambda: sim.cash.escrow_cents == 0, timeout=15.0)
+                payouts = collector.commands("/cmd/mdb", "payout")
+                sales = collector.commands("/cmd/mdb", "cash_sale")
+                # Price 200 = 100 (boot A) + 100 (boot B): only the boot-B part
+                # left the board's escrow; the 100 change is paid from the tubes.
+                assert [p["params"]["cents"] for p in payouts] == [100]
+                assert [p["params"]["cents"] for p in sales] == [100]
+                active = machine.faults.machine_faults
+                assert not [c for c in active if str(c).startswith("PAY-10")], active
+        finally:
+            await stop(sim_task)

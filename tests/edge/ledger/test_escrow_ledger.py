@@ -147,3 +147,47 @@ def test_event_id_travels_with_a_partially_consumed_credit():
     assert [(c.cents, c.event_id) for c in ledger.credits] == [
         (300, "evt-boot-0001-0001")
     ]
+
+
+def test_consume_fifo_pieces_reports_the_consumed_event_ids():
+    ledger = EscrowLedger()
+    ledger.deposit("cash_coin", 100, 1.0, "b1-1")
+    ledger.deposit("cash_coin", 100, 2.0, "b2-1")
+    ledger.deposit("card", 100, 3.0)
+    shares, pieces = ledger.consume_fifo_pieces(150)
+    assert shares == {"cash_coin": 150}
+    assert [(c.method, c.cents, c.event_id) for c in pieces] == [
+        ("cash_coin", 100, "b1-1"),
+        ("cash_coin", 50, "b2-1"),
+    ]
+    # the partly consumed credit keeps its event id
+    assert [(c.cents, c.event_id) for c in ledger.credits] == [
+        (50, "b2-1"),
+        (100, None),
+    ]
+
+
+def test_consume_fifo_still_returns_just_the_shares():
+    ledger = EscrowLedger()
+    ledger.deposit("cash_coin", 100, 1.0, "b1-1")
+    assert ledger.consume_fifo(100) == {"cash_coin": 100}
+
+
+def test_restore_with_pieces_keeps_each_event_id():
+    ledger = EscrowLedger()
+    ledger.deposit("cash_coin", 100, 1.0, "b1-1")
+    ledger.deposit("cash_coin", 100, 2.0, "b2-1")
+    shares, pieces = ledger.consume_fifo_pieces(200)
+    ledger.total_cents -= 200
+    ledger.restore(shares, 9.0, 200, pieces)
+    assert ledger.total_cents == 200
+    assert [(c.cents, c.event_id) for c in ledger.credits] == [
+        (100, "b1-1"),
+        (100, "b2-1"),
+    ]
+
+
+def test_restore_ignores_pieces_that_do_not_sum_to_the_shares():
+    ledger = EscrowLedger()
+    ledger.restore({"cash_coin": 100}, 9.0, 100, [Credit("cash_coin", 40, 1.0, "x-1")])
+    assert [(c.cents, c.event_id) for c in ledger.credits] == [(100, None)]

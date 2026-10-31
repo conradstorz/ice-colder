@@ -384,11 +384,25 @@ gaps. Never retried with a new id. An `ok` with `detail: "queued"` counts as del
   `fulfillment` row, so one jammed device does not stop sales the other device can still take.
 - **Reconciliation waits for PAY-104** and the PAY-104 actions now drive the board (§5.5), found in
   review: without the guard a crash after dispense would refund a delivered product.
-- **Fresh `request_id` after a `rejected` ack** (found in implementation): the firmware caches every ack by
-  `request_id` (`comms_task.cpp`), rejections included, so a payout or `cash_sale` retried after `rejected`
-  with the same id would replay the rejection forever. A rejection means the board did nothing, so the
-  item is re-minted; every other retry keeps its id.
-- **`expired` retries after 2 s** with a fresh id instead of waiting for a policy toggle.
+- **Fresh `request_id` after a `rejected` ack, only if the item was never possibly delivered** (found in
+  implementation and review): the firmware caches every ack by `request_id` in RAM (`comms_task.cpp`),
+  rejections included, so a retry of a rejected id replays the rejection forever, and the item is
+  re-minted. But `Master::do_payout` checks `expired`, `no_policy` and `cents` *before* the persisted
+  `find_payout` replay, and a reboot clears the ack cache, so after a lost ack a rejection proves nothing
+  about the earlier send. `PendingPayout.maybe_delivered` (persisted; set after a `CommandTimeout`, an
+  unexpected send failure, and on every item reloaded from a snapshot) therefore forbids re-minting:
+  such an item raises PAY-103 `unconfirmed:<request_id>` (payout) or PAY-104
+  `escrow_mismatch:cash_sale_unconfirmed` (`cash_sale`) and is dropped.
+- **`expired` retries after 2 s** with a fresh id (never a delivered one), at most 5 attempts per item,
+  then PAY-103 `expired:<request_id>` / PAY-104 `escrow_mismatch:cash_sale_expired` and the item is dropped.
+- **The board's escrow is per boot** (a correction of a spec premise): the firmware spec (§11, "Escrow
+  restarts at 0 on every boot. It is RAM only.") means a rebooted board holds none of the cash the edge
+  credited on its previous boot. Reconciliation (§5.5) compares `state.escrow_cents` only with edge cash
+  credits whose `event_id` starts with `<state.boot_id>-`, and a sale's `cash_sale` carries only the cash
+  consumed from current-boot credits (`SaleContext.pieces`, kept through a failed-vend restore);
+  earlier-boot cash is paid back as change from the tubes (the board floors escrow at 0), so a reboot
+  never raises PAY-104 `escrow_mismatch` by itself. The simulator now matches: `board_reboot` zeroes
+  escrow, clears the RAM ack cache and drops an in-flight payout, and payout gates run before the replay.
 - **`no_policy` rejection** makes `PolicySync` re-send `set_policy` and require a fresh `payment/state`
   echo before the queue resumes.
 - **Uncertain-boot payouts are re-queued when PAY-104 is resolved**, with the same ids, before

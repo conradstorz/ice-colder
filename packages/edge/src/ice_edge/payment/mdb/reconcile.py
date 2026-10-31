@@ -1,4 +1,8 @@
-"""Board escrow vs. edge cash escrow (cutover spec 5.5, contract flows 7 and 8)."""
+"""Board escrow vs. edge cash escrow (cutover spec 5.5, contract flows 7 and 8).
+
+The board's escrow is RAM only and restarts at 0 on every boot (firmware spec),
+so only edge cash credited on the board's *current* boot is comparable.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ class Reconciler:
         payouts: Any,
         fsm_idle: Callable[[], bool],
         pay104_active: Callable[[], bool],
-        edge_cash_escrow: Callable[[], int],
+        edge_cash_escrow: Callable[[str], int],
         faults: Any,
     ) -> None:
         self._state = state
@@ -62,7 +66,7 @@ class Reconciler:
         if done is not None and self._state_ts() <= done:
             return  # this state predates the last payout / cash_sale
         self._armed = False
-        edge, board = self._edge_cash(), state.escrow_cents
+        edge, board = self._edge_cash(state.boot_id), state.escrow_cents
         if edge == board:
             return
         if board > edge:
