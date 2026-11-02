@@ -7,6 +7,7 @@ from ice_cloud import claim as claim_module
 from ice_common.secrets import hash_secret
 from ice_contracts.cloud.identity import ClaimCodeNotice
 from tests.cloud.conftest import login, register, short, signed
+from tests.cloud.sql_helpers import cloud_db, grant_tech
 
 HX = {"HX-Request": "true"}
 CODE = "12345678"
@@ -143,7 +144,7 @@ def test_success_sets_owner_drops_techs_clears_hash_and_selects(cloud, signer):
     owner = repo.upsert_account_from_login("sub-old", "old@example.com", "Old", now)
     tech = repo.upsert_account_from_login("sub-tech", "tech@example.com", "Tech", now)
     repo.claim_machine(fp, owner.id, cloud.app.state.now())
-    repo.grant_tech(tech.id, fp, owner.id, now)
+    grant_tech(cloud_db(cloud), tech.id, fp, owner.id, now)
     repo.set_claim_code(fp, hash_secret(CODE), None)
     new = login(cloud, "new@example.com")
     r = post_claim(cloud, signer)

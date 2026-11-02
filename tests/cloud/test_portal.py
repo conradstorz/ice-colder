@@ -21,6 +21,7 @@ from tests.cloud.conftest import (
     short,
     signed,
 )
+from tests.cloud.sql_helpers import cloud_db, grant_tech
 from tests.cloud.reports import make_report
 
 
@@ -56,8 +57,8 @@ def test_fleet_lists_only_my_machines_with_roles(cloud):
     push(cloud, c, make_report(machine_id="m-C"))
     claim(cloud, a, owner)
     claim(cloud, b, other)
-    cloud.app.state.repo.grant_tech(
-        owner.id, b.fingerprint, other.id, cloud.app.state.now()
+    grant_tech(
+        cloud_db(cloud), owner.id, b.fingerprint, other.id, cloud.app.state.now()
     )
     login(cloud, "owner@example.com")
     page = cloud.get("/fleet")
@@ -201,7 +202,9 @@ def test_cookie_alone_is_not_enough(cloud, signer):
     push(cloud, signer, make_report())
     claim(cloud, signer, owner)
     repo = cloud.app.state.repo
-    repo.grant_tech(tech.id, signer.fingerprint, owner.id, cloud.app.state.now())
+    grant_tech(
+        cloud_db(cloud), tech.id, signer.fingerprint, owner.id, cloud.app.state.now()
+    )
     login(cloud, "tech@example.com")
     select(cloud, signer)
     assert cloud.get("/health/faults").status_code == 200

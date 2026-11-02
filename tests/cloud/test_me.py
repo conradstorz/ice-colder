@@ -10,6 +10,7 @@ from tests.cloud.conftest import (
     select,
     short,
 )
+from tests.cloud.sql_helpers import cloud_db, grant_tech
 from tests.cloud.reports import make_report
 
 
@@ -44,8 +45,8 @@ def test_me_lists_permission_labels(cloud, signer):
 def test_tech_role(cloud, signer):
     owner = own_and_select(cloud, signer, _named_report())
     tech = login(cloud, "tech@example.com")
-    cloud.app.state.repo.grant_tech(
-        tech.id, signer.fingerprint, owner.id, cloud.app.state.now()
+    grant_tech(
+        cloud_db(cloud), tech.id, signer.fingerprint, owner.id, cloud.app.state.now()
     )
     select(cloud, signer)
     assert "<strong>tech</strong> on Lobby Ice" in cloud.get("/me").text

@@ -6,7 +6,7 @@ from ice_cloud.alerts.dispatcher import COOLDOWN_SECONDS
 from ice_cloud.alerts.sweep import SWEEP_SECONDS, OfflineSweep
 from ice_cloud.store import AlertState
 from tests.cloud.alerts.helpers import FP, T0, Env, event_row
-from tests.cloud.conftest import sql_exec
+from tests.cloud.sql_helpers import put_alert_state, sql_exec
 
 import pytest
 
@@ -26,7 +26,7 @@ def _state(env, *, last_report_at=T0, interval=INTERVAL, offline_since=None):
         report_interval_seconds=interval,
         offline_since=offline_since,
     )
-    env.repo.put_alert_state(state)
+    put_alert_state(env.db_path, state)
     return state
 
 
@@ -64,7 +64,8 @@ async def test_offline_only_once(env, sweep):
 
 async def test_unclaimed_never(env, sweep):
     env.repo.register_machine("other-fp", "a2V5", "Other", T0)
-    env.repo.put_alert_state(
+    put_alert_state(
+        env.db_path,
         replace(_state(env), fingerprint="other-fp"),
     )
     sql_exec(
@@ -178,14 +179,15 @@ async def test_one_machine_failing_does_not_block_another(env):
     env.repo.register_machine(other, "a2V5", "Other", T0)
     env.repo.claim_machine(other, env.owner.id, T0)
     for fp in (FP, other):
-        env.repo.put_alert_state(
+        put_alert_state(
+            env.db_path,
             AlertState(
                 fingerprint=fp,
                 faults=(),
                 last_report_at=T0,
                 report_interval_seconds=INTERVAL,
                 offline_since=None,
-            )
+            ),
         )
     sweep = OfflineSweep(FailingPutRepo(env.repo, FP), env.disp, now=env.clock)
     env.clock.advance(3 * INTERVAL + 1)

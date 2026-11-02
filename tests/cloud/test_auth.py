@@ -29,7 +29,8 @@ from ice_cloud.auth import (
     require_signed_in,
     safe_next,
 )
-from tests.cloud.conftest import account_id_by_email, cloud_db, login
+from tests.cloud.conftest import login
+from tests.cloud.sql_helpers import account_id_by_email, cloud_db, grant_tech
 from tests.cloud.reports import FP, FP_2, NOW
 
 KEY = b"k" * 32
@@ -361,7 +362,7 @@ def test_machine_access_roles(cloud, probes):
     login(cloud, "stranger@example.com")
     admin = login(cloud, "admin@example.com")
     _machine(cloud, FP, owner)
-    cloud.app.state.repo.grant_tech(tech.id, FP, owner.id, NOW)
+    grant_tech(cloud_db(cloud), tech.id, FP, owner.id, NOW)
     short = FP[:16]
 
     def get(path, email):
@@ -383,7 +384,7 @@ def test_owner_only_excludes_tech_and_admin(cloud, probes):
     owner = login(cloud, "owner@example.com")
     tech = login(cloud, "tech@example.com")
     _machine(cloud, FP, owner)
-    cloud.app.state.repo.grant_tech(tech.id, FP, owner.id, NOW)
+    grant_tech(cloud_db(cloud), tech.id, FP, owner.id, NOW)
     short = FP[:16]
     assert cloud.get(f"/m/{short}/owner-probe").status_code == 404  # tech signed in
     login(cloud, "admin@example.com")

@@ -14,6 +14,8 @@ Codes used:
 - ENV_101: severity=warning, scope=machine -> plain machine fault.
 """
 
+import pytest
+
 from ice_contracts.board.vending_machine import FAULT_TABLE, FaultCode, Severity
 from ice_edge.faults.fault_registry import FaultRegistry
 
@@ -63,6 +65,22 @@ def test_raise_vend_failed_severity_does_not_lock():
     assert raised.newly_locked is False
     assert reg.lockouts == {}
     assert reg.machine_faults == {}
+
+
+@pytest.mark.parametrize(
+    ("code", "severity", "level"),
+    [
+        (FaultCode.PWR_101, Severity.info, "info"),
+        (FaultCode.WTR_105, Severity.warning, "warning"),
+        (FaultCode.ICE_101, Severity.product_unavailable, "warning"),
+        (FaultCode.ICE_202, Severity.vend_failed, "warning"),
+        (FaultCode.ICE_301, Severity.lockout, "error"),
+        (FaultCode.WTR_104, Severity.critical, "critical"),
+    ],
+)
+def test_raised_fault_level_follows_severity(code, severity, level):
+    assert FAULT_TABLE[code].severity is severity
+    assert make_registry().raise_fault(code, sku="ICE-1").level == level
 
 
 # --- raise_fault: scope decides the branch, not severity ---

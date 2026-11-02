@@ -2625,20 +2625,48 @@ def stalled(recorder):
     yield recorder
 
 
+def _capture_warnings():
+    from loguru import logger
+
+    lines: list[str] = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+    return lines, lambda: logger.remove(sink)
+
+
+def _drop_warnings(lines):
+    return [line for line in lines if "event row(s) so far" in line]
+
+
 class TestBoundedQueue:
     def test_record_drops_and_counts_when_queue_full(self, stalled):
-        stalled.record("dropped")
-        stalled.record("dropped")
-        assert stalled.dropped_events == 2
+        lines, stop = _capture_warnings()
+        try:
+            for _ in range(1001):
+                stalled.record("dropped")
+        finally:
+            stop()
+        # The running count is logged on the 1st drop and every 1000th after.
+        drops = _drop_warnings(lines)
+        assert len(drops) == 2
+        assert "dropped 1 event row(s) so far" in drops[0]
+        assert "dropped 1001 event row(s) so far" in drops[1]
 
     def test_cash_collection_and_update_metadata_raise_when_full(self, stalled):
-        with pytest.raises(RuntimeError, match="queue full"):
-            stalled.record_cash_collection("u1", "User")
-        with pytest.raises(RuntimeError, match="queue full"):
-            stalled.update_metadata("run1", verdict="pass")
-        assert stalled.dropped_events == 0
+        lines, stop = _capture_warnings()
+        try:
+            with pytest.raises(RuntimeError, match="queue full"):
+                stalled.record_cash_collection("u1", "User")
+            with pytest.raises(RuntimeError, match="queue full"):
+                stalled.update_metadata("run1", verdict="pass")
+        finally:
+            stop()
+        assert _drop_warnings(lines) == []
 
     def test_newer_schema_discards_are_not_counted_as_drops(self, recorder):
-        recorder.db_newer_than_code = True
-        recorder.record("x")
-        assert recorder.dropped_events == 0
+        lines, stop = _capture_warnings()
+        try:
+            recorder.db_newer_than_code = True
+            recorder.record("x")
+        finally:
+            stop()
+        assert _drop_warnings(lines) == []

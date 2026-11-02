@@ -669,25 +669,6 @@ class SqliteRepository:
             for r in rows
         ]
 
-    def grant_tech(
-        self, account_id: str, fingerprint: str, granted_by: str, now: datetime
-    ) -> None:
-        with self._tx() as conn:
-            if not conn.execute(
-                "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
-            ).fetchone():
-                raise LookupError(f"unknown account {account_id}")
-            if not conn.execute(
-                "SELECT 1 FROM machines WHERE fingerprint = ?", (fingerprint,)
-            ).fetchone():
-                raise LookupError(f"unknown machine {fingerprint}")
-            conn.execute(
-                "INSERT OR IGNORE INTO memberships"
-                " (account_id, fingerprint, role, granted_by, granted_at)"
-                " VALUES (?, ?, 'tech', ?, ?)",
-                (account_id, fingerprint, granted_by, _iso(now)),
-            )
-
     def revoke(self, account_id: str, fingerprint: str) -> None:
         with self._tx() as conn:
             conn.execute(
@@ -802,10 +783,6 @@ class SqliteRepository:
             ).fetchone()
         return None if row is None else _alert_state(row)
 
-    def put_alert_state(self, state: AlertState) -> None:
-        with self._tx() as conn:
-            self._upsert_alert_state(conn, state)
-
     @staticmethod
     def _upsert_alert_state(conn: sqlite3.Connection, state: AlertState) -> None:
         faults = json.dumps([f.model_dump(mode="json") for f in state.faults])
@@ -836,10 +813,6 @@ class SqliteRepository:
                 " WHERE m.owner_id IS NOT NULL ORDER BY m.label, m.fingerprint"
             ).fetchall()
         return [(_machine(r), _alert_state(r)) for r in rows]
-
-    def record_alert_events(self, events: list[AlertEventRow]) -> list[StoredEvent]:
-        with self._tx() as conn:
-            return self._insert_alert_events(conn, events)
 
     def record_alert_pass(
         self, events: Sequence[AlertEventRow], state: AlertState

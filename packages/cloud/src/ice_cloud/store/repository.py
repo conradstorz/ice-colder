@@ -231,12 +231,6 @@ class Repository(Protocol):
         grant time."""
         ...
 
-    def grant_tech(
-        self, account_id: str, fingerprint: str, granted_by: str, now: datetime
-    ) -> None:
-        """Grant tech access; raises ``LookupError`` if the account or machine is unknown."""
-        ...
-
     def revoke(self, account_id: str, fingerprint: str) -> None: ...
 
     # invitations
@@ -266,14 +260,8 @@ class Repository(Protocol):
     # alerts
     def alert_state(self, fingerprint: str) -> AlertState | None: ...
 
-    def put_alert_state(self, state: AlertState) -> None: ...
-
     def claimed_machines_with_state(self) -> list[tuple[Machine, AlertState]]:
         """Claimed machines (owner set) that have an alert state row."""
-        ...
-
-    def record_alert_events(self, events: list[AlertEventRow]) -> list[StoredEvent]:
-        """Insert events (any object with the row's fields) in order; return them with ids."""
         ...
 
     def record_alert_pass(

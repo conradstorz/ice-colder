@@ -4,6 +4,7 @@ from email.message import EmailMessage
 from ice_cloud.alerts.dispatcher import AlertDispatcher
 from ice_cloud.store import AlertEventRow, SqliteRepository
 from tests.cloud.reports import FP
+from tests.cloud.sql_helpers import grant_tech, record_alert_events
 
 T0 = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 
@@ -60,7 +61,7 @@ class Env:
         )
         self.repo.register_machine(FP, "a2V5", "Shop", T0)
         self.repo.claim_machine(FP, self.owner.id, T0)
-        self.repo.grant_tech(self.tech.id, FP, self.owner.id, T0)
+        grant_tech(self.db_path, self.tech.id, FP, self.owner.id, T0)
         self.mailer = RecordingMailer()
         self.clock = Clock()
         self.disp = AlertDispatcher(
@@ -72,7 +73,7 @@ class Env:
         )
 
     def events(self, *rows):
-        return self.repo.record_alert_events(list(rows))
+        return record_alert_events(self.db_path, list(rows))
 
     async def dispatch(self, *rows):
         stored = self.events(*rows)

@@ -3,6 +3,7 @@ import re
 import pytest
 
 from tests.cloud.conftest import Signer, claim, login, push, register, short
+from tests.cloud.sql_helpers import cloud_db, grant_tech
 from tests.cloud.reports import make_report
 
 
@@ -187,8 +188,8 @@ def _owner_fleet(cloud, clock):
     claim(cloud, online, owner_a)
     claim(cloud, solo, owner_b)
     tech = login(cloud, "tech@example.com")
-    cloud.app.state.repo.grant_tech(
-        tech.id, online.fingerprint, owner_a.id, cloud.app.state.now()
+    grant_tech(
+        cloud_db(cloud), tech.id, online.fingerprint, owner_a.id, cloud.app.state.now()
     )
     return owner_a, owner_b, tech
 

@@ -13,6 +13,7 @@ from tests.cloud.conftest import (
     push,
     short,
 )
+from tests.cloud.sql_helpers import cloud_db, grant_tech
 from tests.cloud.reports import make_report
 
 HX = {"HX-Request": "true"}
@@ -41,8 +42,8 @@ def test_people_owner_only_404_for_tech_and_admin(cloud, signer):
     owner, sh = _owner_setup(cloud, signer)
     assert cloud.get(f"/machines/{sh}/people").status_code == 200
     tech = login(cloud, "tech@example.com")
-    cloud.app.state.repo.grant_tech(
-        tech.id, signer.fingerprint, owner.id, cloud.app.state.now()
+    grant_tech(
+        cloud_db(cloud), tech.id, signer.fingerprint, owner.id, cloud.app.state.now()
     )
     assert cloud.get(f"/machines/{sh}/people").status_code == 404
     login(cloud, "admin@example.com")
@@ -122,7 +123,9 @@ def test_revoke_two_tap_and_removes(cloud, signer):
     owner, sh = _owner_setup(cloud, signer)
     tech = login(cloud, "tech@example.com")
     repo = cloud.app.state.repo
-    repo.grant_tech(tech.id, signer.fingerprint, owner.id, cloud.app.state.now())
+    grant_tech(
+        cloud_db(cloud), tech.id, signer.fingerprint, owner.id, cloud.app.state.now()
+    )
     login(cloud, "owner@example.com")
     base = f"/machines/{sh}/people/{tech.id}/revoke"
     assert "Revoke" in cloud.get(f"/machines/{sh}/people").text
@@ -197,7 +200,9 @@ def test_tech_cannot_invite_revoke_or_cancel(cloud, signer):
     token = _token(cloud, owner, signer.fingerprint)
     tech = login(cloud, "tech@example.com")
     repo = cloud.app.state.repo
-    repo.grant_tech(tech.id, signer.fingerprint, owner.id, cloud.app.state.now())
+    grant_tech(
+        cloud_db(cloud), tech.id, signer.fingerprint, owner.id, cloud.app.state.now()
+    )
     assert _invite(cloud, sh, "x@example.com").status_code == 404
     r = cloud.post(f"/machines/{sh}/people/{tech.id}/revoke", headers=HX)
     assert r.status_code == 404
