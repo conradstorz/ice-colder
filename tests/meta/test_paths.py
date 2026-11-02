@@ -12,8 +12,6 @@ from tests.paths import REPO_ROOT, TEMPLATES_DIR, VMC_PATH
 def test_every_path_exists():
     for name in ("REPO_ROOT", "TEMPLATES_DIR", "STATIC_DIR", "ROUTES_DIR", "VMC_PATH"):
         assert getattr(paths, name).exists(), name
-    for current, _legacy in paths.SCREEN_TEMPLATES:
-        assert (REPO_ROOT / current).is_file(), current
 
 
 def test_templates_and_vmc():

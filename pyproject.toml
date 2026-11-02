@@ -66,7 +66,7 @@ layers = [
     "ice_edge.faults | ice_edge.notify",
     "ice_edge.monitoring | ice_edge.access",
     "ice_edge.ledger | ice_edge.customer_ui | ice_edge.hal | ice_edge.config",
-    "ice_edge.supervisor | ice_edge.cctv",
+    "ice_edge.supervisor",
 ]
 
 [[tool.importlinter.contracts]]

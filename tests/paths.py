@@ -14,18 +14,6 @@ ROUTES_DIR = Path(ice_edge.web.routes.__file__).parent
 ROUTES_PACKAGE = ice_edge.web.routes.__name__
 VMC_PATH = Path(ice_edge.sale.vmc.__file__)
 
-# (current repo-relative path, legacy paths to try at origin/main)
-SCREEN_TEMPLATES: list[tuple[str, tuple[str, ...]]] = [
-    (
-        "packages/ui/src/ice_ui/templates/screen.html",
-        ("web_interface/templates/screen.html",),
-    ),
-    (
-        "packages/ui/src/ice_ui/templates/partials/screen_body.html",
-        ("web_interface/templates/partials/screen_body.html",),
-    ),
-]
-
 __all__ = [
     "REPO_ROOT",
     "TESTS_ROOT",
@@ -34,5 +22,4 @@ __all__ = [
     "ROUTES_DIR",
     "ROUTES_PACKAGE",
     "VMC_PATH",
-    "SCREEN_TEMPLATES",
 ]

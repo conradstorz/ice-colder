@@ -47,9 +47,9 @@ packages/
       hal/             hardware abstraction (§2.1): mqtt_inbound, command_dispatcher
       config/          config persistence: config_store
       supervisor/      supervisor (§2.10): task_runner
-  cloud/       Dockerfile  src/ice_cloud/  admin, app, auth, body_limit, claim, commands, ingest,
+  cloud/       Dockerfile  src/ice_cloud/  admin, app, auth, body_limit, claim, ingest,
                                            machine_auth, oidc, oidc_google, people, portal, settings,
-                                           shadow, ui_registry, viewer, store/{snapshots,repository,sqlite},
+                                           ui_registry, viewer, store/{snapshots,repository,sqlite},
                                            templates/
   sims/        src/ice_sims/    simulated board layer: base, ice_maker, mdb_gateway + vending_machine (thin entries),
                                 mdb/ (cash, policy, event_log, customer, faults, simulator),

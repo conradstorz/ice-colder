@@ -30,12 +30,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      # Full history (all branches/tags), not the default shallow single-branch
-      # checkout -- TestScreenTemplatesUnchanged::test_matches_origin_main
-      # diffs against origin/main and otherwise skips in CI with "bad revision
-      # 'origin/main'" because that ref is never fetched, silently disabling
-      # the /screen byte-identical guard. The extended guard step below fails
-      # the build if that happens again.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
