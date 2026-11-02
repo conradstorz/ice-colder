@@ -162,6 +162,9 @@ def extract_bundle(
     if dest.exists():
         raise BundleError(f"destination already exists: {dest}")
     tmp, manifest = prepare_bundle(data, dest.parent, expected_digest, prefix=dest.name)
+    # A directory rename, not a file write, and ice_ui may not import
+    # ice_common (so ice_common.paths.atomic_write is out of reach): this
+    # module keeps its own tmp-dir + os.replace.
     try:
         os.replace(tmp, dest)
     except BaseException:
