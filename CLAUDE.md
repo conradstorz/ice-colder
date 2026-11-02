@@ -8,29 +8,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Layout
 
-The repo is a uv workspace (`packages/*`). **Migration in progress:** `ice_contracts`, `ice_common`, `ice_ui`, `ice_edge` and `ice_sims` are populated (the former `controller/`, `services/`, `config/` and `web_interface/` roots are gone; `main.py` is `ice_edge/__main__.py`); the former `simulators/` root is now `ice_sims`. Board-contract generation: `uv run python -m ice_contracts.generate`.
+The repo is a uv workspace (`packages/*`): `ice_contracts`, `ice_common`, `ice_ui`, `ice_edge` and `ice_sims` are the packages (the former `controller/`, `services/`, `config/` and `web_interface/` roots are gone; `main.py` is `ice_edge/__main__.py`); the former `simulators/` root is now `ice_sims`. Board-contract generation: `uv run python -m ice_contracts.generate`.
 
-### Target layout
+### Current layout
 
 ```
 packages/
   contracts/   src/ice_contracts/
       board/           board↔edge contract (layer-contracts spec §3): common, vending_machine,
                        ice_maker_monitor, mqtt_messages, dispenser_schema, payment
-      cloud/           edge↔cloud contract (spec §4; cloud spec): report, ui            [PR 5]
+      cloud/           edge↔cloud contract (spec §4; cloud spec): report, ui
       access.py        Role, Permission, ROLE_PERMISSIONS, REMOTE_VIEWER_PERMISSIONS
       generate.py      schema generator → docs/contracts/**
   common/      src/ice_common/  build_info, paths, logging_setup, task_supervisor, task_lifecycle,
                                 mqtt_client, config_model, observers
   ui/          tailwind.config.js  tailwind.input.css
                src/ice_ui/      templates/ static/ levels.py tiles.py filters.py templating.py
-                                views/ (subsystem_window; health re-exports [PR 5]) bundle.py [PR 5]
+                                views/ (subsystem_window; health re-exports) bundle.py
   edge/        src/ice_edge/
       __main__.py      (was main.py)
       app/             composition root: machine, startup_config, startup_dispensers, startup_recovery
       web/             local service UI (ref arch §2.8): server, auth, context, routes/**
-      uplink/          store-and-forward to cloud (§2.9)              [stub PR 4, code PR 5]
-      views/           view-model builders shared by web + uplink      [PR 5]
+      uplink/          store-and-forward to cloud (§2.9)
+      views/           view-model builders shared by web + uplink
       sale/            sale state machine (§2.2): vmc, sale_context, session_timer, outputs,
                        sale_journal, payout_desk, test_sale, maintenance_lease, fsm_control
       vend/            vend verification (§2.4): dispense_cycle, dispenser_gate, dispensers, dispensers_doc
@@ -47,7 +47,6 @@ packages/
       hal/             hardware abstraction (§2.1): mqtt_inbound, command_dispatcher
       config/          config persistence: config_store
       supervisor/      supervisor (§2.10): task_runner
-      cctv/            CCTV (§4) — docstring-only stub
   cloud/       Dockerfile  src/ice_cloud/  admin, app, auth, body_limit, claim, commands, ingest,
                                            machine_auth, oidc, oidc_google, people, portal, settings,
                                            shadow, ui_registry, viewer, store/{snapshots,repository,sqlite},
@@ -58,7 +57,7 @@ packages/
 firmware/      README.md, docs/{vending,mdb}-board-interface.md — field-device/board layer
                common/ (boardcore, boardidf: shared platform), vending/, mdb/ (ESP-IDF/PlatformIO projects)
 scripts/       repo tooling (stays at root): _repo.py, gen_dispensers_example.py, make_click_wav.py,
-               check_package_isolation.py, flash_board.py, refactor/{move_map.py,codemod.py}
+               check_package_isolation.py, flash_board.py
 tests/         one package; conftest.py + helpers stay at root
    meta/ contracts/ common/ ui/ sims/ integration/ cloud/ firmware/{,mdb/}
    edge/{app,web,views,uplink,sale,vend,payment,reporting,faults,notify,monitoring,access,ledger,
