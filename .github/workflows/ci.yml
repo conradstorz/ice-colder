@@ -70,7 +70,7 @@ jobs:
           docker logs mosquitto
           echo "::error::mosquitto did not become ready on localhost:1883"
           exit 1
-      # Everything runs, including the e2e tests (broker above) and the 5
+      # Everything runs, including the e2e tests (broker above) and the 6
       # opt-in browser tests (enabled below) — the guard step immediately
       # after this one fails CI if any of them skip instead of running (the
       # broker skip is forbidden in CI via ICE_COLDER_REQUIRE_BROKER), so a

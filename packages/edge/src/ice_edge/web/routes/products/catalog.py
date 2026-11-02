@@ -316,6 +316,7 @@ async def update_catalog(
                 error="Could not save changes.",
                 button_value=button,
             ),
+            status_code=400,
         )
     if context.machine_instance:
         context.machine_instance.gate.catalog_changed()

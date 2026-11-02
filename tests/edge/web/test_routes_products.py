@@ -539,6 +539,24 @@ class TestUnknownSku:
         assert "Not found" in resp.text
 
 
+class TestCatalogSaveRace:
+    def test_save_race_answers_400_with_error_form(self, client, wired, monkeypatch):
+        """update_product fails when the SKU vanishes between _get_or_404 and
+        the save (a concurrent delete): the form re-renders with the save
+        error and answers 400, like every other product form error."""
+        from ice_edge.web.routes.products import catalog
+
+        _add(client, "RACE-1", name="Racer", price="1.00")
+        monkeypatch.setattr(catalog, "update_product", lambda *a, **kw: False)
+
+        resp = client.post(
+            "/products/RACE-1/catalog",
+            data={"name": "Renamed", "price": "2.00", "kind": "water"},
+        )
+        assert resp.status_code == 400
+        assert "Could not save changes." in resp.text
+
+
 class TestCsrfGuard:
     @pytest.mark.parametrize(
         "path",
