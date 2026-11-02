@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -20,7 +19,7 @@ from typing import Optional
 
 from loguru import logger
 
-from ice_common.paths import DATA_DIR
+from ice_common.paths import DATA_DIR, atomic_write
 
 SESSION_PATH = DATA_DIR / "session.json"
 
@@ -112,12 +111,7 @@ class SessionStore:
 
     def save(self, snap: SessionSnapshot) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_name(self._path.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({**asdict(snap), "units": "cents"}, f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self._path)
+        atomic_write(self._path, json.dumps({**asdict(snap), "units": "cents"}))
 
     def load(self) -> Optional[SessionSnapshot]:
         if not self._path.exists():
