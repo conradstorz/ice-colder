@@ -2,9 +2,9 @@
 #include <string.h>
 #include <unity.h>
 
-#include "outbound_ring.h"
+#include "boardcore/outbound_ring.h"
 
-using namespace vendcore;
+using namespace boardcore;
 
 void setUp(void) {}
 void tearDown(void) {}

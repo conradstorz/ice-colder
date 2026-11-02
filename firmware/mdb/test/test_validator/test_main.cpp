@@ -12,26 +12,7 @@ void tearDown(void) {}
 
 namespace {
 
-struct Sink : EventSink {
-    PaymentEvent ev[64];
-    int n = 0;
-    int capacity = 64;
-    bool emit(const PaymentEvent& e) override {
-        if (n >= capacity || n >= 64) return false;
-        ev[n++] = e;
-        return true;
-    }
-    int count(EventKind k) const {
-        int c = 0;
-        for (int i = 0; i < n; ++i) c += ev[i].kind == k;
-        return c;
-    }
-    const PaymentEvent* first(EventKind k) const {
-        for (int i = 0; i < n; ++i)
-            if (ev[i].kind == k) return &ev[i];
-        return nullptr;
-    }
-};
+using Sink = mdbcore::Sink<64>;
 
 struct Judge : EscrowJudge {
     bool stack = true;

@@ -17,31 +17,7 @@ void tearDown(void) {}
 
 namespace {
 
-struct Sink : EventSink {
-    PaymentEvent ev[256];
-    int n = 0;
-    int capacity = 256;
-    bool emit(const PaymentEvent& e) override {
-        if (n >= capacity || n >= 256) return false;
-        ev[n++] = e;
-        return true;
-    }
-    int count(EventKind k) const {
-        int c = 0;
-        for (int i = 0; i < n; ++i) c += ev[i].kind == k;
-        return c;
-    }
-    const PaymentEvent* first(EventKind k) const {
-        for (int i = 0; i < n; ++i)
-            if (ev[i].kind == k) return &ev[i];
-        return nullptr;
-    }
-    const PaymentEvent* last(EventKind k) const {
-        for (int i = n - 1; i >= 0; --i)
-            if (ev[i].kind == k) return &ev[i];
-        return nullptr;
-    }
-};
+using Sink = mdbcore::Sink<256>;
 
 const PaymentEvent* need(const PaymentEvent* e) {
     TEST_ASSERT_NOT_NULL(e);

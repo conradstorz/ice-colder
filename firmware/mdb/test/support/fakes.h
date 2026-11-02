@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "events.h"
 #include "link.h"
 #include "ports.h"
 
@@ -61,6 +62,79 @@ struct FakeLogStore : LogStore {
 struct FakePeripheral {
     virtual Response respond(uint8_t cmd, const uint8_t* data, uint8_t n) = 0;  // cmd = low 3 bits
     virtual void on_master_byte(uint8_t) {}
+};
+
+// A peripheral that answers POLL from a scripted queue of reply blocks (at most kBlocks of 16 bytes).
+struct ScriptedPeripheral : FakePeripheral {
+    bool silent = false;  // answer nothing at all
+
+    static constexpr int kBlocks = 16;
+    uint8_t blk[kBlocks][16] = {};
+    uint8_t blk_len[kBlocks] = {};
+    int n_blk = 0, head = 0;
+
+    void clear_script() { n_blk = head = 0; }
+    // Appends a byte to the last block, or starts a new block unless same_block.
+    void add(uint8_t b, bool same_block = false) {
+        if (!same_block || n_blk == 0) {
+            if (n_blk >= kBlocks) return;
+            blk_len[n_blk] = 0;
+            ++n_blk;
+        }
+        blk[n_blk - 1][blk_len[n_blk - 1]++] = b;
+    }
+
+    static Response ack() {
+        Response r{};
+        r.kind = Reply::Ack;
+        return r;
+    }
+    static Response nak() {
+        Response r{};
+        r.kind = Reply::Nak;
+        return r;
+    }
+    static Response data(const uint8_t* d, uint8_t n) {
+        Response r{};
+        r.kind = Reply::Data;
+        memcpy(r.data, d, n);
+        r.len = n;
+        return r;
+    }
+    static Response timeout() {
+        Response r{};
+        r.kind = Reply::Timeout;
+        return r;
+    }
+};
+
+// Event sink that records up to N events; `capacity` (<= N) lets a test make emit() refuse, as a full
+// outbound queue would.
+template <size_t N>
+struct Sink : EventSink {
+    PaymentEvent ev[N];
+    int n = 0;
+    int capacity = static_cast<int>(N);
+    bool emit(const PaymentEvent& e) override {
+        if (n >= capacity || n >= static_cast<int>(N)) return false;
+        ev[n++] = e;
+        return true;
+    }
+    int count(EventKind k) const {
+        int c = 0;
+        for (int i = 0; i < n; ++i) c += ev[i].kind == k;
+        return c;
+    }
+    const PaymentEvent* first(EventKind k) const {
+        for (int i = 0; i < n; ++i)
+            if (ev[i].kind == k) return &ev[i];
+        return nullptr;
+    }
+    const PaymentEvent* last(EventKind k) const {
+        for (int i = n - 1; i >= 0; --i)
+            if (ev[i].kind == k) return &ev[i];
+        return nullptr;
+    }
 };
 
 class FakeBus : public BusPort {

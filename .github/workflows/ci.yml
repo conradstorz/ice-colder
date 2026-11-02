@@ -100,7 +100,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ hashFiles('firmware/vending/platformio.ini', 'firmware/mdb/platformio.ini') }}
+          key: pio-${{ hashFiles('firmware/vending/platformio.ini', 'firmware/mdb/platformio.ini', 'firmware/common/platformio.ini') }}
           restore-keys: pio-
       - run: pio run -e kc868-a8
         working-directory: firmware/vending
@@ -110,6 +110,8 @@ jobs:
         working-directory: firmware/mdb
       - run: pio test -e native
         working-directory: firmware/mdb
+      - run: pio test -e native
+        working-directory: firmware/common
       - name: Golden wire files are up to date
         # porcelain, not diff: a newly generated (untracked) golden file must fail the build too
         run: test -z "$(git status --porcelain -- firmware/vending/test/golden firmware/mdb/test/golden)"

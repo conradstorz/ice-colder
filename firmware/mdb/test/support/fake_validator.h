@@ -7,7 +7,7 @@
 
 namespace mdbcore {
 
-struct FakeValidator : FakePeripheral {
+struct FakeValidator : ScriptedPeripheral {
     // Configuration.
     uint8_t level = 2;
     uint16_t scaling = 100;
@@ -15,7 +15,6 @@ struct FakeValidator : FakePeripheral {
     uint16_t stacker_capacity = 500;
     uint8_t credit[16] = {1, 5, 10, 20};  // $1 $5 $10 $20 (units of `scaling`)
     bool escrow_capable = true;
-    bool silent = false;  // answer nothing at all
     bool fail_escrow = false;  // NAK every ESCROW command
 
     // Live state.
@@ -25,12 +24,6 @@ struct FakeValidator : FakePeripheral {
     uint8_t escrow_type = 0;
     uint16_t bill_mask = 0, escrow_mask = 0;  // last BILL TYPE
 
-    // Scripted POLL blocks.
-    static constexpr int kBlocks = 16;
-    uint8_t blk[kBlocks][16] = {};
-    uint8_t blk_len[kBlocks] = {};
-    int n_blk = 0, head = 0;
-
     // Recording.
     uint16_t bill_masks[16] = {}, escrow_masks[16] = {};
     int n_masks = 0;
@@ -38,15 +31,6 @@ struct FakeValidator : FakePeripheral {
     int n_escrow_cmds = 0;
     int calls[8] = {};
 
-    void clear_script() { n_blk = head = 0; }
-    void add(uint8_t b, bool same_block = false) {
-        if (!same_block || n_blk == 0) {
-            if (n_blk >= kBlocks) return;
-            blk_len[n_blk] = 0;
-            ++n_blk;
-        }
-        blk[n_blk - 1][blk_len[n_blk - 1]++] = b;
-    }
     void status(uint8_t b, bool same_block = false) { add(b, same_block); }
     void just_reset() { add(0x06, false); }
     void cashbox_out() { cashbox_is_out = true; }
@@ -69,30 +53,8 @@ struct FakeValidator : FakePeripheral {
         }
     }
 
-    static Response ack() {
-        Response r{};
-        r.kind = Reply::Ack;
-        return r;
-    }
-    static Response nak() {
-        Response r{};
-        r.kind = Reply::Nak;
-        return r;
-    }
-    static Response data(const uint8_t* d, uint8_t n) {
-        Response r{};
-        r.kind = Reply::Data;
-        memcpy(r.data, d, n);
-        r.len = n;
-        return r;
-    }
-
     Response respond(uint8_t cmd, const uint8_t* d, uint8_t n) override {
-        if (silent) {
-            Response t{};
-            t.kind = Reply::Timeout;
-            return t;
-        }
+        if (silent) return timeout();
         ++calls[cmd & 7];
         uint8_t out[40];
         switch (cmd) {

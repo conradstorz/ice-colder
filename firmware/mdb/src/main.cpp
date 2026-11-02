@@ -1,6 +1,6 @@
 #include "../boards/mdb-s3.h"
 #include "boardidf/board_identity.h"
-#include "boardidf/console.h"
+#include "boardidf/boot.h"
 #include "boardidf/settings.h"
 #include "bus_task.h"
 #include "comms_task.h"
@@ -10,7 +10,6 @@
 #include "freertos/task.h"
 #include "flash_window.h"
 #include "ledger_task.h"
-#include "nvs_flash.h"
 #include "queues.h"
 #include "status_led.h"
 #include "version.h"
@@ -19,19 +18,17 @@ static const char* TAG = "mdb";
 
 static const BoardIdentity kIdentity = {"mdb", "mdb> ", "mdb", false};
 
+// Runs after the settings load and before the console starts: the console's settings writes go
+// through the flash window.
+static void mdb_flash_guard_install() {
+    flash_window_init();
+    settings_set_flash_guard(flash_window_open_blocking, flash_window_close_blocking);
+}
+
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "firmware %s", mdbcore::kFirmwareVersion);
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
-    }
-    settings_init(kIdentity);
     static Settings settings;
-    settings_load(settings);
-    flash_window_init();  // before the console: its settings writes go through the window
-    settings_set_flash_guard(flash_window_open_blocking, flash_window_close_blocking);
-    console_start(kIdentity, settings);
+    boardidf::board_boot(kIdentity, settings, mdb_flash_guard_install);
 
     // All queues are allocated here, once; nothing allocates after boot.
     static Queues q;

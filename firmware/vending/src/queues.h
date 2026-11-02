@@ -3,7 +3,7 @@
 // (sequencer -> comms).
 #pragma once
 
-#include "ack_cache.h"
+#include "boardcore/ack_cache.h"
 #include "command.h"
 #include "ports.h"
 
