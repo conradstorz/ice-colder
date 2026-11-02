@@ -52,7 +52,7 @@ def test_atomic_write_leaves_old_file_on_failure(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(json, "dump", boom)
+    monkeypatch.setattr(json, "dumps", boom)
     st.advance("boot-aaaa", 2, "evt-00002")
     with pytest.raises(OSError):
         store.save(st)
