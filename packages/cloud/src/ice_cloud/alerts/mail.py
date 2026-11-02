@@ -88,18 +88,6 @@ class LogOnlyMailer:
         logger.info("Alert email (SMTP unset): {} -> {}", msg["Subject"], msg["To"])
 
 
-class RecordingMailer:
-    def __init__(self) -> None:
-        self.sent: list[EmailMessage] = []
-        self.fail_next: Exception | None = None
-
-    async def send(self, msg: EmailMessage) -> None:
-        if self.fail_next is not None:
-            error, self.fail_next = self.fail_next, None
-            raise error
-        self.sent.append(msg)
-
-
 def make_mailer(settings: Any) -> Mailer:
     config = SmtpConfig.from_settings(settings)
     if config.host is None:

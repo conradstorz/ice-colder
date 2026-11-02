@@ -1,23 +1,6 @@
 import pytest
 
-from ice_edge.access.auth_policy import (
-    is_loopback,
-    pin_problem,
-)
-
-
-@pytest.mark.parametrize(
-    "host,expected",
-    [
-        ("127.0.0.1", True),
-        ("localhost", True),
-        ("::1", True),
-        ("0.0.0.0", False),
-        ("192.168.1.5", False),
-    ],
-)
-def test_is_loopback(host, expected):
-    assert is_loopback(host) is expected
+from ice_edge.access.auth_policy import pin_problem
 
 
 @pytest.mark.parametrize("pin", ["1379", "9042", "13795", "90426183"])

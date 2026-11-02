@@ -35,11 +35,6 @@ _SEVERITY_LEVEL = {
 }
 
 
-def severity_level(severity: Severity) -> str:
-    """Public accessor for the severity -> alert-level map."""
-    return _SEVERITY_LEVEL[severity]
-
-
 @dataclass(frozen=True)
 class RaisedFault:
     """Result of :meth:`FaultRegistry.raise_fault`, enough for the caller

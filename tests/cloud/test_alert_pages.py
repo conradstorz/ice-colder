@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import timedelta
 
 from ice_cloud.store.repository import AlertEventRow
-from tests.cloud.conftest import login, own_and_select, short
+from tests.cloud.conftest import (
+    cloud_db,
+    is_muted_sql,
+    login,
+    own_and_select,
+    short,
+)
 from tests.cloud.reports import make_report
 
 HX = {"HX-Request": "true"}
@@ -93,7 +99,7 @@ def test_alerts_page_limit_200(cloud, signer):
 
 
 def _muted(cloud, account, signer):
-    return cloud.app.state.repo.is_muted(account.id, signer.fingerprint)
+    return is_muted_sql(cloud_db(cloud), account.id, signer.fingerprint)
 
 
 def _mute(cloud, sh, account, value="1", headers=HX):

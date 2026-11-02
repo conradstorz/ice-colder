@@ -29,7 +29,7 @@ from ice_cloud.auth import (
     require_signed_in,
     safe_next,
 )
-from tests.cloud.conftest import login
+from tests.cloud.conftest import account_id_by_email, cloud_db, login
 from tests.cloud.reports import FP, FP_2, NOW
 
 KEY = b"k" * 32
@@ -213,7 +213,7 @@ def test_unverified_email_refused(cloud, probes):
     assert r.status_code == 400
     assert "not verified" in r.text
     assert session_cookie(cloud) is None
-    assert cloud.app.state.repo.account_by_email("b@example.com") is None
+    assert account_id_by_email(cloud_db(cloud), "b@example.com") is None
 
 
 def test_email_conflict_is_a_409_page(cloud):

@@ -14,6 +14,12 @@ from ice_cloud.store import (
     SqliteRepository,
     sqlite,
 )
+from tests.cloud.conftest import (
+    account_id_by_email,
+    consumed_hashes,
+    is_muted_sql,
+    sql_exec,
+)
 from tests.cloud.reports import FP, FP_2
 
 T0 = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
@@ -21,8 +27,13 @@ KEY = "a2V5"
 
 
 @pytest.fixture
-def repo(tmp_path):
-    return SqliteRepository(tmp_path / "data" / "cloud.db")
+def db_path(tmp_path):
+    return tmp_path / "data" / "cloud.db"
+
+
+@pytest.fixture
+def repo(db_path):
+    return SqliteRepository(db_path)
 
 
 def _accounts(repo):
@@ -31,7 +42,7 @@ def _accounts(repo):
     return owner, tech
 
 
-def test_upsert_account_creates_then_updates_by_google_sub(repo):
+def test_upsert_account_creates_then_updates_by_google_sub(repo, db_path):
     first = repo.upsert_account_from_login("sub-1", "A@Example.com", "Ann", T0)
     assert first.email == "a@example.com" and first.suspended_at is None
     assert first.created_at == T0
@@ -41,8 +52,9 @@ def test_upsert_account_creates_then_updates_by_google_sub(repo):
     assert again.id == first.id and again.name == "Ann B"
     assert again.email == "ann@example.com" and again.created_at == T0
     assert repo.account(first.id) == again
-    assert repo.account_by_email("ANN@example.com") == again
-    assert repo.account("nope") is None and repo.account_by_email("x@y.z") is None
+    assert account_id_by_email(db_path, "ANN@example.com") == again.id
+    assert repo.account("nope") is None
+    assert account_id_by_email(db_path, "x@y.z") is None
 
 
 def test_suspend_and_all_accounts(repo):
@@ -367,18 +379,18 @@ def test_invitations_by_excludes_expired_and_accepted(repo):
     assert repo.invitations_by(owner.id, None, old.expires_at) == [live]
 
 
-def test_set_claim_code_ignores_the_hash_a_claim_consumed(repo):
+def test_set_claim_code_ignores_the_hash_a_claim_consumed(repo, db_path):
     owner, _ = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.set_claim_code(FP, "h", None)
     assert repo.claim_machine(FP, owner.id, T0, expected_hash="h") is True
     repo.set_claim_code(FP, "h", None)  # the edge re-sending the consumed code
     assert repo.machine(FP).claim_code_hash is None
-    assert repo.consumed_claim_hashes(FP) == {"h"}
+    assert consumed_hashes(db_path, FP) == {"h"}
     repo.set_claim_code(FP, "fresh", None)
     assert repo.machine(FP).claim_code_hash == "fresh"
     # A fresh hash does not make a consumed one usable again.
-    assert repo.consumed_claim_hashes(FP) == {"h"}
+    assert consumed_hashes(db_path, FP) == {"h"}
     repo.set_claim_code(FP, "h", None)
     assert repo.machine(FP).claim_code_hash == "fresh"
     repo.set_claim_code(FP, None, None)
@@ -386,13 +398,13 @@ def test_set_claim_code_ignores_the_hash_a_claim_consumed(repo):
     assert repo.machine(FP).claim_code_hash is None
 
 
-def test_unbind_is_the_only_thing_that_forgets_consumed_hashes(repo):
+def test_unbind_is_the_only_thing_that_forgets_consumed_hashes(repo, db_path):
     owner, _ = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.set_claim_code(FP, "h", None)
     repo.claim_machine(FP, owner.id, T0, expected_hash="h")
     repo.unbind_machine(FP)
-    assert repo.consumed_claim_hashes(FP) == set()
+    assert consumed_hashes(db_path, FP) == set()
     repo.set_claim_code(FP, "h", None)
     assert repo.machine(FP).claim_code_hash == "h"
 
@@ -451,7 +463,7 @@ def _claimed(repo):
     return owner, tech
 
 
-def test_alert_state_put_get_replace_delete(repo):
+def test_alert_state_put_get_replace_delete(repo, db_path):
     repo.register_machine(FP, KEY, "a", T0)
     assert repo.alert_state(FP) is None
     repo.put_alert_state(_state(keys=("B", "A")))
@@ -461,7 +473,7 @@ def test_alert_state_put_get_replace_delete(repo):
     later = AlertState(FP, (), T0 + timedelta(minutes=1), 120, T0)
     repo.put_alert_state(later)
     assert repo.alert_state(FP) == later
-    repo.delete_alert_state(FP)
+    sql_exec(db_path, "DELETE FROM machine_alert_state WHERE fingerprint = ?", (FP,))
     assert repo.alert_state(FP) is None
 
 
@@ -526,14 +538,14 @@ def test_people_for_alerts_excludes_suspended(repo):
     assert repo.people_for_alerts(FP) == []
 
 
-def test_set_muted_and_is_muted(repo):
+def test_set_muted_and_is_muted(repo, db_path):
     owner, tech = _claimed(repo)
-    assert repo.is_muted(tech.id, FP) is False
+    assert is_muted_sql(db_path, tech.id, FP) is False
     repo.set_muted(tech.id, FP, True)
-    assert repo.is_muted(tech.id, FP) is True
-    assert repo.is_muted(owner.id, FP) is False
+    assert is_muted_sql(db_path, tech.id, FP) is True
+    assert is_muted_sql(db_path, owner.id, FP) is False
     repo.set_muted(tech.id, FP, False)
-    assert repo.is_muted(tech.id, FP) is False
+    assert is_muted_sql(db_path, tech.id, FP) is False
 
 
 def test_create_delivery_and_mark_increments_attempts(repo):
@@ -655,36 +667,36 @@ def _seed_alerts(repo, owner, tech):
     return e
 
 
-def test_claim_change_resets_alert_state_prefs_and_history(repo):
+def test_claim_change_resets_alert_state_prefs_and_history(repo, db_path):
     owner, tech = _claimed(repo)
     e = _seed_alerts(repo, owner, tech)
     newer = repo.upsert_account_from_login("sub-n", "new@example.com", "Nia", T0)
     assert repo.claim_machine(FP, newer.id, T0 + timedelta(hours=1)) is True
     assert repo.alert_state(FP) is None
-    assert repo.is_muted(tech.id, FP) is False
+    assert is_muted_sql(db_path, tech.id, FP) is False
     assert repo.alert_events(FP, limit=5) == []
     assert repo.deliveries_for_events(FP, [e.id]) == {e.id: []}
     assert repo.last_sent_at(FP, owner.id) is None
 
 
-def test_reclaim_same_owner_keeps_state(repo):
+def test_reclaim_same_owner_keeps_state(repo, db_path):
     owner, tech = _claimed(repo)
     _seed_alerts(repo, owner, tech)
     assert repo.claim_machine(FP, owner.id, T0 + timedelta(hours=1)) is True
     assert repo.alert_state(FP) == _state()
-    assert repo.is_muted(tech.id, FP) is True
+    assert is_muted_sql(db_path, tech.id, FP) is True
 
 
-def test_revoke_deletes_pref(repo):
+def test_revoke_deletes_pref(repo, db_path):
     owner, tech = _claimed(repo)
     repo.set_muted(tech.id, FP, True)
     repo.set_muted(owner.id, FP, True)
     repo.revoke(tech.id, FP)
-    assert repo.is_muted(tech.id, FP) is False
-    assert repo.is_muted(owner.id, FP) is True
+    assert is_muted_sql(db_path, tech.id, FP) is False
+    assert is_muted_sql(db_path, owner.id, FP) is True
 
 
-def test_unbind_deletes_everything_alert(repo):
+def test_unbind_deletes_everything_alert(repo, db_path):
     owner, tech = _claimed(repo)
     e = _seed_alerts(repo, owner, tech)
     repo.unbind_machine(FP)
@@ -693,7 +705,7 @@ def test_unbind_deletes_everything_alert(repo):
     assert repo.deliveries_for_events(FP, [e.id]) == {e.id: []}
     assert repo.pending_deliveries(before=T0 + timedelta(days=1)) == []
     assert repo.last_sent_at(FP, owner.id) is None
-    assert repo.is_muted(tech.id, FP) is False
+    assert is_muted_sql(db_path, tech.id, FP) is False
 
 
 def test_machine_view_upsert_overwrites_viewed_at(repo):

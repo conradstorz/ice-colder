@@ -15,7 +15,7 @@ Codes used:
 """
 
 from ice_contracts.board.vending_machine import FAULT_TABLE, FaultCode, Severity
-from ice_edge.faults.fault_registry import FaultRegistry, severity_level
+from ice_edge.faults.fault_registry import FaultRegistry
 
 
 def make_registry(names: dict[str, str] | None = None) -> FaultRegistry:
@@ -107,7 +107,6 @@ def test_message_formatting_with_product_name_and_outcome():
         "(reported: timeout)"
     )
     assert raised.alert_key == "ICE-301:ICE-1"
-    assert raised.level == severity_level(spec.severity)
 
 
 def test_message_formatting_without_product_name_or_outcome():

@@ -1,12 +1,5 @@
-"""PIN policy and loopback detection shared across the access store and the
-dashboard's login/setup/enrollment routes."""
-
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
-
-
-def is_loopback(host: str) -> bool:
-    return host in LOOPBACK_HOSTS
-
+"""PIN policy shared across the access store and the dashboard's
+login/setup/enrollment routes."""
 
 MIN_PIN_LENGTH = 4
 MAX_PIN_LENGTH = 8

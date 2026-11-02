@@ -3,13 +3,14 @@ import gzip
 import io
 import json
 import shutil
+import sqlite3
 import tarfile
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from ice_cloud.alerts.mail import RecordingMailer
 from ice_cloud.app import create_app
 from ice_cloud.auth import IdentityClaims, SignInError
 from ice_cloud.store.repository import Account
@@ -17,6 +18,7 @@ from ice_cloud.settings import CloudSettings
 from ice_contracts.cloud import signing
 from ice_contracts.cloud.identity import RegisterMachine
 from ice_ui.bundle import INSTALLED_ROOT, build_bundle
+from tests.cloud.alerts.helpers import RecordingMailer
 from tests.cloud.reports import NOW, later
 
 
@@ -98,6 +100,55 @@ def cloud_app(settings, clock, provider, mailer):
     )
 
 
+def cloud_db(cloud: TestClient) -> Path:
+    """The cloud app's SQLite file, from its public settings."""
+    return cloud.app.state.settings.data_dir / "cloud.db"
+
+
+def sql_rows(db_path: Path, sql: str, params: tuple = ()) -> list[tuple]:
+    """Run one read-only query against the database file on its own connection."""
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+
+def sql_exec(db_path: Path, sql: str, params: tuple = ()) -> None:
+    """Run one write statement on its own connection (test setup only)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        with conn:
+            conn.execute(sql, params)
+    finally:
+        conn.close()
+
+
+def account_id_by_email(db_path: Path, email: str) -> str | None:
+    rows = sql_rows(
+        db_path, "SELECT id FROM accounts WHERE email = ?", (email.lower(),)
+    )
+    return rows[0][0] if rows else None
+
+
+def consumed_hashes(db_path: Path, fingerprint: str) -> set[str]:
+    rows = sql_rows(
+        db_path,
+        "SELECT hash FROM consumed_claim_hashes WHERE fingerprint = ?",
+        (fingerprint,),
+    )
+    return {r[0] for r in rows}
+
+
+def is_muted_sql(db_path: Path, account_id: str, fingerprint: str) -> bool:
+    rows = sql_rows(
+        db_path,
+        "SELECT muted FROM alert_prefs WHERE account_id = ? AND fingerprint = ?",
+        (account_id, fingerprint),
+    )
+    return bool(rows) and bool(rows[0][0])
+
+
 def login(
     cloud: TestClient, email: str, sub: str | None = None, name: str = "Test User"
 ) -> Account:
@@ -109,7 +160,9 @@ def login(
     assert start.status_code == 303
     callback = cloud.get(start.headers["location"])
     assert callback.status_code == 303, callback.text
-    account = cloud.app.state.repo.account_by_email(email)
+    account_id = account_id_by_email(cloud_db(cloud), email)
+    assert account_id is not None
+    account = cloud.app.state.repo.account(account_id)
     assert account is not None
     return account
 

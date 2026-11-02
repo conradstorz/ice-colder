@@ -343,13 +343,6 @@ class SqliteRepository:
             row = conn.execute("SELECT * FROM accounts WHERE id = ?", (id,)).fetchone()
         return None if row is None else _account(row)
 
-    def account_by_email(self, email: str) -> Account | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM accounts WHERE email = ?", (email.lower(),)
-            ).fetchone()
-        return None if row is None else _account(row)
-
     def set_suspended(self, id: str, suspended_at: datetime | None) -> None:
         with self._tx() as conn:
             conn.execute(
@@ -501,14 +494,6 @@ class SqliteRepository:
                 " DO UPDATE SET uploaded_at = excluded.uploaded_at",
                 (fingerprint, digest, _iso(now)),
             )
-
-    def consumed_claim_hashes(self, fingerprint: str) -> set[str]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT hash FROM consumed_claim_hashes WHERE fingerprint = ?",
-                (fingerprint,),
-            ).fetchall()
-        return {r["hash"] for r in rows}
 
     def unbind_machine(self, fingerprint: str) -> None:
         with self._tx() as conn:
@@ -841,10 +826,6 @@ class SqliteRepository:
             ),
         )
 
-    def delete_alert_state(self, fingerprint: str) -> None:
-        with self._tx() as conn:
-            conn.execute(_ALERT_DELETES[0], (fingerprint,))
-
     def claimed_machines_with_state(self) -> list[tuple[Machine, AlertState]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1042,14 +1023,6 @@ class SqliteRepository:
                 " DO UPDATE SET muted = excluded.muted",
                 (account_id, fingerprint, int(muted)),
             )
-
-    def is_muted(self, account_id: str, fingerprint: str) -> bool:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT muted FROM alert_prefs WHERE account_id = ? AND fingerprint = ?",
-                (account_id, fingerprint),
-            ).fetchone()
-        return row is not None and bool(row["muted"])
 
     def create_delivery(
         self,

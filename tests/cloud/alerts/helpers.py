@@ -1,11 +1,23 @@
 from datetime import UTC, datetime, timedelta
+from email.message import EmailMessage
 
 from ice_cloud.alerts.dispatcher import AlertDispatcher
-from ice_cloud.alerts.mail import RecordingMailer
 from ice_cloud.store import AlertEventRow, SqliteRepository
 from tests.cloud.reports import FP
 
 T0 = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+
+
+class RecordingMailer:
+    def __init__(self) -> None:
+        self.sent: list[EmailMessage] = []
+        self.fail_next: Exception | None = None
+
+    async def send(self, msg: EmailMessage) -> None:
+        if self.fail_next is not None:
+            error, self.fail_next = self.fail_next, None
+            raise error
+        self.sent.append(msg)
 
 
 class Clock:
@@ -38,7 +50,8 @@ def event_row(
 
 class Env:
     def __init__(self, tmp_path):
-        self.repo = SqliteRepository(tmp_path / "cloud.db")
+        self.db_path = tmp_path / "cloud.db"
+        self.repo = SqliteRepository(self.db_path)
         self.owner = self.repo.upsert_account_from_login(
             "sub-o", "owner@example.com", "Olive", T0
         )

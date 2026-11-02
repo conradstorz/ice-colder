@@ -6,6 +6,7 @@ from ice_cloud.alerts.dispatcher import COOLDOWN_SECONDS
 from ice_cloud.alerts.sweep import SWEEP_SECONDS, OfflineSweep
 from ice_cloud.store import AlertState
 from tests.cloud.alerts.helpers import FP, T0, Env, event_row
+from tests.cloud.conftest import sql_exec
 
 import pytest
 
@@ -66,7 +67,9 @@ async def test_unclaimed_never(env, sweep):
     env.repo.put_alert_state(
         replace(_state(env), fingerprint="other-fp"),
     )
-    env.repo.delete_alert_state(FP)
+    sql_exec(
+        env.db_path, "DELETE FROM machine_alert_state WHERE fingerprint = ?", (FP,)
+    )
     env.clock.advance(10 * INTERVAL)
     assert await sweep.tick() == []
     assert env.mailer.sent == []
