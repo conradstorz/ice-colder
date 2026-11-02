@@ -15,10 +15,13 @@ route.
 import copy
 import json
 import re
+import uuid
 
 import pytest
+from fastapi.testclient import TestClient
 
 from ice_edge.access.access import Role
+from ice_edge.web.server import app
 from tests.conftest import make_client
 from ice_edge.web import auth as web_auth
 
@@ -183,7 +186,12 @@ class TestOwnerRowReadOnlyForSecretary:
 
     @pytest.mark.parametrize(
         "action,extra",
-        [("disable", {}), ("delete", {}), ("reset-pin", {"pin": "5297"})],
+        [
+            ("disable", {}),
+            ("enable", {}),
+            ("delete", {}),
+            ("reset-pin", {"pin": "5297"}),
+        ],
     )
     def test_secretary_403_on_owner_targeting_writes(
         self, login_as, wired, action, extra
@@ -267,6 +275,7 @@ class TestDeviceOwnerGuard:
         resp = secretary.post(f"/devices/{device_id}/forget")
         assert resp.status_code == 403
         assert device_id in store.devices
+        assert store.owner().id in store.devices[device_id].trusted_user_ids
         assert owner.get("/devices").status_code == 200
 
 
@@ -603,3 +612,549 @@ class TestLinkToCloud:
         context.set_health_monitor(HealthMonitor())
         resp = client.get("/health")
         assert cloud_on.short_fingerprint in resp.text
+
+
+class TestUserManagement:
+    """§4.1: a secretary manages everyone except the owner — every write
+    whose target is the owner needs manage_ownership, and a secretary may
+    never mint one either."""
+
+    def test_owner_sees_the_list_containing_ada(self, client):
+        resp = client.get("/users")
+        assert resp.status_code == 200
+        assert "Ada" in resp.text
+
+    def test_list_shows_the_unused_code_count(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        store.generate_emergency_codes()
+        resp = client.get("/users")
+        assert resp.status_code == 200
+        assert "20" in resp.text
+
+    @pytest.mark.parametrize("role", [Role.tech, Role.loader])
+    def test_tech_and_loader_get_403(self, login_as, role):
+        worker = login_as(role)
+        resp = worker.get("/users")
+        assert resp.status_code == 403
+
+    def test_owner_creates_a_loader(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        resp = client.post(
+            "/users/new",
+            data={"name": "Lonnie", "email": "", "role": "loader", "pin": "5297"},
+        )
+        assert resp.status_code == 200
+        assert "Lonnie" in resp.text
+        created = next(u for u in store.users.values() if u.name == "Lonnie")
+        assert created.role == Role.loader
+
+    def test_bad_pin_is_refused_with_the_reason_and_creates_nobody(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        before = len(store.users)
+        resp = client.post(
+            "/users/new",
+            data={"name": "Nope", "email": "", "role": "loader", "pin": "1111"},
+        )
+        assert resp.status_code == 200
+        assert "same digit repeated" in resp.text
+        assert len(store.users) == before
+
+    def test_secretary_may_not_create_an_owner(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        secretary = login_as(Role.secretary)
+        original_owner_id = store.owner().id
+        resp = secretary.post(
+            "/users/new",
+            data={"name": "Usurper", "email": "", "role": "owner", "pin": "5297"},
+        )
+        assert resp.status_code == 403
+        assert store.owner().id == original_owner_id
+        assert not any(u.name == "Usurper" for u in store.users.values())
+
+    def test_new_user_form_offers_owner_only_to_manage_ownership(self, login_as):
+        owner = login_as(Role.owner)
+        secretary = login_as(Role.secretary)
+        assert 'value="owner"' in owner.get("/users/new").text
+        assert 'value="owner"' not in secretary.get("/users/new").text
+
+    def test_secretary_may_disable_and_reenable_a_loader(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        secretary = login_as(Role.secretary)
+        loader = store.create_user(
+            "Loader One", "loader1@example.com", Role.loader, "5297"
+        )
+        resp = secretary.post(f"/users/{loader.id}/disable")
+        assert resp.status_code == 200
+        assert store.get_user(loader.id).disabled is True
+        resp = secretary.post(f"/users/{loader.id}/enable")
+        assert resp.status_code == 200
+        assert store.get_user(loader.id).disabled is False
+
+    def test_disable_ends_the_users_live_sessions(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        loader_client, loader = make_client(store, Role.loader, name="Loafer")
+        with loader_client:
+            session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
+            assert store.resolve_session(session_id) is not None
+            resp = owner.post(f"/users/{loader.id}/disable")
+            assert resp.status_code == 200
+            assert store.resolve_session(session_id) is None
+
+    def test_delete_ends_the_users_live_sessions(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        loader_client, loader = make_client(store, Role.loader, name="Loafer3")
+        with loader_client:
+            session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
+            resp = owner.post(f"/users/{loader.id}/delete")
+            assert resp.status_code == 200
+            assert store.resolve_session(session_id) is None
+
+    def test_reset_pin_ends_the_users_live_sessions(self, login_as, wired):
+        """set_user_pin only drops device *trust*; resolve_session() doesn't
+        re-check it, so without ending sessions here the old session would
+        keep working until it idles out — contradicting the spec's "the
+        next login re-enrolls" (Copilot review, ice_edge/web/routes.py:1493).
+        """
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        loader_client, loader = make_client(store, Role.loader, name="Loafer4")
+        with loader_client:
+            session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
+            assert store.resolve_session(session_id) is not None
+            resp = owner.post(f"/users/{loader.id}/reset-pin", data={"pin": "5297"})
+            assert resp.status_code == 200
+            assert store.resolve_session(session_id) is None
+
+    def test_delete_removes_the_user(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        loader = store.create_user("Gone", "gone@example.com", Role.loader, "5297")
+        resp = owner.post(f"/users/{loader.id}/delete")
+        assert resp.status_code == 200
+        assert store.get_user(loader.id) is None
+
+
+class TestOwnershipTransfer:
+    """§3.3 step 1: starting a transfer is owner-PIN + one emergency code,
+    checked before anything is consumed, and it must change nothing about
+    the current owner's own standing."""
+
+    def test_start_shows_code_records_pending_and_consumes_one_emergency_code(
+        self, client, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+        )
+        assert resp.status_code == 200
+        found = _codes_in(resp.text)
+        assert len(found) == 1
+        assert store.pending_transfer is not None
+        assert store.unused_emergency_code_count() == 19
+
+    def test_transfer_code_survives_a_colliding_user_uuid(
+        self, client, wired, monkeypatch
+    ):
+        """Regression test for Task 19d (the code-value hook): a uuid4's
+        first hyphen-delimited group is occasionally eight decimal digits
+        (~2.3% of uuids — see the module docstring above `_codes_in`).
+
+        Retargeted for the v2 shell (task-12 brief resolution 3): part 1's
+        version asserted the collision was really on the page, because its
+        single users-list partial rendered the transfer code and every
+        user's id (in hx-post targets and a device-count lookup) in the
+        very same response. Task 12 splits that into separate pages —
+        POST /users/transfer now renders only users_ownership.html, which
+        contains no user ids at all — so that page-wide-scrape hazard the
+        original regression targeted cannot occur here regardless of any
+        uuid collision. The guarantee this test still owns (the code-value
+        hook returns the real transfer code, not a decoy) is unaffected and
+        stays covered by the assertions below and by
+        tests/test_routes_users.py's own no-store/twenty-codes coverage.
+        """
+        _cfg, _vmc, _inv, store = wired
+        collider = uuid.UUID("12345678-abcd-4abc-8abc-abcdefabcdef")
+        monkeypatch.setattr("ice_edge.access.access.uuid.uuid4", lambda: collider)
+        colliding_user = store.create_user(
+            "Collider", "collider@example.com", Role.tech, "1111"
+        )
+        monkeypatch.undo()
+        assert colliding_user.id == str(collider)
+
+        codes = store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+        )
+        assert resp.status_code == 200
+
+        found = _codes_in(resp.text)
+        assert len(found) == 1
+        assert store.verify_transfer_code(found[0]) is True
+
+    def test_second_start_while_pending_is_refused_and_consumes_nothing(
+        self, client, wired
+    ):
+        """A re-entrant /users/transfer while one is already pending must be
+        refused before checking or consuming anything: no second emergency
+        code spent, the existing pending_transfer left alone, and — the
+        real-world stake — the transfer code already handed to the incoming
+        owner must still work."""
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        first = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+        )
+        first_transfer_code = _codes_in(first.text)[0]
+        pending_before = dict(store.pending_transfer)
+        unused_before = store.unused_emergency_code_count()
+
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[1]}
+        )
+        assert resp.status_code == 200
+        assert "already pending" in resp.text.lower()
+        assert store.unused_emergency_code_count() == unused_before
+        assert store.pending_transfer == pending_before
+        assert store.verify_transfer_code(first_transfer_code) is True
+
+    def test_started_transfer_records_used_for_transfer(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        codes_on_disk = json.loads(store.path.read_text(encoding="utf-8"))[
+            "emergency_codes"
+        ]
+        used = next(e for e in codes_on_disk if e["used_at"] is not None)
+        assert used["used_for"] == "transfer"
+
+    def test_owner_keeps_full_control_while_transfer_is_pending(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        owner = store.owner()
+        assert owner is not None
+        assert owner.name == "Ada"
+        # The old owner's session still works for an ordinary page.
+        resp = client.get("/status")
+        assert resp.status_code == 200
+        # ... and still reaches the Users area with owner permissions.
+        resp = client.get("/users")
+        assert resp.status_code == 200
+
+    def test_wrong_pin_starts_nothing_and_consumes_no_code(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "0000", "emergency_code": codes[0]}
+        )
+        assert resp.status_code == 200
+        assert store.pending_transfer is None
+        assert store.unused_emergency_code_count() == 20
+
+    def test_wrong_emergency_code_starts_nothing(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": "00000000"}
+        )
+        assert resp.status_code == 200
+        assert store.pending_transfer is None
+        assert store.unused_emergency_code_count() == 20
+
+    def test_cancel_clears_pending_transfer_and_leaves_owner_in_place(
+        self, client, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        assert store.pending_transfer is not None
+        resp = client.post("/users/transfer/cancel", data={"pin": "1379"})
+        assert resp.status_code == 200
+        assert store.pending_transfer is None
+        assert store.owner().name == "Ada"
+
+    def test_cancel_with_wrong_pin_leaves_transfer_pending(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        resp = client.post("/users/transfer/cancel", data={"pin": "0000"})
+        assert resp.status_code == 200
+        assert store.pending_transfer is not None
+
+    def test_secretary_gets_403_on_start(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        secretary = login_as(Role.secretary)
+        resp = secretary.post(
+            "/users/transfer", data={"pin": "2468", "emergency_code": codes[0]}
+        )
+        assert resp.status_code == 403
+        assert store.pending_transfer is None
+        assert store.unused_emergency_code_count() == 20
+
+    def test_secretary_gets_403_on_cancel(self, client, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        secretary = login_as(Role.secretary)
+        resp = secretary.post("/users/transfer/cancel", data={"pin": "2468"})
+        assert resp.status_code == 403
+        assert store.pending_transfer is not None
+
+
+class TestOwnershipTransferCompletion:
+    """§3.3 steps 2-4: the incoming owner completes the wizard with the
+    transfer code, then reviews the retained users."""
+
+    @pytest.fixture(autouse=True)
+    def _anon_clients(self):
+        """Every client `_anon()` hands out is tracked here and closed on
+        teardown, whatever the test does — mirroring how the module-level
+        `login_as` fixture closes every client it makes. A bare TestClient
+        closed only by a trailing `.close()` as the test's last statement
+        leaks when the test raises before reaching it, and a leaked client
+        left the suite order-dependent."""
+        self._clients: list[TestClient] = []
+        yield
+        for c in self._clients:
+            c.close()
+
+    def _anon(self) -> TestClient:
+        c = TestClient(app, follow_redirects=False)
+        c.headers["HX-Request"] = "true"
+        self._clients.append(c)
+        return c
+
+    def _start_transfer(self, client, store) -> str:
+        codes = store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+        )
+        return _codes_in(resp.text)[0]
+
+    def _submit_transfer_form(self, anon, code, *, name="Bea", pin="9042"):
+        return anon.post(
+            "/setup",
+            data={
+                "setup_code": code,
+                "name": name,
+                "email": f"{name.lower()}@example.com",
+                "pin": pin,
+                "pin_confirm": pin,
+            },
+        )
+
+    def _complete_transfer(self, client, store) -> TestClient:
+        """Complete a transfer end to end, returning a client signed in as
+        the new owner (positioned right after the redirect to /setup/review)."""
+        code = self._start_transfer(client, store)
+        anon = self._anon()
+        anon.get("/setup")
+        self._submit_transfer_form(anon, code)
+        return anon
+
+    def test_setup_is_reachable_while_a_transfer_is_pending(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        self._start_transfer(client, store)
+        anon = self._anon()
+        resp = anon.get("/setup")
+        assert resp.status_code == 200
+        assert "transfer code" in resp.text.lower()
+
+    def test_other_routes_are_not_redirected_while_a_transfer_is_pending(
+        self, client, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        self._start_transfer(client, store)
+        resp = client.get("/status")
+        assert resp.status_code == 200
+        resp = client.get("/users")
+        assert resp.status_code == 200
+
+    def test_wrong_transfer_code_changes_nothing(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        self._start_transfer(client, store)
+        pending_before = dict(store.pending_transfer)
+        anon = self._anon()
+        anon.get("/setup")
+        resp = self._submit_transfer_form(anon, "00000000")
+        assert resp.status_code == 200
+        assert store.pending_transfer == pending_before
+        assert store.owner().name == "Ada"
+        assert len(store.users) == 1
+
+    def test_transfer_code_completes_the_swap(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        old_owner = store.owner()
+        code = self._start_transfer(client, store)
+        anon = self._anon()
+        anon.get("/setup")
+        resp = self._submit_transfer_form(anon, code)
+        assert resp.headers["hx-redirect"] == "/setup/review"
+
+        new_owner = store.owner()
+        assert new_owner is not None
+        assert new_owner.name == "Bea"
+        assert store.get_user(old_owner.id) is None
+        assert store.pending_transfer is None
+        assert store.unused_emergency_code_count() == 0
+
+    def test_old_owners_session_is_dead_after_the_swap(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        code = self._start_transfer(client, store)
+        anon = self._anon()
+        anon.get("/setup")
+        self._submit_transfer_form(anon, code)
+
+        resp = client.get("/status")
+        assert resp.status_code == 401
+        assert resp.headers["hx-redirect"] == "/login"
+
+    def test_transfer_code_still_enrolls_new_owner_on_a_second_browser(
+        self, client, wired
+    ):
+        """A lost step-2 response cannot strand the incoming owner: the
+        transfer code still enrolls them, exactly as the setup code does
+        for step 1 (spec §3.3 step 4)."""
+        _cfg, _vmc, _inv, store = wired
+        code = self._start_transfer(client, store)
+        first = self._anon()
+        first.get("/setup")
+        self._submit_transfer_form(first, code)
+        new_owner = store.owner()
+
+        second = self._anon()
+        login_resp = second.post(
+            "/login", data={"user_id": new_owner.id, "pin": "9042"}
+        )
+        assert login_resp.status_code == 200
+        assert second.cookies.get("vmc_enroll")
+
+        enroll_resp = second.post("/login/enroll", data={"code": code})
+        assert enroll_resp.headers["hx-redirect"] == "/"
+        assert second.cookies.get("vmc_session")
+
+    def test_review_walks_retained_users_and_removing_the_last_one_redirects_on(
+        self, client, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        lee = store.create_user("Lee", "lee@example.com", Role.loader, "7890")
+        tim = store.create_user("Tim", "tim@example.com", Role.tech, "3456")
+        new_owner_client = self._complete_transfer(client, store)
+
+        resp = new_owner_client.get("/setup/review")
+        assert resp.status_code == 200
+        assert "Lee" in resp.text
+
+        resp2 = new_owner_client.post(f"/setup/review/{lee.id}/keep")
+        assert resp2.status_code == 200
+        assert "Tim" in resp2.text
+        assert store.get_user(lee.id) is not None
+
+        resp3 = new_owner_client.post(f"/setup/review/{tim.id}/remove")
+        assert resp3.headers["hx-redirect"] == "/setup/codes"
+        assert store.get_user(tim.id) is None
+
+    def test_keep_response_has_exactly_one_bar_and_main(self, client, wired):
+        """Task 14 fix round 1, finding 1: POST /setup/review/{id}/keep
+        re-renders the full setup_review_user.html page for the next
+        candidate, so that response must still carry exactly one shell
+        `<header id="bar">` and exactly one `<main>` — never zero (the OOB
+        header dropped) and never two (a nested `<main>`).
+
+        The header/main counts alone can't fail on a reversion (see
+        TestEnrollment's twin of this test for why) — this also pins the
+        Keep/Remove buttons' own hx attributes directly.
+        """
+        _cfg, _vmc, _inv, store = wired
+        lee = store.create_user("Lee", "lee@example.com", Role.loader, "7890")
+        store.create_user("Tim", "tim@example.com", Role.tech, "3456")
+        new_owner_client = self._complete_transfer(client, store)
+
+        resp = new_owner_client.post(f"/setup/review/{lee.id}/keep")
+        assert resp.status_code == 200
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+        assert 'hx-target="body"' not in resp.text
+        assert 'hx-select="main"' in resp.text
+        assert store.get_user(lee.id) is not None
+
+    def test_review_with_nobody_left_redirects_straight_to_codes(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        new_owner_client = self._complete_transfer(client, store)
+        resp = new_owner_client.get("/setup/review")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/setup/codes"
+
+    def test_keeping_a_user_leaves_them_in_place(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        tim = store.create_user("Tim", "tim@example.com", Role.tech, "3456")
+        new_owner_client = self._complete_transfer(client, store)
+        resp = new_owner_client.post(f"/setup/review/{tim.id}/keep")
+        assert resp.headers["hx-redirect"] == "/setup/codes"
+        assert store.get_user(tim.id) is not None
+
+    def test_removing_a_user_ends_their_sessions_first(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        tim = store.create_user("Tim", "tim@example.com", Role.tech, "3456")
+        new_owner_client = self._complete_transfer(client, store)
+        # Tim signs back in after the swap (which already cleared every
+        # session), so there is a live session to check removal against.
+        device, _token = store.create_device("Tim's tablet", shared=False)
+        store.trust_device(device.id, tim.id)
+        session_id = store.create_session(tim.id, device.id)
+
+        resp = new_owner_client.post(f"/setup/review/{tim.id}/remove")
+        assert resp.headers["hx-redirect"] == "/setup/codes"
+        assert store.resolve_session(session_id) is None
+        assert store.get_user(tim.id) is None
+
+
+class TestEmergencyCodeRegeneration:
+    """§3.2: the owner can replace the whole pool at any time from the
+    Users area."""
+
+    def test_regenerate_replaces_pool_and_shows_twenty_new_codes(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        old_codes = store.generate_emergency_codes()
+        resp = client.post("/users/codes/regenerate", data={"pin": "1379"})
+        assert resp.status_code == 200
+        found = _codes_in(resp.text)
+        assert len(found) == 20
+        assert set(found).isdisjoint(old_codes)
+        assert store.unused_emergency_code_count() == 20
+        # The old codes no longer work.
+        for code in old_codes:
+            assert store.consume_emergency_code(code, store.owner().id, "test") is False
+
+    def test_regenerate_with_wrong_pin_changes_nothing(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        old_codes = store.generate_emergency_codes()
+        resp = client.post("/users/codes/regenerate", data={"pin": "0000"})
+        assert resp.status_code == 200
+        found = _codes_in(resp.text)
+        assert found == []
+        # Every original code still works.
+        for code in old_codes:
+            assert store.consume_emergency_code(code, store.owner().id, "test") is True
+
+    def test_secretary_gets_403_on_regenerate(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        old_codes = store.generate_emergency_codes()
+        secretary = login_as(Role.secretary)
+        resp = secretary.post("/users/codes/regenerate", data={"pin": "2468"})
+        assert resp.status_code == 403
+        for code in old_codes:
+            assert store.consume_emergency_code(code, store.owner().id, "test") is True
+
+    def test_regenerate_response_is_marked_no_store(self, client, wired):
+        """The regenerated pool is plaintext, shown once — Copilot review,
+        ice_edge/web/routes.py:647, extended to every response that renders
+        plaintext codes, not just GET /setup/codes."""
+        _cfg, _vmc, _inv, store = wired
+        store.generate_emergency_codes()
+        resp = client.post("/users/codes/regenerate", data={"pin": "1379"})
+        assert resp.headers["cache-control"] == "no-store"
