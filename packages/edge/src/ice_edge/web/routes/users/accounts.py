@@ -130,7 +130,6 @@ def _render_users_page(request: Request, *, notice: str | None = None):
             "icon": "users",
             "context": f"{len(context.access_store.devices)} known",
             "enabled": True,
-            "coming_soon": False,
         },
         {
             "title": "Emergency codes",
@@ -138,7 +137,6 @@ def _render_users_page(request: Request, *, notice: str | None = None):
             "icon": "settings",
             "context": f"{unused_codes} unused",
             "enabled": can_own,
-            "coming_soon": False,
         },
         {
             "title": "Ownership",
@@ -148,7 +146,6 @@ def _render_users_page(request: Request, *, notice: str | None = None):
                 "Transfer pending" if pending_transfer else "Report & transfer"
             ),
             "enabled": can_own,
-            "coming_soon": False,
         },
     ]
     return templates.TemplateResponse(

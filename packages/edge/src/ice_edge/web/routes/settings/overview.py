@@ -55,7 +55,6 @@ async def settings_home(request: Request):
             "icon": "settings",
             "context": "Name, location",
             "enabled": has_contacts,
-            "coming_soon": False,
         },
         {
             "title": "Contacts",
@@ -63,7 +62,6 @@ async def settings_home(request: Request):
             "icon": "settings",
             "context": "Owner, technicians",
             "enabled": has_contacts,
-            "coming_soon": False,
         },
         {
             "title": "Payments",
@@ -71,7 +69,6 @@ async def settings_home(request: Request):
             "icon": "settings",
             "context": "Stripe, PayPal, MDB",
             "enabled": has_secrets,
-            "coming_soon": False,
         },
         {
             "title": "Comms",
@@ -79,7 +76,6 @@ async def settings_home(request: Request):
             "icon": "settings",
             "context": "Email, SMS gateways",
             "enabled": has_secrets,
-            "coming_soon": False,
         },
         {
             "title": "MQTT",
@@ -87,7 +83,6 @@ async def settings_home(request: Request):
             "icon": "settings",
             "context": "Broker, credentials",
             "enabled": has_secrets,
-            "coming_soon": False,
         },
         {
             "title": "Web",
@@ -95,7 +90,6 @@ async def settings_home(request: Request):
             "icon": "settings",
             "context": "Host, port, proxies",
             "enabled": has_secrets,
-            "coming_soon": False,
         },
         {
             "title": "Reports",
@@ -103,7 +97,6 @@ async def settings_home(request: Request):
             "icon": "reports",
             "context": "Scheduled summary email",
             "enabled": has_contacts,
-            "coming_soon": False,
         },
     ]
     return templates.TemplateResponse(

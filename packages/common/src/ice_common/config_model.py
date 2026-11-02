@@ -288,27 +288,6 @@ class PhysicalDetails(BaseModel):
             )
         return self
 
-    # --- convenience properties ---
-    @property
-    def machine_id(self) -> str:
-        return self.serial_number
-
-    @property
-    def machine_location(self) -> Location:
-        return self.location
-
-    @property
-    def machine_owner(self) -> Person:
-        return self.people.machine_owner
-
-    @property
-    def location_owner(self) -> Person:
-        return self.people.location_owner
-
-    @property
-    def service_technicians(self) -> List[Person]:
-        return self.people.service_technicians
-
 
 class StripeConfig(BaseModel):
     api_key: SecretStr = Field(
@@ -553,31 +532,6 @@ class ConfigModel(BaseModel):
     @property
     def machine_owner(self) -> Person:
         return self.physical.people.machine_owner
-
-    @property
-    def location_owner(self) -> Person:
-        return self.physical.people.location_owner
-
-    @property
-    def service_technicians(self) -> List[Person]:
-        return self.physical.people.service_technicians
-
-    @property
-    def stripe(self) -> StripeConfig:
-        return self.payment.stripe
-
-    @property
-    def paypal(self) -> Optional[PayPalConfig]:
-        return self.payment.paypal
-
-    @property
-    def mdb_devices(self) -> List[MDBDevice]:
-        return self.payment.mdb.devices
-
-    @property
-    def comm(self) -> CommunicationConfig:
-        """Access all communication gateway configs in one place."""
-        return self.communication
 
     def get_preferred_gateway_for(
         self, person: Person

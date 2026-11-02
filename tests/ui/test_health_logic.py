@@ -119,7 +119,7 @@ def test_health_tiles_shape_and_logs_permission():
         LEVEL_HEALTH_AVAILABILITY.url,
         LEVEL_HEALTH_LOGS.url,
     ]
-    assert all(t["icon"] == "health" and t["coming_soon"] is False for t in tiles)
+    assert all(t["icon"] == "health" for t in tiles)
     assert [t["enabled"] for t in tiles] == [True, True, True, False]
     assert [t["context"] for t in tiles] == [
         "3/3 OK",
