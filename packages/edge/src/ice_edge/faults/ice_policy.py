@@ -15,13 +15,12 @@ gaining one cancels a pending timer, since the sensor now owns the clear.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 
 from ice_contracts.board.vending_machine import FaultCode, VendingChannel
 from ice_edge.faults.availability import declares_bin_sensor
 from ice_edge.faults.fault_service import FaultChange, FaultService
-from ice_edge.supervisor.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner, Timer
 
 COOLDOWN_LABEL = "ice_retry_cooldown"
 
@@ -36,14 +35,13 @@ class IcePolicy:
         cooldown_seconds: Callable[[], float],
     ) -> None:
         self._faults = faults
-        self._tasks = tasks
         self._bin_instrumented = bin_instrumented
         self._cooldown_seconds = cooldown_seconds
-        self._timer: asyncio.Task | None = None
+        self._timer = Timer(tasks, COOLDOWN_LABEL)
 
     @property
     def pending(self) -> bool:
-        return self._timer is not None
+        return self._timer.armed
 
     def on_hardware_io(self, device: str, state: bool) -> None:
         if device == VendingChannel.bin_half_full and state:
@@ -63,7 +61,7 @@ class IcePolicy:
         """
         if instrumented:
             self._cancel()
-        elif self._timer is None and any(
+        elif not self._timer.armed and any(
             c is FaultCode.ICE_101 for c in self._faults.lockouts.values()
         ):
             self._arm()
@@ -78,18 +76,13 @@ class IcePolicy:
             self._cancel()
 
     def _arm(self) -> None:
-        self._cancel()
-        self._timer = self._tasks.schedule(
-            self._cooldown_seconds(), self._on_cooldown, label=COOLDOWN_LABEL
-        )
+        self._timer.arm(self._cooldown_seconds(), self._on_cooldown)
 
     def _cancel(self) -> None:
-        timer, self._timer = self._timer, None
-        if timer is not None:
-            timer.cancel()
+        self._timer.cancel()
 
     def _on_cooldown(self) -> None:
-        # Drop the handle first: the clear below re-enters on_fault_change
-        # from inside this timer's own task, which must not cancel itself.
-        self._timer = None
+        # ``Timer`` drops its handle before calling us: the clear below
+        # re-enters on_fault_change from inside this timer's own task, which
+        # must not cancel itself.
         self._faults.clear_ice101_lockouts(by="cooldown")

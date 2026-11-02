@@ -14,7 +14,7 @@ from collections.abc import Callable
 
 from ice_contracts.board.vending_machine import INPUT_FAULTS, FaultCode, VendingChannel
 from ice_edge.faults.fault_service import FaultService
-from ice_edge.supervisor.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner, Timer
 
 RO_OVERRUN_LABEL = "ro_overrun"
 
@@ -28,10 +28,9 @@ class InputFaults:
         ro_max_run_seconds: Callable[[], float],
     ) -> None:
         self._faults = faults
-        self._tasks = tasks
         self._ro_max_run_seconds = ro_max_run_seconds
         self._by_channel = {f.channel: f for f in INPUT_FAULTS}
-        self._overrun_timer = None
+        self._overrun_timer = Timer(tasks, RO_OVERRUN_LABEL)
 
     def on_hardware_io(self, device: str, state: bool) -> None:
         entry = self._by_channel.get(device)
@@ -50,18 +49,12 @@ class InputFaults:
 
     def cancel(self) -> None:
         """Drop the ``ro_overrun`` timer, if one is pending."""
-        if self._overrun_timer is not None:
-            self._overrun_timer.cancel()
-            self._overrun_timer = None
+        self._overrun_timer.cancel()
 
     def _arm(self) -> None:
-        self.cancel()
-        self._overrun_timer = self._tasks.schedule(
-            self._ro_max_run_seconds(), self._overrun, label=RO_OVERRUN_LABEL
-        )
+        self._overrun_timer.arm(self._ro_max_run_seconds(), self._overrun)
 
     def _overrun(self) -> None:
-        self._overrun_timer = None
         self._raise(FaultCode.WTR_107)
 
     def _raise(self, code: FaultCode) -> None:

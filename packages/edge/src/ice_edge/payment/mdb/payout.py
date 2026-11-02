@@ -37,6 +37,7 @@ from ice_edge.hal.command_dispatcher import (
     CompletionTimeout,
 )
 from ice_edge.payment.ports import PendingPayout
+from ice_edge.supervisor.task_runner import Timer
 
 BUSY_RETRY_SECONDS = 2.0
 TIMEOUT_RETRY_SECONDS = 5.0
@@ -69,7 +70,7 @@ class PayoutProtocol:
         self._queue: deque[PendingPayout] = deque()
         self._inflight: PendingPayout | None = None
         self._draining = False
-        self._retry: Any = None
+        self._retry = Timer(tasks, "payout_retry")
         self._policy_hold = False  # board refused for want of a policy
         # When the last item left the queue: a retained state older than this
         # still shows the escrow before that payout / cash_sale.
@@ -140,12 +141,7 @@ class PayoutProtocol:
         self._start()
 
     def _start(self) -> None:
-        if (
-            self._policy_hold
-            or self._draining
-            or self._retry is not None
-            or not self._queue
-        ):
+        if self._policy_hold or self._draining or self._retry.armed or not self._queue:
             return
         if not self._can_send():
             return
@@ -162,12 +158,9 @@ class PayoutProtocol:
         self._start()
 
     def _arm_retry(self, delay: float) -> None:
-        if self._retry is not None:
-            return
-        self._retry = self._tasks.schedule(delay, self._retry_due, label="payout_retry")
+        self._retry.arm_if_idle(delay, self._retry_due)
 
     def _retry_due(self) -> None:
-        self._retry = None
         self.kick()
 
     def _finish(self) -> None:
@@ -224,7 +217,7 @@ class PayoutProtocol:
         try:
             while (
                 self._queue
-                and self._retry is None
+                and not self._retry.armed
                 and not self._policy_hold
                 and self._can_send()
             ):

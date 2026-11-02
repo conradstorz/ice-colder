@@ -23,7 +23,7 @@ from ice_contracts.board.payment import (
     SetPolicyParams,
 )
 from ice_edge.hal.command_dispatcher import CommandTimeout
-from ice_edge.supervisor.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner, Timer
 
 RETRY_SECONDS = 5.0
 VERIFY_SECONDS = 5.0
@@ -76,9 +76,9 @@ class PolicySync:
         self._inflight_id: str | None = None
         self._resend_after: str | None = None
         self._connected = False
-        self._retry: Any = None
-        self._verify: Any = None
-        self._keepalive: Any = None
+        self._retry = Timer(tasks, "policy_retry")
+        self._verify = Timer(tasks, "policy_verify")
+        self._keepalive = Timer(tasks, "mdb_keepalive")
         self._ping_inflight = False
         self._listeners: Subscribers[bool] = Subscribers()
 
@@ -118,7 +118,7 @@ class PolicySync:
         if self._acked_boot is not None and state.boot_id != self._acked_boot:
             self._ack_ok_id = None
             self._acked_boot = None
-            self._cancel_verify()
+            self._verify.cancel()
             self._set_acked(False)
             self._spawn("boot_changed")
             return
@@ -126,7 +126,7 @@ class PolicySync:
             if state.policy_id == cur:
                 self._require_fresh = False
                 self._acked_boot = state.boot_id
-                self._cancel_verify()
+                self._verify.cancel()
                 self._set_acked(True)
                 return
             if not self._acked:
@@ -137,9 +137,9 @@ class PolicySync:
             # Echoed earlier, but the board has since lost or replaced its policy.
             self._ack_ok_id = None
             self._acked_boot = None
-            self._cancel_verify()
+            self._verify.cancel()
         self._set_acked(False)
-        if self._retry is not None:  # keep the retry back-off
+        if self._retry.armed:  # keep the retry back-off
             return
         if self._inflight and self._inflight_id == cur:
             return  # an identical send is already on its way
@@ -150,7 +150,7 @@ class PolicySync:
         believed, its policy is not in force. Drop the ack and re-send."""
         self._ack_ok_id = None
         self._acked_boot = None
-        self._cancel_verify()
+        self._verify.cancel()
         # A state received before the re-send's ack cannot prove the policy is
         # in force again: forget it and wait for a fresh echo.
         self._last_state = None
@@ -170,7 +170,7 @@ class PolicySync:
 
     def on_disconnected(self) -> None:
         self._connected = False
-        self._cancel_keepalive()
+        self._keepalive.cancel()
 
     # -- internals -----------------------------------------------------
     def _current_id(self) -> str:
@@ -181,8 +181,8 @@ class PolicySync:
         if params.policy_id != self._ack_ok_id:
             self._set_acked(False)
         self._inflight_id = params.policy_id
-        self._cancel_retry()
-        self._cancel_verify()
+        self._retry.cancel()
+        self._verify.cancel()
         logger.info(f"MDB policy sync ({reason}): {params.policy_id}")
         ok = False
         try:
@@ -204,39 +204,22 @@ class PolicySync:
                 self._acked_boot = last.boot_id
                 self._set_acked(True)
             else:
-                self._verify = self._tasks.schedule(
-                    VERIFY_SECONDS, self._verify_due, label="policy_verify"
-                )
+                self._verify.arm(VERIFY_SECONDS, self._verify_due)
         elif self._resend_after is None and self._board_alive():
-            self._cancel_retry()
-            self._retry = self._tasks.schedule(
-                RETRY_SECONDS, self._retry_due, label="policy_retry"
-            )
+            self._retry.arm(RETRY_SECONDS, self._retry_due)
 
     def _spawn(self, reason: str) -> None:
         self._tasks.fire_and_forget(self.sync(reason))
 
     def _retry_due(self) -> None:
-        self._retry = None
         if self._board_alive():
             self._spawn("retry")
 
     def _verify_due(self) -> None:
-        self._verify = None
         if not self._acked:
             self._ack_ok_id = None
             self._acked_boot = None
             self._spawn("verify")
-
-    def _cancel_retry(self) -> None:
-        if self._retry is not None:
-            self._retry.cancel()
-            self._retry = None
-
-    def _cancel_verify(self) -> None:
-        if self._verify is not None:
-            self._verify.cancel()
-            self._verify = None
 
     def _set_acked(self, value: bool) -> None:
         if value != self._acked:
@@ -247,21 +230,13 @@ class PolicySync:
         self.note_command_sent()
         return await self._dispatcher.send("mdb", command, params)
 
-    def _cancel_keepalive(self) -> None:
-        if self._keepalive is not None:
-            self._keepalive.cancel()
-            self._keepalive = None
-
     def _arm_keepalive(self) -> None:
-        self._cancel_keepalive()
         if not self._connected:
+            self._keepalive.cancel()
             return
-        self._keepalive = self._tasks.schedule(
-            EDGE_IDLE_PING_SECONDS, self._keepalive_due, label="mdb_keepalive"
-        )
+        self._keepalive.arm(EDGE_IDLE_PING_SECONDS, self._keepalive_due)
 
     def _keepalive_due(self) -> None:
-        self._keepalive = None
         if not self._connected:
             return
         if self._ping_inflight:

@@ -1,7 +1,6 @@
-import asyncio
 from collections.abc import Callable
 
-from ice_edge.supervisor.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner, Timer
 
 
 class SessionTimer:
@@ -19,27 +18,19 @@ class SessionTimer:
         seconds: Callable[[], float],
         on_expire: Callable[[], None],
     ) -> None:
-        self._tasks = tasks
+        self._timer = Timer(tasks, self.LABEL)
         self._seconds = seconds
         self._on_expire = on_expire
-        self._task: asyncio.Task | None = None
 
     def arm(self, delay: float | None = None) -> None:
-        self.cancel()
-        self._task = self._tasks.schedule(
-            self._seconds() if delay is None else delay,
-            self._on_expire,
-            label=self.LABEL,
-        )
+        self._timer.arm(self._seconds() if delay is None else delay, self._on_expire)
 
     def cancel(self) -> None:
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-        self._task = None
+        self._timer.cancel()
 
     @property
     def armed(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return self._timer.armed
 
 
 class PaymentRetryTimer(SessionTimer):

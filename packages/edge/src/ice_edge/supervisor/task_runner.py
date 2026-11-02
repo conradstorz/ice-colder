@@ -122,3 +122,46 @@ class TaskRunner:
         exc = task.exception()
         if exc is not None:
             logger.error(f"Background task {task.get_name()} failed: {exc!r}")
+
+
+class Timer:
+    """One re-armable delayed callback built on ``TaskRunner.schedule``.
+
+    ``label`` names the timer for ``FakeTaskRunner.fire``. The handle is
+    dropped *before* the callback runs, so ``armed`` is already false inside
+    it (and a callback may re-arm, or clear a fault that re-enters
+    ``cancel``, without cancelling its own task). ``armed`` is also false
+    once the underlying task is done for any other reason (cancelled by
+    ``TaskRunner.cancel_pending``) or when no loop was attached.
+    """
+
+    def __init__(self, tasks: TaskRunner, label: str) -> None:
+        self._tasks = tasks
+        self._label = label
+        self._handle = None
+
+    @property
+    def armed(self) -> bool:
+        return self._handle is not None and not self._handle.done()
+
+    def arm(self, delay: float, callback) -> None:
+        """Replace any armed timer with one firing ``callback`` after ``delay``."""
+        self.cancel()
+
+        def _fire() -> None:
+            self._handle = None
+            callback()
+
+        self._handle = self._tasks.schedule(delay, _fire, label=self._label)
+
+    def arm_if_idle(self, delay: float, callback) -> bool:
+        """Arm only when nothing is armed; return whether this call armed it."""
+        if self.armed:
+            return False
+        self.arm(delay, callback)
+        return True
+
+    def cancel(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is not None and not handle.done():
+            handle.cancel()
