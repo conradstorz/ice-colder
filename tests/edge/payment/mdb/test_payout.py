@@ -11,8 +11,7 @@ from ice_edge.hal.command_dispatcher import (
     CompletionTimeout,
 )
 from ice_edge.payment.mdb.payout import PayoutProtocol
-from tests.fakes import FakeTaskRunner, settle
-from tests.fakes import FakeFaults
+from tests.fakes import FakeFaults, FakeTaskRunner, settle
 
 
 def completion(request_id, status="ok", requested=100, paid=None, detail=None):

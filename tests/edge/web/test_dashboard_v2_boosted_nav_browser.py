@@ -19,7 +19,7 @@ here by clicking through real navigation and a real Refresh tap, not by
 asserting on a response string (which is always well-formed; the corruption
 is entirely client-side, exactly as with the first defect).
 
-tests/test_web_routes.py::TestBoostedSwapDoesNotNestMain is the CI-running
+tests/edge/web/test_web_routes.py::TestBoostedSwapDoesNotNestMain is the CI-running
 half: it asserts <body>'s hx-swap is "outerHTML ...", a server-visible fact,
 but cannot itself prove a real htmx runtime avoids the nesting. THIS file is
 the belt-and-braces end-to-end check.
@@ -53,7 +53,7 @@ def test_boosted_navigation_does_not_nest_main(live_server):
         "nesting, and exactly one #bar. If this regresses, check that "
         'base.html\'s <body> still declares hx-swap="outerHTML ..." '
         'rather than "innerHTML ..." — see '
-        "tests/test_web_routes.py::TestBoostedSwapDoesNotNestMain and "
+        "tests/edge/web/test_web_routes.py::TestBoostedSwapDoesNotNestMain and "
         "this file's module docstring."
     )
     for step in payload["steps"]:

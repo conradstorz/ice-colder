@@ -5,9 +5,10 @@ POSTs.
 This is task-12 of the dashboard-v2-shell plan: the largest and most
 security-sensitive area move in part 2. Every guard here is a real bug part
 1 found and fixed (see each test's docstring for the Copilot-review
-history); tests/test_web_routes.py keeps its own retargeted coverage of the
-same guarantees (see task-12-report.md for the itemised arithmetic) — this
-file adds the shell-specific coverage: gating per level, the read-only/
+history); this file now holds the retargeted coverage of those same
+guarantees (the classes moved here from tests/edge/web/test_web_routes.py; see
+task-12-report.md for the itemised arithmetic) — and it adds the
+shell-specific coverage: gating per level, the read-only/
 self-lockout template halves, sub-tile absence, and the new profile-edit
 route.
 """
@@ -773,7 +774,7 @@ class TestOwnershipTransfer:
         uuid collision. The guarantee this test still owns (the code-value
         hook returns the real transfer code, not a decoy) is unaffected and
         stays covered by the assertions below and by
-        tests/test_routes_users.py's own no-store/twenty-codes coverage.
+        tests/edge/web/test_routes_users.py's own no-store/twenty-codes coverage.
         """
         _cfg, _vmc, _inv, store = wired
         collider = uuid.UUID("12345678-abcd-4abc-8abc-abcdefabcdef")

@@ -27,8 +27,13 @@ from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.vend.dispensers import DispenserProfiles
 from tests.edge.fault_helpers import fault_codes
 from tests.dispenser_fixtures import profiles_for, render_profiles_toml
-from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles
-from tests.fakes import FakeEventRecorder
+from tests.fakes import (
+    FakeEventRecorder,
+    FakeMqtt,
+    FakeTaskRunner,
+    drain_pending,
+    vmc_with_profiles,
+)
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="W-1", slot=1, kind="water")

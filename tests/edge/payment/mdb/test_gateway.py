@@ -8,8 +8,7 @@ from ice_contracts.board.payment import EDGE_IDLE_PING_SECONDS, PayoutReason
 from ice_edge.ledger.payment_cursor import PaymentCursorStore
 from ice_edge.payment.mdb import MdbGateway
 from ice_edge.payment.mdb.policy import build_policy
-from tests.fakes import FakeTaskRunner, settle
-from tests.fakes import FakeFaults
+from tests.fakes import FakeFaults, FakeTaskRunner, settle
 
 BOOT = "boot-0001"
 

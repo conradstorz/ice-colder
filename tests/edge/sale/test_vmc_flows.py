@@ -31,9 +31,14 @@ from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
 from tests.edge.fault_helpers import fault_codes
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, settle
+from tests.fakes import (
+    FakeEventRecorder,
+    FakeMqtt,
+    FakeTaskRunner,
+    drain_pending,
+    settle,
+)
 from tests.payment_state_helpers import set_coin_status
-from tests.fakes import FakeEventRecorder
 
 
 _profiles_tmp_base: Path | None = None

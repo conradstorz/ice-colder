@@ -26,7 +26,7 @@ placeholder forever).
 No amount of server-string or server-side-HTML-structure assertion can
 catch this class of bug in principle, because the served bytes are never
 wrong — it takes a real browser executing htmx's JS against a live page.
-tests/test_web_routes.py's TestHomeSelfPollTargets class adds the
+tests/edge/web/test_web_routes.py's TestHomeSelfPollTargets class adds the
 CI-running half of this regression test (a real DOM parse of the served
 HTML asserting hx-target="this" is present on all three elements, which
 *is* a server-visible fact and is what a reviewer or CI catches before a
