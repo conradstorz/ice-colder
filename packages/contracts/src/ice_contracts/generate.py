@@ -64,8 +64,6 @@ def _repo_root() -> Path:
 
 _REPO_ROOT = _repo_root()
 
-SCHEMA_DIR = _REPO_ROOT / "docs/contracts/ice-maker-monitor/schemas"
-
 MODELS = {
     "sensor_reading": SensorReading,
     "ice_maker_event": IceMakerEvent,
@@ -83,8 +81,6 @@ MODELS = {
     "command_ack": CommandAck,
 }
 
-VENDING_SCHEMA_DIR = _REPO_ROOT / "docs/contracts/vending-machine/schemas"
-
 VENDING_MODELS = {
     "dispense_command": DispenseCommand,
     "dispense_step": DispenseStep,
@@ -96,8 +92,6 @@ VENDING_MODELS = {
     "command_ack": CommandAck,
 }
 
-EDGE_CLOUD_SCHEMA_DIR = _REPO_ROOT / "docs/contracts/edge-cloud/schemas"
-
 EDGE_CLOUD_MODELS = {
     "machine_report": MachineReport,
     "bundle_manifest": BundleManifest,
@@ -106,8 +100,6 @@ EDGE_CLOUD_MODELS = {
     "report_response": ReportResponse,
     "claim_code_notice": ClaimCodeNotice,
 }
-
-PAYMENT_SCHEMA_DIR = _REPO_ROOT / "docs/contracts/payment/schemas"
 
 # The envelope schema embeds all twelve event bodies via $defs.
 PAYMENT_MODELS = {
@@ -127,10 +119,16 @@ PAYMENT_MODELS = {
 }
 
 CONTRACTS: dict[str, tuple[Path, dict]] = {
-    "ice-maker-monitor": (SCHEMA_DIR, MODELS),
-    "vending-machine": (VENDING_SCHEMA_DIR, VENDING_MODELS),
-    "edge-cloud": (EDGE_CLOUD_SCHEMA_DIR, EDGE_CLOUD_MODELS),
-    "payment": (PAYMENT_SCHEMA_DIR, PAYMENT_MODELS),
+    "ice-maker-monitor": (
+        _REPO_ROOT / "docs/contracts/ice-maker-monitor/schemas",
+        MODELS,
+    ),
+    "vending-machine": (
+        _REPO_ROOT / "docs/contracts/vending-machine/schemas",
+        VENDING_MODELS,
+    ),
+    "edge-cloud": (_REPO_ROOT / "docs/contracts/edge-cloud/schemas", EDGE_CLOUD_MODELS),
+    "payment": (_REPO_ROOT / "docs/contracts/payment/schemas", PAYMENT_MODELS),
 }
 
 

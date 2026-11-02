@@ -4,11 +4,10 @@ from typing import Literal
 
 from pydantic import (
     AwareDatetime,
-    BaseModel,
-    ConfigDict,
     Field,
 )
 
+from ice_contracts.cloud._base import _Model
 from ice_contracts.cloud.ui import DIGEST_PATTERN
 from ice_contracts.money import Cents
 
@@ -24,10 +23,6 @@ MAX_TEXT = 200
 _UUID4_PATTERN = (
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
-
-
-class _Model(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class UiIdentity(_Model):
