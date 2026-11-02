@@ -1,4 +1,4 @@
-"""SQLite implementation of :class:`Repository`: the only module with SQL.
+"""SQLite implementation of :class:`SqliteRepository`: the only module with SQL.
 
 One connection per call, WAL, ``synchronous=NORMAL``, foreign keys on (the
 edge's ``EventRecorder`` pattern). Schema changes are an ordered list of
@@ -322,6 +322,12 @@ class SqliteRepository:
     def upsert_account_from_login(
         self, google_sub: str, email: str, name: str, now: datetime
     ) -> Account:
+        """Create or refresh the account for ``google_sub``.
+
+        Raises :class:`EmailConflict` (nothing written) when ``email`` already
+        belongs to an account with a different ``google_sub``, whether this
+        login is new or an existing account is changing its email.
+        """
         email = email.lower()
         with self._tx() as conn:
             row = conn.execute(
@@ -445,6 +451,11 @@ class SqliteRepository:
         *,
         expected_hash: str | None = None,
     ) -> bool:
+        """Bind the machine to the account; False (no change) if either is unknown.
+
+        With ``expected_hash`` the bind is a compare-and-swap: it applies only while
+        the machine still holds that claim-code hash and it has not expired.
+        """
         where = "fingerprint = ?"
         params: list[str] = [account_id, _iso(now), fingerprint]
         if expected_hash is not None:
@@ -485,6 +496,8 @@ class SqliteRepository:
     def can_upload_bundle(
         self, fingerprint: str, digest: str, limit: int, since: datetime
     ) -> bool:
+        """True if ``digest`` is already this machine's or fewer than ``limit``
+        distinct digests were uploaded since ``since``."""
         with self._connect() as conn:
             if conn.execute(
                 "SELECT 1 FROM bundle_uploads WHERE fingerprint = ? AND digest = ?",
@@ -510,6 +523,7 @@ class SqliteRepository:
             )
 
     def unbind_machine(self, fingerprint: str) -> None:
+        """Admin reset: drops the owner, memberships and consumed hashes."""
         with self._tx() as conn:
             conn.execute(
                 "DELETE FROM consumed_claim_hashes WHERE fingerprint = ?",
@@ -526,6 +540,7 @@ class SqliteRepository:
                 conn.execute(statement, (fingerprint,))
 
     def count_unclaimed_machines(self) -> int:
+        """Machines with no owner (never claimed, or unbound)."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) AS n FROM machines WHERE owner_id IS NULL"
@@ -533,6 +548,12 @@ class SqliteRepository:
         return int(row["n"])
 
     def prune_alert_history(self, before: datetime) -> int:
+        """Retention: delete ``alert_events`` older than ``before``; deliveries that
+        are ``sent``/``muted`` or ``failed`` with 5+ attempts and last attempted
+        before it (``pending`` and still-retrying rows are kept); ``bundle_uploads``
+        older than it; accepted invitations created before it and unaccepted ones
+        expired before it. Returns the number of alert rows (events plus
+        deliveries) removed."""
         cutoff = _iso(before)
         with self._tx() as conn:
             events = conn.execute(
@@ -566,6 +587,9 @@ class SqliteRepository:
             conn.execute("DELETE FROM machines WHERE fingerprint = ?", (fp,))
 
     def purge_unclaimed_machines(self, not_seen_since: datetime) -> list[str]:
+        """Delete never-claimed machines last seen before *not_seen_since*, with
+        their bundle uploads, memberships, consumed hashes and alert rows, in one
+        transaction; return the deleted fingerprints."""
         with self._tx() as conn:
             rows = conn.execute(
                 "SELECT fingerprint FROM machines WHERE owner_id IS NULL"
@@ -577,6 +601,9 @@ class SqliteRepository:
         return purged
 
     def purge_all_unclaimed_machines(self) -> list[str]:
+        """Admin: delete every machine with no owner (whatever its age or history)
+        with the same dependent rows as ``purge_unclaimed_machines``; return the
+        deleted fingerprints."""
         with self._tx() as conn:
             rows = conn.execute(
                 "SELECT fingerprint FROM machines WHERE owner_id IS NULL"
@@ -646,6 +673,8 @@ class SqliteRepository:
         return "tech" if member is not None else None
 
     def all_memberships(self) -> list[Membership]:
+        """Every membership row across the fleet, ordered by fingerprint, then
+        grant time."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM memberships ORDER BY fingerprint, granted_at"
@@ -728,6 +757,7 @@ class SqliteRepository:
     def invitations_by(
         self, inviter_id: str, fingerprint: str | None, now: datetime
     ) -> list[Invitation]:
+        """Pending invitations: unaccepted and with ``expires_at > now``."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM invitations WHERE inviter_id = ? AND accepted_by IS NULL"
@@ -818,6 +848,7 @@ class SqliteRepository:
         )
 
     def claimed_machines_with_state(self) -> list[tuple[Machine, AlertState]]:
+        """Claimed machines (owner set) that have an alert state row."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT m.*, s.faults_json, s.last_report_at,"
@@ -831,6 +862,7 @@ class SqliteRepository:
     def record_alert_pass(
         self, events: Sequence[AlertEventRow], state: AlertState
     ) -> list[StoredEvent]:
+        """Insert events and upsert the alert state in one transaction."""
         with self._tx() as conn:
             stored = self._insert_alert_events(conn, events)
             self._upsert_alert_state(conn, state)
@@ -879,6 +911,10 @@ class SqliteRepository:
     def mark_offline_if_unchanged(
         self, fingerprint: str, last_report_at: datetime, event: AlertEventRow
     ) -> StoredEvent | None:
+        """Set ``offline_since`` to ``event.at`` and insert ``event``, in one
+        transaction, only while the state still has ``offline_since`` unset and
+        ``last_report_at`` unchanged (no report arrived since the caller read it).
+        Returns the stored event, or None when nothing changed."""
         with self._tx() as conn:
             cur = conn.execute(
                 "UPDATE machine_alert_state SET offline_since = ?"
@@ -891,6 +927,7 @@ class SqliteRepository:
             return self._insert_alert_events(conn, [event])[0]
 
     def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
+        """Newest first."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM alert_events WHERE fingerprint = ?"
@@ -900,6 +937,7 @@ class SqliteRepository:
         return [_event(r) for r in rows]
 
     def alert_events_by_ids(self, ids: Sequence[int]) -> list[StoredEvent]:
+        """The events with these ids, ordered by id; unknown ids are skipped."""
         if not ids:
             return []
         marks = ",".join("?" * len(ids))
@@ -911,6 +949,8 @@ class SqliteRepository:
         return [_event(r) for r in rows]
 
     def alert_counts_since(self, since: datetime) -> dict[str, int]:
+        """``{fingerprint: count}`` of ``raised`` and ``offline`` events at or
+        after ``since``; machines with none are absent."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT fingerprint, COUNT(*) AS n FROM alert_events"
@@ -925,6 +965,8 @@ class SqliteRepository:
     ) -> list[tuple[StoredEvent, Machine]]:
         # e.fingerprint equals m.fingerprint, so selecting only the machine's
         # other columns avoids a name collision for both row mappers.
+        """The newest ``limit`` events across all machines (or only those of
+        ``fingerprint`` when given), newest first, each with its machine."""
         where = " WHERE e.fingerprint = ?" if fingerprint is not None else ""
         args: tuple = (fingerprint, limit) if fingerprint is not None else (limit,)
         with self._connect() as conn:
@@ -940,6 +982,8 @@ class SqliteRepository:
         return [(_event(r), _machine(r)) for r in rows]
 
     def alert_count_since(self, fingerprint: str, since: datetime) -> int:
+        """Events at or after ``since``, counting ``raised`` and ``offline`` only
+        (neither ``cleared`` nor ``online`` is an alert)."""
         with self._connect() as conn:
             return conn.execute(
                 "SELECT COUNT(*) AS n FROM alert_events WHERE fingerprint = ?"
@@ -950,6 +994,9 @@ class SqliteRepository:
     def cleared_since_last_sent(
         self, fingerprint: str, account_id: str
     ) -> list[StoredEvent]:
+        """``cleared`` events after the later of the account's last ``sent`` delivery
+        and its access start (``claimed_at`` for the owner, ``granted_at`` for a
+        tech); empty when the account has no access to the machine."""
         with self._connect() as conn:
             owner = conn.execute(
                 "SELECT claimed_at FROM machines"
@@ -977,6 +1024,8 @@ class SqliteRepository:
         return [_event(r) for r in rows]
 
     def people_for_alerts(self, fingerprint: str) -> list[tuple[Recipient, bool]]:
+        """Owner first, then techs by ``granted_at``, each with its muted flag;
+        suspended accounts are excluded."""
         with self._connect() as conn:
             owner = conn.execute(
                 "SELECT a.id, a.email, COALESCE(p.muted, 0) AS muted"
@@ -1040,6 +1089,11 @@ class SqliteRepository:
     def pending_deliveries(
         self, *, before: datetime, ignore_backoff: bool = False
     ) -> list[Delivery]:
+        """``pending`` rows with ``attempted_at <= before`` and ``failed`` rows with
+        fewer than 5 attempts whose backoff has elapsed: ``attempted_at`` plus
+        ``min(2**attempts, 64)`` minutes is at or before ``before``. With
+        ``ignore_backoff`` every failed row under the attempt cap is returned
+        (used to fold them into an email that is going out anyway)."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM alert_deliveries WHERE"
@@ -1062,6 +1116,8 @@ class SqliteRepository:
     def mark_delivery(
         self, id: int, *, status: str, now: datetime, error: str | None = None
     ) -> None:
+        """Set status, ``attempted_at`` and ``error``; ``attempts`` += 1;
+        ``sent_at`` is set only for ``sent``."""
         with self._tx() as conn:
             conn.execute(
                 "UPDATE alert_deliveries SET status = ?, attempted_at = ?, error = ?,"
@@ -1072,6 +1128,9 @@ class SqliteRepository:
             )
 
     def delivery_health(self, fingerprint: str) -> bool:
+        """False when the machine's most recently attempted delivery (ignoring
+        ``muted`` rows and rows never attempted) is ``failed``; true otherwise,
+        including when there is no delivery at all."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT status FROM alert_deliveries WHERE fingerprint = ?"
@@ -1093,6 +1152,7 @@ class SqliteRepository:
     def deliveries_for_events(
         self, fingerprint: str, event_ids: list[int] | tuple[int, ...]
     ) -> dict[int, list[Delivery]]:
+        """This machine's deliveries grouped by the given event ids."""
         wanted = set(event_ids)
         found: dict[int, list[Delivery]] = {i: [] for i in wanted}
         if not wanted:

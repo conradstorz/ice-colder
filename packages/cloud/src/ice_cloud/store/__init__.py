@@ -11,7 +11,6 @@ from ice_cloud.store.repository import (
     MachineAccess,
     Membership,
     Recipient,
-    Repository,
     StoredEvent,
 )
 from ice_cloud.store.snapshots import (
@@ -34,7 +33,6 @@ __all__ = [
     "MachineAccess",
     "Membership",
     "Recipient",
-    "Repository",
     "SnapshotStore",
     "delete_snapshots",
     "SqliteRepository",

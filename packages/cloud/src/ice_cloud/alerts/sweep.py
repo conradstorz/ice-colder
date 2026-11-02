@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from loguru import logger
 
 from ice_cloud.alerts.dispatcher import AlertDispatcher
-from ice_cloud.store import AlertEventRow, Machine, Repository, StoredEvent
+from ice_cloud.store import AlertEventRow, Machine, SqliteRepository, StoredEvent
 from ice_cloud.store.repository import AlertState
 
 SWEEP_SECONDS = 60
@@ -26,7 +26,7 @@ class OfflineSweep:
 
     def __init__(
         self,
-        repo: Repository,
+        repo: SqliteRepository,
         dispatcher: AlertDispatcher,
         *,
         now: Callable[[], datetime],
