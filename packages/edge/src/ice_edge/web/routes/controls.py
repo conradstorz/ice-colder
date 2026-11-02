@@ -44,8 +44,9 @@ async def get_confirm(
     """Render the confirm variant of a command button.
 
     The confirming query parameter controls which state to render:
-    - absent or truthy: render the confirm variant (Confirm/Cancel pair)
-    - "false": render the plain first-tap button
+    - the literal "false": render the plain first-tap button
+    - anything else, including absent (and "FALSE"/"False"): render the
+      confirm variant (Confirm/Cancel pair)
 
     Renders partials/confirm_command.html directly — a fragment, not
     controls.html (which `{% extends "base.html" %}`) — so the response

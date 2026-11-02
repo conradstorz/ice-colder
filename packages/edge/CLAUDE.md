@@ -53,7 +53,7 @@ Off unless `config.cloud.enabled`. `ice_edge/__main__.py` then calls `init_cloud
 - `payment/mdb/` - the edge side of the MDB payment board (`MdbGateway` and its `EventIntake`, `StateConsumer`, `PolicySync`, `PayoutProtocol`, `Reconciler`; see "Payouts" under FSM Core); `payment/ports.py` holds `Payments`, `PendingPayout`, `cash_cents`, `cash_share`; `ledger/payment_cursor.py`'s `PaymentCursorStore` persists the last processed `seq` of the two latest board boots in `data/payment_cursor.json`
 - `config_store.py` - persists config changes (add/update products) back to `config.json`
 - `access.py` - session auth with roles, PINs, devices, emergency codes, and back-off; persists to `data/access.json`
-- `mailer.py` - sends OTP and setup-code emails via SMTP
+- `mailer.py` - sends all outbound email via SMTP (`send_email`): login OTP, setup/emergency codes, alert emails (via `notifier._send_email`), emailed reports, the access report, and the comms-settings test email
 - `fsm_control.py` - translates admin commands (restart, reset, shutdown) into actions
 - `availability.py` - permissive truth table (ROADMAP §3) split into three
   gates: `safety` rows block payment and sales, `fulfillment` rows block only

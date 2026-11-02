@@ -541,7 +541,7 @@ class TestUnknownSku:
 
 class TestCatalogSaveRace:
     def test_save_race_answers_400_with_error_form(self, client, wired, monkeypatch):
-        """update_product fails when the SKU vanishes between _get_or_404 and
+        """update_product fails when the SKU vanishes between context.product_or_404 and
         the save (a concurrent delete): the form re-renders with the save
         error and answers 400, like every other product form error."""
         from ice_edge.web.routes.products import catalog

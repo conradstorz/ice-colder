@@ -386,8 +386,9 @@ class TestStandby:
     """GET /tests/standby/confirm and POST /tests/standby: the two-tap
     "Take out of service" control that grants a session-bound standby
     lease via machine.lease.begin_standby (ice_edge/sale/maintenance_lease.py). Reaches
-    ice_edge/web/routes/tests_level/lease.py's tests_standby_confirm and
-    tests_standby handlers, and the service-state card
+    ice_edge/web/routes/tests_level/lease.py's tests_hold_confirm (one handler
+    serving both the standby and takeover confirm URLs) and tests_standby
+    handlers, and the service-state card
     (partials/tests_hold_banner.html) both re-render.
     """
 
@@ -760,12 +761,11 @@ class TestSkuWithSlash:
 
 class TestParamRangesMatchContract:
     """ice_edge/web/routes/tests_level/commands.py's WATER_VALVE_SECONDS_RANGE and
-    POWER_CYCLE_DWELL_RANGE are a second literal copy of
-    ice_contracts/board/common.py's COMMAND_PARAM_VALIDATORS bounds (that module
-    exposes validator functions, not reusable constants, and is out of
-    this task's file list -- see the comment above them in tests_level/commands.py). This
-    test is what keeps the two from silently drifting apart: it calls the
-    REAL validators at the exact boundary values the widget renders.
+    POWER_CYCLE_DWELL_RANGE are imported from ice_contracts/board/common.py,
+    so they are the same objects the COMMAND_PARAM_VALIDATORS bounds use. This
+    test pins that the widget and the validators share the contract's ranges:
+    it calls the REAL validators at the exact boundary values the widget
+    renders.
 
     Mutation proof: changed WATER_VALVE_SECONDS_RANGE to (1, 11) in
     tests_level/commands.py (simulating this constant having drifted from
