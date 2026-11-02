@@ -2,7 +2,7 @@
 
 import asyncio
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 
 from ice_contracts.money import format_cents
 from ice_edge.reporting import reports as reports_service
@@ -25,7 +25,6 @@ from .helpers import (
     PERIOD_HEADER,
     PRODUCT_CSV_MONEY,
     PRODUCT_HEADER,
-    _find_product,
     csv_rows as csv_rows_for,
     _fmt,
     _totalize_period,
@@ -110,9 +109,7 @@ async def _compute_product_sku(range_key: str, bucket_key: str, sku: str) -> dic
     # every other level's shell 404: a real SKU with zero sales in the
     # window must still render 200 with a zero row, never a 404, and
     # this ordering is what guarantees that.
-    product = _find_product(sku)
-    if product is None:
-        raise HTTPException(status_code=404, detail=f"No such product: {sku}")
+    product = context.product_or_404(sku)
 
     rows: list[dict] = []
     if context.event_recorder:

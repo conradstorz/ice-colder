@@ -89,7 +89,7 @@ async def update_comms(
     except Exception as e:
         logger.error(f"settings/comms: save_config failed: {e}")
         return _render_comms_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/comms"})
+    return context.hx_redirect("/settings/comms")
 
 
 @router.post(

@@ -1,6 +1,6 @@
 import time
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import Permission
@@ -120,60 +120,34 @@ def _acquire_lease_or_refusal(machine, principal: web_auth.Principal) -> str | N
     response_class=HTMLResponse,
     dependencies=[Depends(web_auth.require(Permission.run_tests))],
 )
-async def tests_standby_confirm(
-    request: Request, confirming: str | None = Query(default=None)
-):
-    """confirm_button.html's confirm_url contract (Task 3, matching
-    routes/health/faults.py's fault_clear_confirm): absent or anything but
-    the literal string "false" renders the confirming (Confirm/Cancel)
-    state; "false" renders the plain first-tap button. Re-renders the
-    WHOLE service-state card (#tests-hold), not just the button --
-    every route that touches this card swaps that same outer id.
-
-    Two segments deep (/tests/standby/confirm), so it can never
-    collide with the single-segment GET /tests/{subsystem} catch-all
-    below regardless of registration order -- registered ahead of it
-    anyway, matching this file's "literal paths before catch-alls"
-    convention (see tests_subsystem's own ORDERING WARNING).
-    """
-    principal = web_auth.current_principal(request)
-    return templates.TemplateResponse(
-        request,
-        "partials/tests_hold_banner.html",
-        context.template_context(
-            request,
-            **_service_state(
-                context.machine_instance,
-                principal,
-                confirming=(confirming != "false"),
-            ),
-        ),
-    )
-
-
 @router.get(
     "/tests/takeover/confirm",
     response_class=HTMLResponse,
     dependencies=[Depends(web_auth.require(Permission.run_tests))],
 )
-async def tests_takeover_confirm(
-    request: Request, confirming: str | None = Query(default=None)
+async def tests_hold_confirm(
+    request: Request, confirming: bool = Depends(context.confirming_flag)
 ):
-    """Same contract as tests_standby_confirm, for "Take over": re-renders
-    the whole service-state card with the Confirm/Cancel pair (anything but
-    the literal "false") or the plain first-tap button ("false")."""
+    """confirm_button.html's confirm_url contract (Task 3, matching
+    routes/health/faults.py's fault_clear_confirm): absent or anything but
+    the literal string "false" renders the confirming (Confirm/Cancel)
+    state; "false" renders the plain first-tap button. Serves both
+    "Take out of service" (/tests/standby/confirm) and "Take over"
+    (/tests/takeover/confirm). Re-renders the WHOLE service-state card
+    (#tests-hold), not just the button -- every route that touches this
+    card swaps that same outer id.
+
+    Both paths are two segments deep, so they can never collide with the
+    single-segment GET /tests/{subsystem} catch-all below regardless of
+    registration order -- registered ahead of it anyway, matching this
+    file's "literal paths before catch-alls" convention (see
+    tests_subsystem's own ORDERING WARNING).
+    """
     principal = web_auth.current_principal(request)
-    return templates.TemplateResponse(
+    return context.render_confirm(
         request,
         "partials/tests_hold_banner.html",
-        context.template_context(
-            request,
-            **_service_state(
-                context.machine_instance,
-                principal,
-                confirming=(confirming != "false"),
-            ),
-        ),
+        **_service_state(context.machine_instance, principal, confirming=confirming),
     )
 
 

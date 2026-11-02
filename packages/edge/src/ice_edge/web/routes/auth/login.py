@@ -119,16 +119,9 @@ async def login_submit(
         session_id = context.access_store.create_session(user_id, device.id)
         context.access_store.record_login(user_id)
         context.access_store.touch_device(device.id)
-        resp = HTMLResponse("", headers={"HX-Redirect": "/"})
-        web_auth.set_cookie(
-            resp, request, web_auth.SESSION_COOKIE, session_id, max_age=None
-        )
-        web_auth.set_cookie(
-            resp,
-            request,
-            web_auth.DEVICE_COOKIE,
-            request.cookies[web_auth.DEVICE_COOKIE],
-            max_age=web_auth.DEVICE_COOKIE_MAX_AGE,
+        resp = context.hx_redirect("/")
+        web_auth.start_session(
+            resp, request, session_id, request.cookies[web_auth.DEVICE_COOKIE]
         )
         return resp
 
@@ -353,10 +346,8 @@ async def enroll_device(request: Request, code: str = Form(...)):
     context.access_store.trust_device(device.id, user_id)
     session_id = context.access_store.create_session(user_id, device.id)
     context.access_store.record_login(user_id)
-    resp = HTMLResponse("", headers={"HX-Redirect": "/"})
-    web_auth.set_cookie(
-        resp, request, web_auth.SESSION_COOKIE, session_id, max_age=None
-    )
+    resp = context.hx_redirect("/")
+    web_auth.start_session(resp, request, session_id)
     web_auth.clear_cookie(resp, web_auth.ENROLL_COOKIE)
     context.access_store.clear_enroll_token(request.cookies[web_auth.ENROLL_COOKIE])
     return resp
@@ -367,6 +358,6 @@ async def logout(request: Request):
     session_id = request.cookies.get(web_auth.SESSION_COOKIE)
     if session_id and context.access_store is not None:
         context.access_store.end_session(session_id)
-    resp = HTMLResponse("", headers={"HX-Redirect": "/login"})
+    resp = context.hx_redirect("/login")
     web_auth.clear_cookie(resp, web_auth.SESSION_COOKIE)
     return resp

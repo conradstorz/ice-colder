@@ -1,6 +1,6 @@
 """GET /settings: the Settings home tile grid."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import Permission
@@ -15,24 +15,6 @@ from ice_ui.templating import templates
 router = APIRouter()
 
 
-def _require_any(*permissions: Permission):
-    """FastAPI dependency: a live session holding at least one of
-    *permissions*. Copied from ice_edge/web/routes/products/helpers.py (not
-    imported from — brief resolution 13 scopes this module to its own
-    files); web_auth.require() is AND-only and GET /settings needs OR
-    semantics (edit_contacts or edit_secrets)."""
-
-    def dependency(request: Request) -> web_auth.Principal:
-        principal = web_auth.current_principal(request)
-        if principal is None:
-            raise web_auth._unauthenticated(request)
-        if not any(p in principal.perms for p in permissions):
-            raise HTTPException(status_code=403, detail="Not permitted")
-        return principal
-
-    return dependency
-
-
 # ---------------------------------------------------------------- /settings
 
 
@@ -40,12 +22,11 @@ def _require_any(*permissions: Permission):
     "/settings",
     response_class=HTMLResponse,
     dependencies=[
-        Depends(_require_any(Permission.edit_contacts, Permission.edit_secrets))
+        Depends(web_auth.require_any(Permission.edit_contacts, Permission.edit_secrets))
     ],
 )
 async def settings_home(request: Request):
-    principal = web_auth.current_principal(request)
-    perms = principal.perms if principal else frozenset()
+    perms = web_auth.perms_of(request)
     has_contacts = Permission.edit_contacts in perms
     has_secrets = Permission.edit_secrets in perms
     tiles = [

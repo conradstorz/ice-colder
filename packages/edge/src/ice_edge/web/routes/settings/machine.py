@@ -73,4 +73,4 @@ async def update_machine(
     except Exception as e:
         logger.error(f"settings/machine: save_config failed: {e}")
         return _render_machine_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/machine"})
+    return context.hx_redirect("/settings/machine")

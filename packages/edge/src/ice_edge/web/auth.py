@@ -98,6 +98,25 @@ def clear_cookie(response, name: str) -> None:
     response.delete_cookie(key=name, path="/")
 
 
+def start_session(
+    response,
+    request: Request,
+    session_id: str,
+    device_token: str | None = None,
+) -> None:
+    """Set the session cookie (browser-session lifetime) and, when given,
+    the long-lived device cookie."""
+    set_cookie(response, request, SESSION_COOKIE, session_id, max_age=None)
+    if device_token is not None:
+        set_cookie(
+            response,
+            request,
+            DEVICE_COOKIE,
+            device_token,
+            max_age=DEVICE_COOKIE_MAX_AGE,
+        )
+
+
 # --- identity ---
 
 
@@ -170,6 +189,28 @@ def require(*permissions: Permission):
         return principal
 
     return dependency
+
+
+def require_any(*permissions: Permission):
+    """FastAPI dependency: a live session holding at least one of
+    *permissions* (OR semantics; `require` is AND). Same unauthenticated
+    and 403 shapes as `require`."""
+
+    def dependency(request: Request) -> Principal:
+        principal = current_principal(request)
+        if principal is None:
+            raise _unauthenticated(request)
+        if not any(p in principal.perms for p in permissions):
+            raise HTTPException(status_code=403, detail="Not permitted")
+        return principal
+
+    return dependency
+
+
+def perms_of(request: Request) -> frozenset[Permission]:
+    """The caller's permissions; empty when there is no live session."""
+    principal = current_principal(request)
+    return principal.perms if principal else frozenset()
 
 
 @dataclass(frozen=True)

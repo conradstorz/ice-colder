@@ -2,7 +2,7 @@
 
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
@@ -13,7 +13,6 @@ from ice_contracts.board.vending_machine import (
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
-from ice_ui.templating import templates
 from ice_edge.web.routes.health.faults import _render_fault_list_oob, dom_safe_key
 
 router = APIRouter()
@@ -50,22 +49,19 @@ def _pay104_active() -> bool:
     dependencies=[Depends(web_auth.require(Permission.clear_faults))],
 )
 async def pay104_record_sale_confirm(
-    request: Request, confirming: str | None = Query(default=None)
+    request: Request, confirming: bool = Depends(context.confirming_flag)
 ):
     """Same confirm_url contract as fault_clear_confirm above."""
     dom_key = dom_safe_key(FaultCode.PAY_104.value)
-    return templates.TemplateResponse(
+    return context.render_confirm(
         request,
         "partials/confirm_button.html",
-        context.template_context(
-            request,
-            label="Record sale",
-            confirm_label="Confirm",
-            post_url="/health/faults/PAY-104/record-sale",
-            target=f"#record-sale-{dom_key}",
-            confirm_url="/health/faults/PAY-104/record-sale/confirm",
-            confirming=(confirming != "false"),
-        ),
+        label="Record sale",
+        confirm_label="Confirm",
+        post_url="/health/faults/PAY-104/record-sale",
+        target=f"#record-sale-{dom_key}",
+        confirm_url="/health/faults/PAY-104/record-sale/confirm",
+        confirming=confirming,
     )
 
 
@@ -270,21 +266,18 @@ async def pay104_record_sale(request: Request):
     dependencies=[Depends(web_auth.require(Permission.clear_faults))],
 )
 async def pay104_discard_confirm(
-    request: Request, confirming: str | None = Query(default=None)
+    request: Request, confirming: bool = Depends(context.confirming_flag)
 ):
     dom_key = dom_safe_key(FaultCode.PAY_104.value)
-    return templates.TemplateResponse(
+    return context.render_confirm(
         request,
         "partials/confirm_button.html",
-        context.template_context(
-            request,
-            label="Discard",
-            confirm_label="Confirm",
-            post_url="/health/faults/PAY-104/discard",
-            target=f"#discard-{dom_key}",
-            confirm_url="/health/faults/PAY-104/discard/confirm",
-            confirming=(confirming != "false"),
-        ),
+        label="Discard",
+        confirm_label="Confirm",
+        post_url="/health/faults/PAY-104/discard",
+        target=f"#discard-{dom_key}",
+        confirm_url="/health/faults/PAY-104/discard/confirm",
+        confirming=confirming,
     )
 
 

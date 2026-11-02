@@ -15,7 +15,6 @@ from ice_ui.levels import Level
 from ice_ui.templating import templates
 
 from .helpers import (
-    _get_or_404,
     _inventory_count,
     _is_tracked,
     _product_level,
@@ -30,7 +29,7 @@ router = APIRouter()
     dependencies=[Depends(web_auth.require(Permission.edit_placement))],
 )
 async def placement_form(request: Request, sku: str):
-    product = _get_or_404(sku)
+    product = context.product_or_404(sku)
     level = Level.child(
         _product_level(product), "Placement", f"/products/{sku}/placement"
     )
@@ -63,7 +62,7 @@ async def update_placement(
     inventory_count: int = Form(...),
     track_inventory: str | None = Form(None),
 ):
-    product = _get_or_404(sku)
+    product = context.product_or_404(sku)
     tracked = track_inventory is not None
 
     def _rerender(error: str) -> HTMLResponse:
@@ -121,4 +120,4 @@ async def update_placement(
     if context.machine_instance:
         context.machine_instance.gate.catalog_changed()
 
-    return HTMLResponse("", headers={"HX-Redirect": f"/products/{sku}"})
+    return context.hx_redirect(f"/products/{sku}")

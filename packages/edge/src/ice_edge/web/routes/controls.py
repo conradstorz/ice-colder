@@ -38,7 +38,9 @@ async def get_controls(request: Request):
     "/controls/confirm/{command}",
     dependencies=[Depends(web_auth.require(Permission.machine_controls))],
 )
-async def get_confirm(request: Request, command: str):
+async def get_confirm(
+    request: Request, command: str, confirming: bool = Depends(context.confirming_flag)
+):
     """Render the confirm variant of a command button.
 
     The confirming query parameter controls which state to render:
@@ -52,17 +54,12 @@ async def get_confirm(request: Request, command: str):
     <html>/<head>/<body> document nesting a second <main> inside the
     page's own on every confirm and Cancel tap.
     """
-    confirming = request.query_params.get("confirming", "true").lower() != "false"
-
-    return templates.TemplateResponse(
+    return context.render_confirm(
         request,
         "partials/confirm_command.html",
-        context.template_context(
-            request,
-            level=LEVEL_CONTROLS,
-            command=command,
-            confirming=confirming,
-        ),
+        level=LEVEL_CONTROLS,
+        command=command,
+        confirming=confirming,
     )
 
 

@@ -129,4 +129,4 @@ async def update_reports(
     except Exception as e:
         logger.error(f"settings/reports: save_config failed: {e}")
         return _render_reports_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/reports"})
+    return context.hx_redirect("/settings/reports")

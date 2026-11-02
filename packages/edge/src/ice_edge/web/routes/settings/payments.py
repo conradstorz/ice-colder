@@ -87,4 +87,4 @@ async def update_payments(
     except Exception as e:
         logger.error(f"settings/payments: save_config failed: {e}")
         return _render_payments_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/payments"})
+    return context.hx_redirect("/settings/payments")

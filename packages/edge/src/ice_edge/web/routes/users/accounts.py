@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import AccessError, OwnerExistsError, Permission, Role
@@ -106,8 +106,7 @@ def _user_level(user) -> Level:
 
 def _render_users_page(request: Request, *, notice: str | None = None):
     owner = context.access_store.owner()
-    principal = web_auth.current_principal(request)
-    perms = principal.perms if principal else frozenset()
+    perms = web_auth.perms_of(request)
     users_sorted = sorted(context.access_store.users.values(), key=lambda u: u.name)
     rows = [
         {
@@ -359,7 +358,7 @@ async def update_user_route(
         return _render_user_detail(
             request, target, error="This machine already has an owner."
         )
-    return HTMLResponse("", headers={"HX-Redirect": f"/users/{user_id}"})
+    return context.hx_redirect(f"/users/{user_id}")
 
 
 @router.post(
@@ -382,7 +381,7 @@ async def disable_user(request: Request, user_id: str):
     # A disabled user must not keep an open tab working until it idles
     # out on its own.
     context.access_store.end_sessions_for_user(user_id)
-    return HTMLResponse("", headers={"HX-Redirect": f"/users/{user_id}"})
+    return context.hx_redirect(f"/users/{user_id}")
 
 
 @router.post(
@@ -401,7 +400,7 @@ async def enable_user(request: Request, user_id: str):
         context.access_store.set_user_disabled(user_id, False)
     except AccessError:
         raise HTTPException(status_code=404, detail="No such user")
-    return HTMLResponse("", headers={"HX-Redirect": f"/users/{user_id}"})
+    return context.hx_redirect(f"/users/{user_id}")
 
 
 @router.post(
@@ -430,7 +429,7 @@ async def reset_user_pin(request: Request, user_id: str, pin: str = Form(...)):
     # re-check it, so a session opened before the reset would otherwise
     # keep working on its old device until it idles out on its own.
     context.access_store.end_sessions_for_user(user_id)
-    return HTMLResponse("", headers={"HX-Redirect": f"/users/{user_id}"})
+    return context.hx_redirect(f"/users/{user_id}")
 
 
 @router.get(
@@ -439,7 +438,7 @@ async def reset_user_pin(request: Request, user_id: str, pin: str = Form(...)):
     dependencies=[Depends(web_auth.require(Permission.manage_users))],
 )
 async def delete_user_confirm(
-    request: Request, user_id: str, confirming: str | None = Query(default=None)
+    request: Request, user_id: str, confirming: bool = Depends(context.confirming_flag)
 ):
     """confirm_button.html's confirm_url contract: anything but the literal
     "false" renders the Confirm/Cancel pair. Carries the delete route's own
@@ -448,12 +447,8 @@ async def delete_user_confirm(
     principal = web_auth.current_principal(request)
     _guard_owner_target(principal, user_id)
     _guard_owner_self_lockout(principal, user_id)
-    return templates.TemplateResponse(
-        request,
-        "partials/user_delete.html",
-        context.template_context(
-            request, target=user, confirming=(confirming != "false")
-        ),
+    return context.render_confirm(
+        request, "partials/user_delete.html", target=user, confirming=confirming
     )
 
 
@@ -475,4 +470,4 @@ async def delete_user_route(request: Request, user_id: str):
     except AccessError:
         raise HTTPException(status_code=404, detail="No such user")
     context.access_store.end_sessions_for_user(user_id)
-    return HTMLResponse("", headers={"HX-Redirect": "/users"})
+    return context.hx_redirect("/users")

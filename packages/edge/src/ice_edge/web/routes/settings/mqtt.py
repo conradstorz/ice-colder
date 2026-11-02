@@ -100,4 +100,4 @@ async def update_mqtt(
     except Exception as e:
         logger.error(f"settings/mqtt: save_config failed: {e}")
         return _render_mqtt_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/mqtt"})
+    return context.hx_redirect("/settings/mqtt")

@@ -1,7 +1,7 @@
 """Unit tests for ice_edge/web/auth.py: cookies, client keying, require()."""
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from ice_edge.access.access import AccessStore, Permission, Role
@@ -27,6 +27,18 @@ def app(store):
     @api.get("/secret")
     def secret_page(principal=Depends(auth.require(Permission.edit_secrets))):
         return {"ok": True}
+
+    @api.get("/either")
+    def either_page(
+        principal=Depends(
+            auth.require_any(Permission.edit_secrets, Permission.edit_contacts)
+        ),
+    ):
+        return {"user": principal.user.name}
+
+    @api.get("/perms")
+    def perms_page(request: Request):
+        return {"perms": sorted(p.value for p in auth.perms_of(request))}
 
     return api
 
@@ -73,6 +85,47 @@ class TestRequire:
             store.end_all_sessions()
             resp = c.get("/open")
         assert resp.status_code == 303
+
+
+class TestRequireAny:
+    def test_page_request_without_a_session_redirects_to_login(self, app):
+        with TestClient(app, follow_redirects=False) as c:
+            resp = c.get("/either")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login"
+
+    def test_htmx_request_without_a_session_gets_hx_redirect(self, app):
+        with TestClient(app) as c:
+            resp = c.get("/either", headers={"HX-Request": "true"})
+        assert resp.status_code == 401
+        assert resp.headers["hx-redirect"] == "/login"
+
+    def test_no_listed_permission_is_403(self, app, store):
+        with TestClient(app) as c:
+            _login(store, c, Role.loader)
+            resp = c.get("/either")
+        assert resp.status_code == 403
+
+    def test_either_permission_passes(self, app, store):
+        # secretary holds edit_contacts but not edit_secrets; owner holds both
+        with TestClient(app) as c:
+            _login(store, c, Role.secretary)
+            assert c.get("/either").status_code == 200
+        with TestClient(app) as c:
+            _login(store, c, Role.owner)
+            assert c.get("/either").status_code == 200
+
+
+class TestPermsOf:
+    def test_empty_without_a_session(self, app):
+        with TestClient(app) as c:
+            assert c.get("/perms").json() == {"perms": []}
+
+    def test_role_permissions_with_a_session(self, app, store):
+        with TestClient(app) as c:
+            _login(store, c, Role.loader)
+            perms = c.get("/perms").json()["perms"]
+        assert perms == sorted(p.value for p in auth.ROLE_PERMISSIONS[Role.loader])
 
 
 class TestClientKeying:

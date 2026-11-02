@@ -16,7 +16,7 @@ Design notes / deliberate deviations, recorded here per the task brief:
   attributable per SKU (`vend_failed`'s metadata carries one, see
   `VMC.on_vend_failed`) and so is filtered and shown. See
   `ice_edge/reporting/reports.py::by_period`'s docstring for the full reasoning.
-  The catalog lookup (`_find_product`) still runs, and 404s, before any
+  The catalog lookup (`product_or_404`) still runs, and 404s, before any
   query -- a real SKU with zero sales in the window still renders 200 with
   an empty/zero table, never a 404 -- and the breadcrumb still uses the
   catalog's product name, never a name derived from query rows (which do

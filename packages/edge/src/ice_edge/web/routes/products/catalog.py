@@ -1,7 +1,7 @@
 """The catalog-editing routes: /products/new, /products/{sku}/catalog, /products/{sku}/copy and /products/{sku}/delete."""
 
 from uuid import uuid4
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
@@ -20,7 +20,6 @@ from ice_ui.templating import templates
 
 from .helpers import (
     _clean_button,
-    _get_or_404,
     _inventory_count,
     _is_tracked,
     _product_level,
@@ -213,7 +212,7 @@ async def create_product(
     if context.machine_instance:
         context.machine_instance.gate.catalog_changed()
 
-    return HTMLResponse("", headers={"HX-Redirect": f"/products/{sku}"})
+    return context.hx_redirect(f"/products/{sku}")
 
 
 @router.get(
@@ -222,7 +221,7 @@ async def create_product(
     dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
 )
 async def catalog_form(request: Request, sku: str):
-    product = _get_or_404(sku)
+    product = context.product_or_404(sku)
     level = Level.child(_product_level(product), "Catalog", f"/products/{sku}/catalog")
     return templates.TemplateResponse(
         request,
@@ -259,7 +258,7 @@ async def update_catalog(
     # a catalog POST can never smuggle a placement change through,
     # regardless of what a hostile form body contains (mirrors part 1's
     # a2b8829 guarantee for the placement side).
-    product = _get_or_404(sku)
+    product = context.product_or_404(sku)
     name = name.strip()
     parsed_button, button_error = _clean_button(button, own_sku=sku)
     try:
@@ -301,7 +300,7 @@ async def update_catalog(
     if not success:
         # The only way update_product can fail with slot=None is an
         # unknown SKU — a race with a concurrent delete, since
-        # _get_or_404 above already confirmed it existed this request.
+        # product_or_404 above already confirmed it existed this request.
         level = Level.child(
             _product_level(product), "Catalog", f"/products/{sku}/catalog"
         )
@@ -320,7 +319,7 @@ async def update_catalog(
         )
     if context.machine_instance:
         context.machine_instance.gate.catalog_changed()
-    return HTMLResponse("", headers={"HX-Redirect": f"/products/{sku}"})
+    return context.hx_redirect(f"/products/{sku}")
 
 
 @router.get(
@@ -329,7 +328,7 @@ async def update_catalog(
     dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
 )
 async def copy_product_form(request: Request, sku: str):
-    base = _get_or_404(sku)
+    base = context.product_or_404(sku)
     new_sku = f"SKU-{uuid4().hex[:6].upper()}"
     return _render_product_form(
         request,
@@ -353,17 +352,13 @@ async def copy_product_form(request: Request, sku: str):
     dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
 )
 async def delete_product_confirm(
-    request: Request, sku: str, confirming: str | None = Query(default=None)
+    request: Request, sku: str, confirming: bool = Depends(context.confirming_flag)
 ):
     """confirm_button.html's confirm_url contract: anything but the literal
     "false" renders the Confirm/Cancel pair."""
-    product = _get_or_404(sku)
-    return templates.TemplateResponse(
-        request,
-        "partials/product_delete.html",
-        context.template_context(
-            request, product=product, confirming=(confirming != "false")
-        ),
+    product = context.product_or_404(sku)
+    return context.render_confirm(
+        request, "partials/product_delete.html", product=product, confirming=confirming
     )
 
 
@@ -376,11 +371,11 @@ async def delete_product_confirm(
     ],
 )
 async def delete_product_route(request: Request, sku: str):
-    _get_or_404(sku)
+    context.product_or_404(sku)
     success = delete_product(context.config, sku)
     if success:
         if context.inventory_manager:
             context.inventory_manager.remove_sku(sku)
         if context.machine_instance:
             context.machine_instance.gate.catalog_changed()
-    return HTMLResponse("", headers={"HX-Redirect": "/products"})
+    return context.hx_redirect("/products")

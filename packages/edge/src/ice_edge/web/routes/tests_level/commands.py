@@ -14,7 +14,7 @@ task brief's "fix applied in one file but not its siblings" warning:
 import time
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ice_contracts.board.common import TESTABLE_COMMANDS
@@ -411,15 +411,13 @@ async def tests_subsystem(request: Request, subsystem: str):
     dependencies=[Depends(web_auth.require(Permission.run_tests))],
 )
 async def tests_run_all_confirm(
-    request: Request, confirming: str | None = Query(default=None)
+    request: Request, confirming: bool = Depends(context.confirming_flag)
 ):
     """confirm_button.html's confirm_url contract: anything but the literal
     "false" renders the Confirm/Cancel pair. Two segments deep, so it never
     collides with GET /tests/{subsystem}."""
-    return templates.TemplateResponse(
-        request,
-        "partials/run_all_button.html",
-        context.template_context(request, confirming=(confirming != "false")),
+    return context.render_confirm(
+        request, "partials/run_all_button.html", confirming=confirming
     )
 
 

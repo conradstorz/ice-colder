@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import asdict
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ice_contracts.board.vending_machine import FaultCode
@@ -90,8 +90,7 @@ def _render_fault_list_oob(request: Request) -> HTMLResponse:
     3.1.6), so this reuses health_faults.html's own row markup as the
     single source of truth rather than duplicating it in Python.
     """
-    principal = web_auth.current_principal(request)
-    perms = principal.perms if principal else frozenset()
+    perms = web_auth.perms_of(request)
     can_clear = Permission.clear_faults in perms
     faults = _faults_with_age()
     template = templates.get_template("health_faults.html")
@@ -114,8 +113,7 @@ def _render_fault_list_oob(request: Request) -> HTMLResponse:
     dependencies=[Depends(web_auth.require(Permission.view_status))],
 )
 async def faults_view(request: Request):
-    principal = web_auth.current_principal(request)
-    perms = principal.perms if principal else frozenset()
+    perms = web_auth.perms_of(request)
     can_clear = Permission.clear_faults in perms
     return templates.TemplateResponse(
         request,
@@ -136,24 +134,21 @@ async def faults_view(request: Request):
     dependencies=[Depends(web_auth.require(Permission.clear_faults))],
 )
 async def fault_clear_confirm(
-    request: Request, key: str, confirming: str | None = Query(default=None)
+    request: Request, key: str, confirming: bool = Depends(context.confirming_flag)
 ):
     """confirm_button.html's confirm_url contract (Task 5): absent or
     anything but the literal string "false" renders the confirming
     (Confirm/Cancel) state; "false" renders the plain first-tap
     button -- this is what its Cancel button sends via hx-vals."""
-    return templates.TemplateResponse(
+    return context.render_confirm(
         request,
         "partials/confirm_button.html",
-        context.template_context(
-            request,
-            label="Clear",
-            confirm_label="Confirm",
-            post_url=f"/health/faults/{key}/clear",
-            target=f"#clear-{dom_safe_key(key)}",
-            confirm_url=f"/health/faults/{key}/clear/confirm",
-            confirming=(confirming != "false"),
-        ),
+        label="Clear",
+        confirm_label="Confirm",
+        post_url=f"/health/faults/{key}/clear",
+        target=f"#clear-{dom_safe_key(key)}",
+        confirm_url=f"/health/faults/{key}/clear/confirm",
+        confirming=confirming,
     )
 
 

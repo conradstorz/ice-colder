@@ -99,4 +99,4 @@ async def update_contacts(
     except Exception as e:
         logger.error(f"settings/contacts: save_config failed: {e}")
         return _render_contacts_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/contacts"})
+    return context.hx_redirect("/settings/contacts")

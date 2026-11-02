@@ -73,4 +73,4 @@ async def update_web(
     except Exception as e:
         logger.error(f"settings/web: save_config failed: {e}")
         return _render_web_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/web"})
+    return context.hx_redirect("/settings/web")
