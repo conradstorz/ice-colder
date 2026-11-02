@@ -2,6 +2,7 @@
 """Home Assistant discovery entities for the vending board."""
 
 from ice_contracts.board.common import ChannelDescriptor
+from ice_sims.base import temperature_entity, uptime_entity
 from ice_sims.vending.channels import BUTTON_PREFIX
 
 # HA device classes for the channels where "running" / "occupancy" would
@@ -47,30 +48,12 @@ def ha_discovery_entities(channels: list[ChannelDescriptor]) -> list[dict]:
             )
         elif channel.kind == "temperature":
             entities.append(
-                {
-                    "component": "sensor",
-                    "object_id": channel.channel_id,
-                    "name": f"Vending {_title(channel.channel_id)} Temperature",
-                    "state_topic_suffix": f"sensors/temp/{channel.channel_id}",
-                    "value_template": "{{ value_json.value }}",
-                    "device_class": "temperature",
-                    "unit_of_measurement": "°C",
-                    "state_class": "measurement",
-                    "expire_after": 30,
-                }
+                temperature_entity(
+                    channel.channel_id,
+                    f"Vending {_title(channel.channel_id)} Temperature",
+                )
             )
 
-    entities.append(
-        {
-            "component": "sensor",
-            "object_id": "uptime",
-            "name": "Vending Machine Uptime",
-            "state_topic_suffix": "heartbeat/vending",
-            "value_template": "{{ value_json.uptime_seconds }}",
-            "device_class": "duration",
-            "unit_of_measurement": "s",
-            "state_class": "total_increasing",
-        }
-    )
+    entities.append(uptime_entity("vending", "Vending Machine Uptime"))
 
     return entities

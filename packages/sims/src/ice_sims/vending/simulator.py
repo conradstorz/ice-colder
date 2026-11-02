@@ -37,9 +37,8 @@ from ice_contracts.board.vending_machine import VendingChannel
 from ice_contracts.board.mqtt_messages import (
     DispenseCommand,
     HardwareIO,
-    SensorReading,
 )
-from ice_sims.base import CommandOutcome, ESP32Simulator, FaultDef
+from ice_sims.base import CommandOutcome, ESP32Simulator, to_fault_def
 from ice_sims.vending.channels import (
     CHANNELS,
     HARDWARE_DEVICES,
@@ -48,7 +47,7 @@ from ice_sims.vending.channels import (
 from ice_sims.vending.climate import Climate
 from ice_sims.vending.customer import Customers
 from ice_sims.vending.dispense import Dispenser
-from ice_sims.vending.faults import InjectedFault, vending_faults
+from ice_sims.vending.faults import vending_faults
 from ice_sims.vending.ha import ha_discovery_entities
 from ice_sims.vending.ro_tank import RoTank
 
@@ -95,18 +94,6 @@ class _Board:
         return self._sim.active_fault_names
 
 
-def _fault_def(sim: "VendingMachineSimulator", fault: InjectedFault) -> FaultDef:
-    return FaultDef(
-        name=fault.name,
-        category=fault.category,
-        probability=fault.probability,
-        on_activate=lambda client, f=fault: f.activate(_Board(sim, client)),
-        on_recover=lambda client, f=fault: f.recover(_Board(sim, client)),
-        message=fault.message,
-        severity=fault.severity,
-    )
-
-
 class VendingMachineSimulator(ESP32Simulator):
     """Simulates the vending machine button panel and dispenser hardware."""
 
@@ -123,18 +110,7 @@ class VendingMachineSimulator(ESP32Simulator):
         sleep: Callable[[float], Awaitable[None]] | None = None,
         **kwargs,
     ):
-        super().__init__(subsystem_name="vending", **kwargs)
-        # The single seam every wait in `execute_profile` goes through, so a
-        # test can patch one instance attribute (`sim.sleep`) instead of the
-        # module-global `asyncio.sleep` (which other tests in this file
-        # still patch directly for the pre-existing command-channel tests --
-        # both seams coexist because this is a thin, real wrapper, not an
-        # internal fake clock). Defaults to `asyncio.sleep`; a constructor
-        # kwarg lets a caller supply its own from the start.
-        # Bound here, at construction time: monkeypatching `asyncio.sleep`
-        # afterward no longer affects `execute_profile`'s waits (it still
-        # affects `_handle_water_valve`'s own bare `asyncio.sleep` call).
-        self.sleep = sleep or asyncio.sleep
+        super().__init__(subsystem_name="vending", sleep=sleep, **kwargs)
         self.register_command("dispense", self._handle_dispense)
         # True while a dispense profile runs; a second dispense is rejected
         # "busy", as the board firmware does (vending ESP32 design 7).
@@ -155,7 +131,9 @@ class VendingMachineSimulator(ESP32Simulator):
         self.climate = Climate(ambient_c=22.0)
 
         for fault in vending_faults():
-            self.register_fault(_fault_def(self, fault))
+            self.register_fault(
+                to_fault_def(fault, lambda client: _Board(self, client))
+            )
 
     @property
     def dispenser(self) -> Dispenser:
@@ -201,13 +179,7 @@ class VendingMachineSimulator(ESP32Simulator):
             order = dict.fromkeys((*_PERIODIC_INPUTS, *changes, *standing))
             for channel in order:
                 await self.set_hw(client, channel, standing[channel])
-            await self.publish(
-                client,
-                "sensors/temp/ambient",
-                SensorReading(
-                    location="ambient", value=round(self.climate.ambient_c, 2)
-                ),
-            )
+            await self.publish_temperature(client, "ambient", self.climate.ambient_c)
             await asyncio.sleep(SENSOR_PUBLISH_INTERVAL)
 
     async def _force_report_extra(self, client: aiomqtt.Client) -> None:
@@ -215,11 +187,7 @@ class VendingMachineSimulator(ESP32Simulator):
         await self._publish_capabilities(client)
         for channel, state in self._hw.items():
             await self.set_hw(client, channel, state)
-        await self.publish(
-            client,
-            "sensors/temp/ambient",
-            SensorReading(location="ambient", value=round(self.climate.ambient_c, 2)),
-        )
+        await self.publish_temperature(client, "ambient", self.climate.ambient_c)
 
     async def execute_profile(
         self,

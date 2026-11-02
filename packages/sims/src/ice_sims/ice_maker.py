@@ -11,6 +11,8 @@ Run: uv run python -m ice_sims.ice_maker [--broker HOST] [--port PORT] [--machin
 import asyncio
 import random
 import time
+from dataclasses import dataclass
+from typing import Literal
 
 import aiomqtt
 from loguru import logger
@@ -22,9 +24,15 @@ from ice_contracts.board.ice_maker_monitor import (
     ChannelReading,
     MonitorCapabilities,
 )
-from ice_sims.base import CommandOutcome, ESP32Simulator, FaultDef
+from ice_sims.base import (
+    CommandOutcome,
+    ESP32Simulator,
+    FaultDef,
+    temperature_entity,
+    uptime_entity,
+)
 from ice_common.build_info import BUILD_INFO
-from ice_contracts.board.mqtt_messages import SensorReading, IceMakerEvent
+from ice_contracts.board.mqtt_messages import IceMakerEvent
 
 
 # Sensor definitions: name, target when compressor on, target when off, rate constant, noise amplitude
@@ -148,6 +156,70 @@ class ThermalSensor:
         self._value += random.gauss(0, self.noise) * (dt**0.5)
 
 
+@dataclass(frozen=True)
+class SensorFault:
+    """One ice-maker fault: pin `sensor` to `pin_value`, optionally reporting a halt."""
+
+    fault: str
+    category: Literal["short", "medium", "long"]
+    probability: float
+    message: str
+    severity: str
+    sensor: str
+    pin_value: float
+    halt_detail: str | None = None  # None: the machine never self-reports
+    stops_compressor: bool = False
+
+
+FAULT_TABLE: tuple[SensorFault, ...] = (
+    SensorFault(
+        "compressor_overtemp",
+        "long",
+        0.0005,
+        "Compressor temp exceeded safe limit — service required",
+        "critical",
+        "refrigerant_high",
+        95.0,
+        "compressor_overtemp",
+        stops_compressor=True,
+    ),
+    SensorFault(
+        "low_refrigerant",
+        "long",
+        0.0003,
+        "Low refrigerant detected — cooling ineffective",
+        "critical",
+        "refrigerant_low",
+        10.0,
+        "low_refrigerant",
+    ),
+    SensorFault(
+        "water_inlet_blocked",
+        "medium",
+        0.0008,
+        "Water inlet appears blocked — water bath not cooling",
+        "warning",
+        "water_bath",
+        20.0,
+        "water_inlet_blocked",
+    ),
+    # The machine has no fault detection for a stuck hot gas valve: the
+    # valve temperature is pinned and nothing is published.
+    *(
+        SensorFault(
+            f"defrost_stuck_{valve}",
+            "short",
+            0.0015,
+            f"Hot gas valve {valve} stuck — harvest failing on evaporator {valve}",
+            "warning",
+            f"hot_gas_valve_{valve}",
+            95.0,
+        )
+        for valve in (1, 2)
+    ),
+)
+
+
 class IceMakerSimulator(ESP32Simulator):
     """Simulates ice maker temperature monitoring with compressor cycling."""
 
@@ -174,155 +246,55 @@ class IceMakerSimulator(ESP32Simulator):
         self.register_command("power_cycle", self._handle_power_cycle)
         self.register_command("set_interval", self._handle_set_interval)
 
-        # Register faults
-        self.register_fault(
-            FaultDef(
-                name="compressor_overtemp",
-                category="long",
-                probability=0.0005,
-                on_activate=self._on_compressor_overtemp_activate,
-                on_recover=self._on_compressor_overtemp_recover,
-                message="Compressor temp exceeded safe limit — service required",
-                severity="critical",
-            )
-        )
-        self.register_fault(
-            FaultDef(
-                name="low_refrigerant",
-                category="long",
-                probability=0.0003,
-                on_activate=self._on_low_refrigerant_activate,
-                on_recover=self._on_low_refrigerant_recover,
-                message="Low refrigerant detected — cooling ineffective",
-                severity="critical",
-            )
-        )
-        self.register_fault(
-            FaultDef(
-                name="water_inlet_blocked",
-                category="medium",
-                probability=0.0008,
-                on_activate=self._on_water_inlet_blocked_activate,
-                on_recover=self._on_water_inlet_blocked_recover,
-                message="Water inlet appears blocked — water bath not cooling",
-                severity="warning",
-            )
-        )
-        for valve in (1, 2):
-            self.register_fault(
-                FaultDef(
-                    name=f"defrost_stuck_{valve}",
-                    category="short",
-                    probability=0.0015,
-                    on_activate=self._make_valve_stuck_activate(valve),
-                    on_recover=self._make_valve_stuck_recover(valve),
-                    message=(
-                        f"Hot gas valve {valve} stuck — "
-                        f"harvest failing on evaporator {valve}"
-                    ),
-                    severity="warning",
-                )
-            )
+        for row in FAULT_TABLE:
+            self.register_fault(self._fault_def(row))
 
     def sensor_by_name(self, name: str) -> ThermalSensor:
         """Return the ThermalSensor with the given name."""
         return next(s for s in self.sensors if s.name == name)
 
-    async def _on_compressor_overtemp_activate(self, client: aiomqtt.Client) -> None:
-        self.compressor_on = False
-        sensor = self.sensor_by_name("refrigerant_high")
-        sensor.target_on = 95.0
-        sensor.target_off = 95.0
-        await self.publish(
-            client,
-            "ice_maker/event",
-            IceMakerEvent(event="halt", detail="compressor_overtemp"),
-        )
-        logger.warning("[ice_maker] FAULT: compressor overtemp — halted")
+    def _fault_def(self, row: "SensorFault") -> FaultDef:
+        """A `FaultDef` that pins `row.sensor` to `row.pin_value` while active.
 
-    async def _on_compressor_overtemp_recover(self, client: aiomqtt.Client) -> None:
-        original = next(d for d in SENSOR_DEFS if d["name"] == "refrigerant_high")
-        sensor = self.sensor_by_name("refrigerant_high")
-        sensor.target_on = original["target_on"]
-        sensor.target_off = original["target_off"]
-        await self.publish(
-            client,
-            "ice_maker/event",
-            IceMakerEvent(event="resume", detail="compressor_overtemp_cleared"),
-        )
-        logger.info("[ice_maker] Fault cleared: compressor_overtemp")
+        With a `halt_detail` the board reports it (`halt`, then `resume` with
+        `<detail>_cleared`); without one the machine is unaware and publishes
+        nothing. The "Fault activated/cleared" log lines are the base class's.
+        """
+        original = next(d for d in SENSOR_DEFS if d["name"] == row.sensor)
 
-    async def _on_low_refrigerant_activate(self, client: aiomqtt.Client) -> None:
-        sensor = self.sensor_by_name("refrigerant_low")
-        sensor.target_on = 10.0
-        sensor.target_off = 10.0
-        await self.publish(
-            client,
-            "ice_maker/event",
-            IceMakerEvent(event="halt", detail="low_refrigerant"),
-        )
-        logger.warning("[ice_maker] FAULT: low refrigerant — cooling ineffective")
+        async def activate(client: aiomqtt.Client) -> None:
+            if row.stops_compressor:
+                self.compressor_on = False
+            sensor = self.sensor_by_name(row.sensor)
+            sensor.target_on = row.pin_value
+            sensor.target_off = row.pin_value
+            if row.halt_detail is not None:
+                await self.publish(
+                    client,
+                    "ice_maker/event",
+                    IceMakerEvent(event="halt", detail=row.halt_detail),
+                )
 
-    async def _on_low_refrigerant_recover(self, client: aiomqtt.Client) -> None:
-        original = next(d for d in SENSOR_DEFS if d["name"] == "refrigerant_low")
-        sensor = self.sensor_by_name("refrigerant_low")
-        sensor.target_on = original["target_on"]
-        sensor.target_off = original["target_off"]
-        await self.publish(
-            client,
-            "ice_maker/event",
-            IceMakerEvent(event="resume", detail="low_refrigerant_cleared"),
-        )
-        logger.info("[ice_maker] Fault cleared: low_refrigerant")
-
-    async def _on_water_inlet_blocked_activate(self, client: aiomqtt.Client) -> None:
-        sensor = self.sensor_by_name("water_bath")
-        sensor.target_on = 20.0
-        sensor.target_off = 20.0
-        await self.publish(
-            client,
-            "ice_maker/event",
-            IceMakerEvent(event="halt", detail="water_inlet_blocked"),
-        )
-        logger.warning("[ice_maker] FAULT: water inlet blocked")
-
-    async def _on_water_inlet_blocked_recover(self, client: aiomqtt.Client) -> None:
-        original = next(d for d in SENSOR_DEFS if d["name"] == "water_bath")
-        sensor = self.sensor_by_name("water_bath")
-        sensor.target_on = original["target_on"]
-        sensor.target_off = original["target_off"]
-        await self.publish(
-            client,
-            "ice_maker/event",
-            IceMakerEvent(event="resume", detail="water_inlet_blocked_cleared"),
-        )
-        logger.info("[ice_maker] Fault cleared: water_inlet_blocked")
-
-    def _make_valve_stuck_activate(self, valve: int):
-        """The machine has no fault detection: pin the valve temp, publish nothing."""
-
-        async def _activate(client: aiomqtt.Client) -> None:
-            sensor = self.sensor_by_name(f"hot_gas_valve_{valve}")
-            sensor.target_on = 95.0
-            sensor.target_off = 95.0
-            logger.warning(
-                f"[ice_maker] FAULT: hot gas valve {valve} stuck — "
-                "machine unaware, still cycling"
-            )
-
-        return _activate
-
-    def _make_valve_stuck_recover(self, valve: int):
-        async def _recover(client: aiomqtt.Client) -> None:
-            original = next(
-                d for d in SENSOR_DEFS if d["name"] == f"hot_gas_valve_{valve}"
-            )
-            sensor = self.sensor_by_name(f"hot_gas_valve_{valve}")
+        async def recover(client: aiomqtt.Client) -> None:
+            sensor = self.sensor_by_name(row.sensor)
             sensor.target_on = original["target_on"]
             sensor.target_off = original["target_off"]
-            logger.info(f"[ice_maker] Fault cleared: defrost_stuck_{valve}")
+            if row.halt_detail is not None:
+                await self.publish(
+                    client,
+                    "ice_maker/event",
+                    IceMakerEvent(event="resume", detail=f"{row.halt_detail}_cleared"),
+                )
 
-        return _recover
+        return FaultDef(
+            name=row.fault,
+            category=row.category,
+            probability=row.probability,
+            on_activate=activate,
+            on_recover=recover,
+            message=row.message,
+            severity=row.severity,
+        )
 
     def ha_discovery_entities(self) -> list[dict]:
         """Return HA discovery definitions for ice maker sensors."""
@@ -330,17 +302,11 @@ class IceMakerSimulator(ESP32Simulator):
         # 10 temperature sensors — one per thermal sensor
         for sensor in self.sensors:
             entities.append(
-                {
-                    "component": "sensor",
-                    "object_id": f"{sensor.name}_temp",
-                    "name": f"Ice Maker {sensor.name.replace('_', ' ').title()} Temperature",
-                    "state_topic_suffix": f"sensors/temp/{sensor.name}",
-                    "value_template": "{{ value_json.value }}",
-                    "device_class": "temperature",
-                    "unit_of_measurement": "\u00b0C",
-                    "state_class": "measurement",
-                    "expire_after": 30,
-                }
+                temperature_entity(
+                    sensor.name,
+                    f"Ice Maker {sensor.name.replace('_', ' ').title()} Temperature",
+                    object_id=f"{sensor.name}_temp",
+                )
             )
         # Compressor binary sensor
         entities.append(
@@ -355,19 +321,7 @@ class IceMakerSimulator(ESP32Simulator):
                 "payload_off": "OFF",
             }
         )
-        # Uptime sensor from heartbeat
-        entities.append(
-            {
-                "component": "sensor",
-                "object_id": "uptime",
-                "name": "Ice Maker Uptime",
-                "state_topic_suffix": "heartbeat/ice_maker",
-                "value_template": "{{ value_json.uptime_seconds }}",
-                "device_class": "duration",
-                "unit_of_measurement": "s",
-                "state_class": "total_increasing",
-            }
-        )
+        entities.append(uptime_entity("ice_maker", "Ice Maker Uptime"))
         return entities
 
     def tick(self, dt: float):
@@ -497,8 +451,7 @@ class IceMakerSimulator(ESP32Simulator):
     async def _publish_snapshot(self, client: aiomqtt.Client):
         """Publish one full round of sensor + telemetry readings."""
         for sensor in self.sensors:
-            reading = SensorReading(location=sensor.name, value=round(sensor.value, 2))
-            await self.publish(client, f"sensors/temp/{sensor.name}", reading, qos=0)
+            await self.publish_temperature(client, sensor.name, sensor.value, qos=0)
         await self.publish(
             client,
             "telemetry/ice_maker/compressor_current",

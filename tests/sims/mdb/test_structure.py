@@ -14,20 +14,25 @@ def test_nothing_imports_the_simulator_except_the_entry_module():
     for name in LEAVES:
         imports = imported_modules(PACKAGE_DIR / f"{name}.py")
         assert "ice_sims.mdb.simulator" not in imports, name
-        assert "ice_sims.base" not in imports, name
+        if name != "faults":  # faults take the generic InjectedFault from base
+            assert "ice_sims.base" not in imports, name
         assert "ice_sims.mdb_gateway" not in imports, name
     entry = imported_modules(PACKAGE_DIR.parent / "mdb_gateway.py")
     assert "ice_sims.mdb.simulator" in entry
 
 
 def test_customer_and_faults_do_not_import_the_models_or_each_other():
-    for name in ("customer", "faults"):
+    # `faults` may import `ice_sims.base` (the generic `InjectedFault`), nothing else.
+    for name, allowed in (("customer", set()), ("faults", {"ice_sims.base"})):
         ours = {
             m
             for m in imported_modules(PACKAGE_DIR / f"{name}.py")
             if m.startswith("ice_sims")
         }
-        assert ours == set(), (name, ours)
+        assert {m.removesuffix(".InjectedFault") for m in ours} == allowed, (
+            name,
+            ours,
+        )
 
 
 def test_no_mdb_module_imports_edge_or_ui():
