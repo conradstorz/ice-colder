@@ -30,8 +30,9 @@ from ice_edge.ledger.event_recorder import EventRecorder, SaleRecordingFailed
 from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from tests.fakes import FakeTaskRunner, drain_pending, settle
+from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, settle
 from tests.payment_state_helpers import set_coin_status
+from tests.fakes import FakeEventRecorder
 
 
 _profiles_tmp_base: Path | None = None
@@ -136,18 +137,6 @@ def make_vmc(
     """See `make_machine` -- returns just the VMC, for the majority of
     callers that never touch a moved collaborator."""
     return make_machine(price, tmp_path, tasks=tasks, products=products).vmc
-
-
-class FakeEventRecorder:
-    def __init__(self):
-        self.events: list[tuple] = []
-        self.sales: list[tuple] = []
-
-    def record(self, event_type, value=1.0, metadata=None):
-        self.events.append((event_type, value, metadata))
-
-    def record_sale(self, sku, name, slot, price, methods, ts=None):
-        self.sales.append((sku, name, slot, price, methods))
 
 
 class FakeSoldOutInventory:
@@ -1026,16 +1015,9 @@ class TestFaultRegistry:
     def test_hardware_io_handler_is_registered(self):
         machine = make_machine(products=two_products())
 
-        class FakeClient:
-            def __init__(self):
-                self.topics = []
-
-            def register(self, topic, handler):
-                self.topics.append(topic)
-
-        client = FakeClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
-        assert "hardware/io/+" in client.topics
+        assert "hardware/io/+" in [t for t, _ in client.registered]
 
 
 def _start_dispensing(vmc: VMC, index: int = 0):
@@ -1057,16 +1039,8 @@ class TestVendOutcomes:
         machine.attach_to_loop(asyncio.get_running_loop())
         rec = FakeEventRecorder()
         machine.set_event_recorder(rec)
-        published: list[tuple[str, object]] = []
-
-        class FakeClient:
-            def register(self, *_):
-                pass
-
-            async def publish(self, topic, payload, **kwargs):
-                published.append((topic, payload))
-
-        machine.set_mqtt_client(FakeClient())
+        client = FakeMqtt()
+        machine.set_mqtt_client(client)
         _start_dispensing(vmc, 0)
         price = vmc.products[0].price_cents
 
@@ -1085,7 +1059,7 @@ class TestVendOutcomes:
             price,
             {"code": code.value, "sku": "ICE-1", "outcome": outcome},
         ) in rec.events
-        assert not any(t == "cmd/payment/refund" for t, _ in published)
+        assert not any(t == "cmd/payment/refund" for t, *_ in client.published)
         assert vmc.faults.lockouts == {"ICE-1": code}
         assert not any(c.label == "dispense_timeout" for c in runner.scheduled)
 
@@ -1357,18 +1331,6 @@ class TestCreditLedger:
         machine3.cancel_pending_tasks()
 
 
-class RecordingClient:
-    def __init__(self):
-        self.published: list[tuple[str, object]] = []
-        self.registered: list[str] = []
-
-    def register(self, topic, *_):
-        self.registered.append(topic)
-
-    async def publish(self, topic, payload, **kwargs):
-        self.published.append((topic, payload))
-
-
 def seed_credit(vmc, cents, method="cash_coin"):
     """Put `cents` of cash credit in escrow without any of deposit_funds' side effects."""
     vmc.escrow_credits = [
@@ -1542,12 +1504,13 @@ class TestRefunds:
 
     def test_payment_event_and_state_handlers_are_registered(self):
         machine = make_machine(products=two_products())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
-        assert "payment/event" in client.registered
-        assert "payment/state" in client.registered
+        registered = [t for t, _ in client.registered]
+        assert "payment/event" in registered
+        assert "payment/state" in registered
         for legacy in ("payment/credit", "cmd/payment/refund/ack", "payment/status"):
-            assert legacy not in client.registered
+            assert legacy not in registered
 
 
 class TestFireAndForget:
@@ -1605,17 +1568,9 @@ def _wired_vmc(products=None, *, tasks: TaskRunner | None = None):
     machine.set_health_monitor(monitor)
     avail = Availability()
     machine.set_availability(avail)
-    published: list = []
-
-    class FakeMQTT:
-        def register(self, *a, **k):
-            pass
-
-        async def publish(self, topic, payload, qos=1, retain=False):
-            published.append((topic, payload))
-
-    machine.set_mqtt_client(FakeMQTT())
-    return vmc, monitor, avail, published, machine
+    client = FakeMqtt()
+    machine.set_mqtt_client(client)
+    return vmc, monitor, avail, client.published, machine
 
 
 def _all_alive(monitor: HealthMonitor, machine: Machine):
@@ -1746,14 +1701,7 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     avail = Availability()
     machine.set_availability(avail)
 
-    class FakeMQTT:
-        def register(self, *a, **k):
-            pass
-
-        async def publish(self, topic, payload, qos=1, retain=False):
-            pass
-
-    machine.set_mqtt_client(FakeMQTT())
+    machine.set_mqtt_client(FakeMqtt())
     assert machine.health_monitor is None
 
     await machine.telemetry.handle_hardware_io(
@@ -1890,7 +1838,7 @@ async def test_expire_session_is_a_noop_while_dispensing():
     machine = make_machine(products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     _start_dispensing(vmc, 0)
     assert vmc.state == "dispensing"
@@ -1923,7 +1871,7 @@ async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
     machine = make_machine(tasks=runner, products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
 
     vmc.credit_escrow_cents = 0
@@ -2089,12 +2037,12 @@ async def test_status_publish_carries_destination_state():
 
     vmc.start_interaction()
     await asyncio.sleep(0)
-    statuses = [p for t, p in published if t == "status"]
+    statuses = [p for t, p, _ in published if t == "status"]
     assert statuses[-1].state == "interacting_with_user"
 
     vmc.error_occurred()
     await asyncio.sleep(0)
-    statuses = [p for t, p in published if t == "status"]
+    statuses = [p for t, p, _ in published if t == "status"]
     assert statuses[-1].state == "error"
 
 
@@ -2181,7 +2129,7 @@ async def test_status_republished_on_mqtt_connect():
     machine.on_mqtt_connection(True)
     await asyncio.sleep(0)
 
-    statuses = [p for t, p in published if t == "status"]
+    statuses = [p for t, p, _ in published if t == "status"]
     assert statuses
     assert statuses[-1].state == "idle"
 
@@ -2203,7 +2151,7 @@ class TestMakeIdleForService:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         vmc.set_state("dispensing")
         seed_credit(vmc, 100)
@@ -2220,7 +2168,7 @@ class TestMakeIdleForService:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
@@ -2244,7 +2192,7 @@ class TestMakeIdleForService:
         machine = make_machine(tasks=runner, products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         assert vmc.state == "idle"
         vmc.deposit_funds(200, payment_method="cash_coin")
@@ -2267,7 +2215,7 @@ class TestMakeIdleForService:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         vmc.set_state("error")
         seed_credit(vmc, 125)
@@ -2409,7 +2357,7 @@ class TestMaintenanceLease:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         rec = FakeEventRecorder()
         machine.set_event_recorder(rec)
@@ -2687,7 +2635,7 @@ def _test_run_machine(
     products=None, tmp_path: Path | None = None, *, tasks: TaskRunner | None = None
 ):
     """A wired-up Machine (and its VMC) plus a FakeEventRecorder and
-    RecordingClient, for TestSaleRunner.run_test_sale tests. Mirrors make_vmc(products=two_products())'s
+    FakeMqtt, for TestSaleRunner.run_test_sale tests. Mirrors make_vmc(products=two_products())'s
     default two-product catalog (ICE-1 $2.50 slot 0, WATER-1 $1.00 slot 1)
     unless overridden. Also carries a loaded `DispenserProfiles` and a
     `FakeDispatcher` (plan: dispenser profiles, Task 3) -- every
@@ -2703,7 +2651,7 @@ def _test_run_machine(
     profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(tmp_path))
     machine.set_dispenser_profiles(profiles)
     machine.set_command_dispatcher(FakeDispatcher())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
@@ -2967,7 +2915,7 @@ class TestRunTestSale:
         machine = Machine(config=cfg)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         machine.set_event_recorder(recorder)
@@ -3464,7 +3412,7 @@ class TestRunTestSaleRunContext:
         machine = Machine(config=cfg)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        machine.set_mqtt_client(RecordingClient())
+        machine.set_mqtt_client(FakeMqtt())
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         machine.set_event_recorder(recorder)
 
@@ -3536,7 +3484,7 @@ def _test_run_vmc_with_availability(products=None):
     machine = Machine(config=cfg)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
@@ -4136,7 +4084,7 @@ class TestOnErrorTestMoney:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
@@ -4158,7 +4106,7 @@ class TestOnErrorTestMoney:
         machine = make_machine()
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         lines: list[str] = []
         sink = logger.add(lambda m: lines.append(str(m)), level="DEBUG")

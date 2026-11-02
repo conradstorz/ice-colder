@@ -12,6 +12,7 @@ from ice_edge.hal.command_dispatcher import (
 )
 from ice_edge.payment.mdb.payout import PayoutProtocol
 from tests.fakes import FakeTaskRunner, settle
+from tests.fakes import FakeFaults
 
 
 def completion(request_id, status="ok", requested=100, paid=None, detail=None):
@@ -39,14 +40,6 @@ def plain(request_id, status="ok", detail=None, command="cash_sale"):
     return CommandAck(
         request_id=request_id, command=command, status=status, detail=detail
     )
-
-
-class FakeFaults:
-    def __init__(self):
-        self.raised = []
-
-    def raise_fault(self, code, *, sku=None, outcome=None):
-        self.raised.append((code, outcome))
 
 
 class FakeDispatcher:

@@ -23,6 +23,8 @@ from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
 from tests.dispenser_fixtures import profiles_for
+from tests.async_helpers import wait_until
+from tests.fakes import FakeMqtt
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_edge.web import routes
@@ -1633,38 +1635,6 @@ class TestSimulatedSaleFlow:
 # completion signal are delivered -- the same window the bug lost.
 
 
-class _FakeDispatcherMQTT:
-    """Minimal ice_common.mqtt_client.MQTTClient stand-in, shaped like
-    tests/test_command_dispatcher.py's own fake: register() records a
-    handler by topic_suffix, publish() records the call, deliver_ack() and
-    deliver_dispenser_report() simulate an inbound message on each of the
-    two topics CommandDispatcher.__init__ registers.
-    """
-
-    def __init__(self):
-        self.connected = True
-        self.published: list[tuple[str, object]] = []
-        self._handlers: dict[str, callable] = {}
-
-    def register(self, topic_suffix, handler):
-        self._handlers[topic_suffix] = handler
-
-    async def publish(self, topic_suffix, payload, qos: int = 1, retain: bool = False):
-        self.published.append((topic_suffix, payload))
-
-    async def deliver_ack(self, subsystem: str, payload: dict) -> None:
-        await self._handlers["cmd/+/ack"](f"cmd/{subsystem}/ack", payload)
-
-    async def deliver_dispenser_report(self, payload: dict) -> None:
-        await self._handlers["hardware/dispenser"]("hardware/dispenser", payload)
-
-
-async def _wait_until(predicate, *, timeout: float = 2.0) -> None:
-    async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0)
-
-
 def _dispense_params(slot: int, sku: str, tmp_path) -> dict:
     """A full, pydantic-valid `dispense` params dict (slot, mechanism,
     profile) for driving `_run_command` DIRECTLY in the tests below,
@@ -1710,7 +1680,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         principal = _direct_principal(store, store.owner())
         params = _dispense_params(0, "ICE-1", tmp_path)
 
-        mqtt = _FakeDispatcherMQTT()
+        mqtt = FakeMqtt()
         dispatcher = CommandDispatcher(mqtt)
         routes.set_command_dispatcher(dispatcher)
         granted, reason = context.machine_instance.lease.begin_maintenance(
@@ -1725,7 +1695,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         # The lease is taken, and the run counted in-flight, as soon as
         # _run_command enters machine.lease.test_run() -- before any
         # ack has even arrived.
-        await _wait_until(lambda: len(mqtt.published) == 1)
+        await wait_until(lambda: len(mqtt.published) == 1)
         request_id = mqtt.published[0][1].request_id
         assert context.machine_instance.maintenance_hold is not None
         assert context.machine_instance.maintenance_hold.runs_in_flight == 1
@@ -1746,7 +1716,7 @@ class TestActuatorLeaseHeldForRealLifetime:
                 "timestamp": "2026-09-29T00:00:00+00:00",
             },
         )
-        await _wait_until(lambda: request_id in dispatcher._pending_completions)
+        await wait_until(lambda: request_id in dispatcher._pending_completions)
 
         # THE PROOF: accepted is not completed. Everything that was
         # true the instant the lease was granted must STILL be true —
@@ -1805,7 +1775,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         principal = _direct_principal(store, store.owner())
         params = _dispense_params(0, "ICE-1", tmp_path)
 
-        mqtt = _FakeDispatcherMQTT()
+        mqtt = FakeMqtt()
         dispatcher = CommandDispatcher(mqtt, timeout=0.05, retries=0)
         routes.set_command_dispatcher(dispatcher)
         granted, reason = context.machine_instance.lease.begin_maintenance(
@@ -1836,7 +1806,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         _cfg, vmc, _inv, store = wired
         principal = _direct_principal(store, store.owner())
 
-        mqtt = _FakeDispatcherMQTT()
+        mqtt = FakeMqtt()
         dispatcher = CommandDispatcher(mqtt)
         routes.set_command_dispatcher(dispatcher)
         granted, reason = context.machine_instance.lease.begin_maintenance(
@@ -1845,7 +1815,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         assert granted is True, reason
 
         task = asyncio.ensure_future(_run_command("vending", "ping", {}, principal))
-        await _wait_until(lambda: len(mqtt.published) == 1)
+        await wait_until(lambda: len(mqtt.published) == 1)
         request_id = mqtt.published[0][1].request_id
 
         await mqtt.deliver_ack(

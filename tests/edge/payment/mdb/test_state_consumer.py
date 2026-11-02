@@ -4,24 +4,7 @@ from ice_contracts.board.payment import DeviceStatusEvent, PaymentState
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.faults.availability import Availability, PermissiveState
 from ice_edge.payment.mdb.state import StateConsumer
-
-
-class FakeFaults:
-    def __init__(self):
-        self.active: set[FaultCode] = set()
-        self.calls: list[tuple] = []
-
-    def has(self, code):
-        return code in self.active
-
-    def raise_fault(self, code, **kw):
-        self.calls.append(("raise", code))
-        self.active.add(code)
-
-    def clear_fault(self, key, by="admin"):
-        self.calls.append(("clear", key, by))
-        self.active.discard(FaultCode(key))
-        return True
+from tests.fakes import FakeFaults
 
 
 class FakePolicy:

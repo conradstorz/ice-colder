@@ -15,7 +15,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ice_contracts.board.common import CommandAck, SubsystemCommand
+from tests.async_helpers import wait_until
+from tests.fakes import FakeMqtt
+from ice_contracts.board.common import CommandAck
 from ice_edge.hal.command_dispatcher import (
     CommandDispatcher,
     CommandTimeout,
@@ -48,42 +50,6 @@ class FakeClock:
         that attempt's ack-wait timing out)."""
         ev = self._events.pop(0)
         ev.set()
-
-
-class FakeMQTTClient:
-    """Mimics ice_common/mqtt_client.py's MQTTClient just enough: register()
-    records the handler, publish() records the call (dropped silently when
-    not connected, like the real client), and deliver_ack() simulates an
-    inbound message by calling the registered handler directly — the same
-    path a real ack takes through MQTTClient._dispatch.
-
-    deliver_dispenser_report() is the completion-table amendment's second
-    entry point: CommandDispatcher.__init__ now also registers a handler
-    for `hardware/dispenser` (dispense's completion signal, distinct from
-    the ack channel `deliver_ack` drives) — this simulates the vending
-    simulator's terminal report the same way deliver_ack simulates an ack.
-    """
-
-    def __init__(self, connected: bool = True):
-        self.connected = connected
-        self.published: list[tuple[str, SubsystemCommand]] = []
-        self._handlers: dict[str, callable] = {}
-
-    def register(self, topic_suffix, handler):
-        self._handlers[topic_suffix] = handler
-
-    async def publish(self, topic_suffix, payload, qos: int = 1, retain: bool = False):
-        if not self.connected:
-            return
-        self.published.append((topic_suffix, payload))
-
-    async def deliver_ack(self, subsystem: str, payload: dict) -> None:
-        handler = self._handlers["cmd/+/ack"]
-        await handler(f"cmd/{subsystem}/ack", payload)
-
-    async def deliver_dispenser_report(self, payload: dict) -> None:
-        handler = self._handlers["hardware/dispenser"]
-        await handler("hardware/dispenser", payload)
 
 
 def _dispense_params(slot: int) -> dict:
@@ -138,32 +104,24 @@ def _ack_payload(request_id: str, command: str, status: str = "ok", **extra) -> 
     return payload
 
 
-async def _wait_until(predicate, *, timeout: float = 2.0) -> None:
-    """Poll predicate() until true — used only to let a background send()
-    task reach its publish()/sleep() point before the test proceeds."""
-    async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0)
-
-
 async def _wait_for_attempt(clock: FakeClock, n: int) -> None:
     """Wait until the nth clock.sleep() call has actually started (i.e. its
     Event exists in clock._events and can be fired) — not merely until the
     matching publish() has been recorded, which happens one event-loop tick
     earlier and races clock.fire_next() if awaited on its own."""
-    await _wait_until(lambda: len(clock.calls) >= n)
+    await wait_until(lambda: len(clock.calls) >= n)
 
 
 # --- Tests ---------------------------------------------------------------
 
 
 async def test_ack_for_sent_request_id_resolves_send():
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(dispatcher.send("ice_maker", "ping"))
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
 
     request_id = mqtt.published[0][1].request_id
     await mqtt.deliver_ack("ice_maker", _ack_payload(request_id, "ping"))
@@ -181,7 +139,7 @@ async def test_send_uses_caller_request_id():
     know the id before any dispatch even starts) may supply its own
     request_id -- send() must publish with exactly that id rather than
     minting a fresh one, and the resolved ack still correlates by it."""
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
     caller_id = "caller-supplied-id-1"
@@ -191,7 +149,7 @@ async def test_send_uses_caller_request_id():
             "vending", "dispense", _dispense_params(0), request_id=caller_id
         )
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
 
     assert mqtt.published[0][1].request_id == caller_id
 
@@ -201,12 +159,12 @@ async def test_send_uses_caller_request_id():
 
 
 async def test_send_generates_request_id_when_caller_supplies_none():
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(dispatcher.send("ice_maker", "ping"))
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
 
     request_id = mqtt.published[0][1].request_id
     assert request_id  # minted, non-empty
@@ -215,7 +173,7 @@ async def test_send_generates_request_id_when_caller_supplies_none():
 
 
 async def test_foreign_request_id_is_ignored_and_original_still_times_out():
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, retries=0, clock=clock)
 
@@ -235,7 +193,7 @@ async def test_foreign_request_id_is_ignored_and_original_still_times_out():
 
 
 async def test_timeout_triggers_exactly_one_retry_with_same_request_id():
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, retries=1, clock=clock)
 
@@ -256,7 +214,7 @@ async def test_timeout_triggers_exactly_one_retry_with_same_request_id():
 
 
 async def test_command_timeout_raised_after_retry_also_times_out():
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, retries=1, clock=clock)
 
@@ -274,7 +232,7 @@ async def test_command_timeout_raised_after_retry_also_times_out():
 
 
 async def test_concurrent_sends_to_different_subsystems_do_not_cross_correlate():
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
@@ -282,11 +240,11 @@ async def test_concurrent_sends_to_different_subsystems_do_not_cross_correlate()
     task_b = asyncio.ensure_future(dispatcher.send("vending", "ping"))
 
     # Both must genuinely be in flight before either is resolved.
-    await _wait_until(lambda: len(mqtt.published) == 2)
+    await wait_until(lambda: len(mqtt.published) == 2)
     assert not task_a.done()
     assert not task_b.done()
 
-    published_by_subsystem = {topic: cmd for topic, cmd in mqtt.published}
+    published_by_subsystem = {topic: cmd for topic, cmd, _ in mqtt.published}
     id_a = published_by_subsystem["cmd/ice_maker"].request_id
     id_b = published_by_subsystem["cmd/vending"].request_id
     assert id_a != id_b
@@ -305,12 +263,12 @@ async def test_concurrent_sends_to_different_subsystems_do_not_cross_correlate()
 
 @pytest.mark.parametrize("status", ["rejected", "failed", "unsupported"])
 async def test_non_ok_ack_resolves_normally(status):
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(dispatcher.send("mdb", "card_reader_test"))
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
 
     await mqtt.deliver_ack(
@@ -321,7 +279,7 @@ async def test_non_ok_ack_resolves_normally(status):
 
 
 async def test_broker_down_raises_promptly_without_waiting_out_timeout():
-    mqtt = FakeMQTTClient(connected=False)
+    mqtt = FakeMqtt(connected=False)
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
@@ -347,14 +305,14 @@ async def test_immediate_command_matches_send_exactly():
     -- no second wait, no second clock.sleep call. This is the "an
     immediate command is unaffected" proof: ping's contract with the
     dispatcher does not change at all."""
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
         dispatcher.send_and_await_completion("ice_maker", "ping")
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
 
     await mqtt.deliver_ack("ice_maker", _ack_payload(request_id, "ping"))
@@ -374,14 +332,14 @@ async def test_dispense_completion_awaits_terminal_hardware_dispenser_report():
     (ice_contracts/board/common.py COMPLETION_TIMEOUTS, the completion-table
     amendment). The accept ack alone must not resolve
     send_and_await_completion."""
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
         dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(3))
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
 
     await mqtt.deliver_ack(
@@ -397,7 +355,7 @@ async def test_dispense_completion_awaits_terminal_hardware_dispenser_report():
     # check -> completion-timeout lookup -> Future registration) to
     # finish; polling for the registration itself is what's actually true,
     # not a guess at how many ticks it takes.
-    await _wait_until(lambda: request_id in dispatcher._pending_completions)
+    await wait_until(lambda: request_id in dispatcher._pending_completions)
 
     assert not task.done()  # the accept ack alone must not resolve this
 
@@ -425,14 +383,14 @@ async def test_dispense_non_complete_terminal_state_resolves_as_failed():
     error) is still a completion -- the run finished, just not
     successfully -- and must resolve send_and_await_completion with a
     "failed" status, not leave it hanging until the completion timeout."""
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
         dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(1))
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
     await mqtt.deliver_ack(
         "vending", _ack_payload(request_id, "dispense", status="ok", phase="accepted")
@@ -462,14 +420,14 @@ async def test_water_valve_completion_awaits_second_completed_ack():
     derived from `seconds`, not a fixed constant."""
     from ice_contracts.board.common import COMPLETION_TIMEOUTS
 
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
         dispatcher.send_and_await_completion("vending", "water_valve", {"seconds": 3})
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
 
     await mqtt.deliver_ack(
@@ -479,7 +437,7 @@ async def test_water_valve_completion_awaits_second_completed_ack():
     # See test_dispense_completion_awaits_terminal_hardware_dispenser_report's
     # comment: poll for the actual registration rather than guessing a
     # sleep(0) count.
-    await _wait_until(lambda: request_id in dispatcher._pending_completions)
+    await wait_until(lambda: request_id in dispatcher._pending_completions)
     assert not task.done()
 
     await mqtt.deliver_ack(
@@ -508,7 +466,7 @@ async def test_power_cycle_completion_timeout_scales_with_dwell_seconds():
     that; this proves the actual wait derives from the parameter."""
     from ice_contracts.board.common import COMPLETION_TIMEOUTS
 
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
@@ -517,13 +475,13 @@ async def test_power_cycle_completion_timeout_scales_with_dwell_seconds():
             "ice_maker", "power_cycle", {"dwell_seconds": 300}
         )
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
     await mqtt.deliver_ack(
         "ice_maker",
         _ack_payload(request_id, "power_cycle", status="ok", phase="accepted"),
     )
-    await _wait_until(lambda: request_id in dispatcher._pending_completions)
+    await wait_until(lambda: request_id in dispatcher._pending_completions)
 
     await mqtt.deliver_ack(
         "ice_maker",
@@ -551,7 +509,7 @@ async def test_ack_timeout_still_fires_for_long_running_command_that_never_accep
     fail in ~ack_timeout per attempt via CommandTimeout -- never wait out
     the much longer completion timeout. Proved by never delivering
     anything at all and firing only the ack-phase clock events."""
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, retries=1, clock=clock)
 
@@ -577,14 +535,14 @@ async def test_completion_timeout_raised_when_accepted_but_never_completes():
     ever reports completion -- CompletionTimeout, not CommandTimeout, and
     only after the command's own (much longer) completion timeout, not the
     ack timeout."""
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
         dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(0))
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
     await mqtt.deliver_ack(
         "vending", _ack_payload(request_id, "dispense", status="ok", phase="accepted")
@@ -613,14 +571,14 @@ async def test_door_open_report_is_failed_with_detail():
     and when the board gives no detail of its own, the dispatcher fills in
     a specific default rather than the generic "outcome door_open" (plan:
     dispenser profiles, Task 3)."""
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
         dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(2))
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
     await mqtt.deliver_ack(
         "vending", _ack_payload(request_id, "dispense", status="ok", phase="accepted")
@@ -644,14 +602,14 @@ async def test_door_open_report_is_failed_with_detail():
 async def test_detail_passthrough():
     """When the board supplies its own `detail`, the dispatcher passes it
     through verbatim instead of generating one."""
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
         dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(1))
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
     await mqtt.deliver_ack(
         "vending", _ack_payload(request_id, "dispense", status="ok", phase="accepted")
@@ -682,14 +640,14 @@ async def test_early_completion_signal_is_not_lost():
     _early_completions cache this hangs until the (unfired) 120s clock
     event, and asyncio.wait_for below would raise asyncio.TimeoutError
     instead of returning."""
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
         dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(0))
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
 
     # Both delivered here, synchronously, before anything yields back to
@@ -730,7 +688,7 @@ async def _start_dispense(dispatcher, mqtt, request_id: str):
             "vending", "dispense", _dispense_params(1), request_id=request_id
         )
     )
-    await _wait_until(lambda: len(mqtt.published) == 1)
+    await wait_until(lambda: len(mqtt.published) == 1)
     await mqtt.deliver_ack(
         "vending", _ack_payload(request_id, "dispense", status="ok", phase="accepted")
     )
@@ -738,7 +696,7 @@ async def _start_dispense(dispatcher, mqtt, request_id: str):
 
 
 async def test_complete_before_send_resolves_later_wait():
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
     request_id = "early-complete-0001"
@@ -753,7 +711,7 @@ async def test_complete_before_send_resolves_later_wait():
 
 
 async def test_complete_after_ack_resolves_wait():
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
     request_id = "late-complete-0001"
@@ -769,7 +727,7 @@ async def test_complete_after_ack_resolves_wait():
 
 
 async def test_complete_for_unknown_request_id_is_buffered_then_evicted():
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
@@ -794,7 +752,7 @@ async def test_complete_for_unknown_request_id_is_buffered_then_evicted():
 async def test_disconnected_send_raises_command_not_sent_a_timeout_subclass():
     from ice_edge.hal.command_dispatcher import CommandNotSent
 
-    mqtt = FakeMQTTClient(connected=False)
+    mqtt = FakeMqtt(connected=False)
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=FakeClock())
     with pytest.raises(CommandNotSent) as excinfo:
         await dispatcher.send("mdb", "payout")
@@ -805,7 +763,7 @@ async def test_disconnected_send_raises_command_not_sent_a_timeout_subclass():
 async def test_a_real_ack_timeout_is_not_command_not_sent():
     from ice_edge.hal.command_dispatcher import CommandNotSent
 
-    mqtt = FakeMQTTClient()
+    mqtt = FakeMqtt()
     clock = FakeClock()
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, retries=0, clock=clock)
     task = asyncio.ensure_future(dispatcher.send("ice_maker", "self_test"))

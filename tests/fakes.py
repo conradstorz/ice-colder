@@ -227,20 +227,85 @@ class FakePayments:
 
 
 class FakeMqtt:
-    """Records every publish() call as `(topic, payload, retain)`.
-    `register` is accepted and ignored: `StatusOutputs`/`FaultService`
-    never call it, but `Machine.set_mqtt_client` calls it once per
-    `SUBSCRIPTIONS` entry, so this fake can stand in for a full `Machine`
-    wiring too."""
+    """Stands in for `ice_common.mqtt_client.MQTTClient`.
 
-    def __init__(self):
+    `publish()` records `(topic, payload, retain)` in `published`, and is
+    silently dropped while `connected` is false (as the real client does).
+    `register()` stores the handler by topic suffix (also in `registered`, in
+    call order); `deliver()` simulates an inbound message by calling it, and
+    `deliver_ack()`/`deliver_dispenser_report()` do so for the two topics
+    `CommandDispatcher.__init__` registers (`cmd/+/ack`, `hardware/dispenser`).
+    """
+
+    def __init__(self, connected: bool = True):
+        self.connected = connected
         self.published: list[tuple[str, object, bool]] = []
+        self.registered: list[tuple[str, object]] = []
+        self.handlers: dict[str, Callable] = {}
 
-    def register(self, *a, **k):
-        pass
+    def register(self, topic, handler=None, *a, **k):
+        self.registered.append((topic, handler))
+        self.handlers[topic] = handler
 
     async def publish(self, topic, payload, qos=1, retain=False):
+        if not self.connected:
+            return
         self.published.append((topic, payload, retain))
+
+    async def deliver(self, topic, payload, *, registered_as: str | None = None):
+        handler = self.handlers[registered_as or topic]
+        await handler(topic, payload)
+
+    async def deliver_ack(self, subsystem: str, payload: dict) -> None:
+        await self.deliver(f"cmd/{subsystem}/ack", payload, registered_as="cmd/+/ack")
+
+    async def deliver_dispenser_report(self, payload: dict) -> None:
+        await self.deliver("hardware/dispenser", payload)
+
+
+class FakeEventRecorder:
+    """Stands in for the event recorder: records every `record`/`record_sale`
+    call in `events`/`sales`; `fail_with`, when set, is raised by
+    `record_sale` instead of recording it."""
+
+    def __init__(self, fail_with: Exception | None = None):
+        self.events: list[tuple] = []
+        self.sales: list[tuple] = []
+        self.fail_with = fail_with
+
+    def record(self, event_type, value=1.0, metadata=None):
+        self.events.append((event_type, value, metadata))
+
+    def record_sale(self, sku, name, slot, price, methods, ts=None):
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.sales.append((sku, name, slot, price, methods))
+
+
+class FakeFaults:
+    """Stands in for `FaultService` for the payment collaborators: `raised`
+    holds `(code, outcome)`, `cleared` the keys cleared, `calls` the ordered
+    `("raise", code)` / `("clear", key, by)` log; `active` backs `has()`."""
+
+    def __init__(self):
+        self.active: set = set()
+        self.raised: list[tuple] = []
+        self.cleared: list[str] = []
+        self.calls: list[tuple] = []
+
+    def has(self, code) -> bool:
+        return code in self.active
+
+    def raise_fault(self, code, *, sku=None, outcome=None) -> None:
+        self.calls.append(("raise", code))
+        self.active.add(code)
+        self.raised.append((code, outcome))
+
+    def clear_fault(self, key, *, by="admin") -> bool:
+        self.calls.append(("clear", key, by))
+        self.cleared.append(key)
+        self.active = {c for c in self.active if getattr(c, "value", c) != key}
+        return True
 
 
 class FakeStore:

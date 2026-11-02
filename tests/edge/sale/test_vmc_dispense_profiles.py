@@ -27,6 +27,7 @@ from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.vend.dispensers import DispenserProfiles
 from tests.dispenser_fixtures import profiles_for, render_profiles_toml
 from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles
+from tests.fakes import FakeEventRecorder
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="W-1", slot=1, kind="water")
@@ -342,18 +343,6 @@ def test_reconcile_never_raises_cfg101_over_another_lockout(tmp_path):
 
 
 # --- Task 3: the sale dispenses through the dispatcher with the profile ---
-
-
-class FakeEventRecorder:
-    def __init__(self):
-        self.events: list[tuple] = []
-        self.sales: list[tuple] = []
-
-    def record(self, event_type, value=1.0, metadata=None):
-        self.events.append((event_type, value, metadata))
-
-    def record_sale(self, sku, name, slot, price, methods, ts=None):
-        self.sales.append((sku, name, slot, price, methods))
 
 
 def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1), *, tasks=None):

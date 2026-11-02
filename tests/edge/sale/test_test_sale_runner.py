@@ -18,21 +18,7 @@ import asyncio
 import pytest
 
 from tests.edge.sale.test_vmc_observers import _vmc_with_profiles
-
-
-class FakeEventRecorder:
-    """Minimal recorder -- mirrors `tests/test_vmc_flows.py`'s and
-    `tests/test_vmc_dispense_profiles.py`'s own local copies."""
-
-    def __init__(self):
-        self.events: list[tuple] = []
-        self.sales: list[tuple] = []
-
-    def record(self, event_type, value=1.0, metadata=None):
-        self.events.append((event_type, value, metadata))
-
-    def record_sale(self, sku, name, slot, price, methods, ts=None):
-        self.sales.append((sku, name, slot, price, methods))
+from tests.fakes import FakeEventRecorder
 
 
 def _no_refund_published(client) -> bool:

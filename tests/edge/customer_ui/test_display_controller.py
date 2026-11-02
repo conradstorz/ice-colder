@@ -8,7 +8,7 @@ from ice_common.config_model import ConfigModel
 from ice_edge.app.machine import Machine
 from ice_edge.customer_ui.display_controller import DisplayController
 from ice_contracts.board.mqtt_messages import DisplayMode
-from tests.fakes import settle
+from tests.fakes import FakeMqtt, settle
 
 
 class TestDisplayControllerModes:
@@ -195,21 +195,6 @@ class TestDisplayControllerSetupCode:
         )
 
 
-class _FakeMQTTClient:
-    """Mimics MQTTClient.publish's "not connected" drop (ice_common/mqtt_client.py
-    lines 104-106) without a real broker: a publish attempted while
-    `connected` is False is silently swallowed, exactly like the real class."""
-
-    def __init__(self):
-        self.connected = False
-        self.published: list[tuple[str, object]] = []
-
-    async def publish(self, topic_suffix, payload, qos=1, retain=False):
-        if not self.connected:
-            return
-        self.published.append((topic_suffix, payload))
-
-
 class TestDisplayControllerReconnect:
     """Copilot review, main.py:349: ensure_setup_mode() runs right after the
     MQTT client is constructed, before mqtt.run() connects it, so the setup
@@ -219,7 +204,9 @@ class TestDisplayControllerReconnect:
 
     async def test_setup_code_published_while_disconnected_is_dropped(self):
         dc = DisplayController()
-        client = _FakeMQTTClient()  # starts disconnected, like a fresh MQTTClient
+        client = FakeMqtt(
+            connected=False
+        )  # starts disconnected, like a fresh MQTTClient
         loop = asyncio.get_running_loop()
         dc.set_mqtt(client, loop)
 
@@ -231,7 +218,7 @@ class TestDisplayControllerReconnect:
 
     async def test_republish_after_connect_delivers_the_held_setup_code(self):
         dc = DisplayController()
-        client = _FakeMQTTClient()
+        client = FakeMqtt(connected=False)
         loop = asyncio.get_running_loop()
         dc.set_mqtt(client, loop)
 
@@ -244,14 +231,14 @@ class TestDisplayControllerReconnect:
         await settle()
 
         assert len(client.published) == 1
-        topic, command = client.published[0]
+        topic, command, _ = client.published[0]
         assert topic == "cmd/display"
         assert command.mode == DisplayMode.maintenance
         assert command.message == "Setup code: 1234 5678"
 
     async def test_republish_with_no_setup_code_resends_current_mode(self):
         dc = DisplayController()
-        client = _FakeMQTTClient()
+        client = FakeMqtt(connected=False)
         loop = asyncio.get_running_loop()
         dc.set_mqtt(client, loop)
         dc.update_for_state("error")  # advertising -> error, dropped (disconnected)
@@ -273,7 +260,7 @@ class TestDisplayControllerReconnect:
         that value was never actually delivered. republish() must not use
         the same guard."""
         dc = DisplayController()
-        client = _FakeMQTTClient()
+        client = FakeMqtt(connected=False)
         loop = asyncio.get_running_loop()
         dc.set_mqtt(client, loop)
 

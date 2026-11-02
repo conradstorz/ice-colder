@@ -14,9 +14,8 @@ import asyncio
 import pytest
 from loguru import logger
 
-from tests.fakes import FakeTaskRunner
+from tests.fakes import FakeMqtt, FakeTaskRunner
 from tests.edge.sale.test_vmc_flows import (
-    RecordingClient,
     payouts,
     seed_credit,
     _profiles_tmp_base_dir,  # noqa: F401 -- pytest picks this up as an autouse fixture
@@ -48,7 +47,7 @@ async def test_standby_from_interacting_with_user_refunds_and_idles():
     machine = make_machine(products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
@@ -80,7 +79,7 @@ async def test_standby_from_idle_refunds_stranded_escrow_and_cancels_timer():
     machine = make_machine(tasks=runner, products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     assert vmc.state == "idle"
     vmc.deposit_funds(200, payment_method="cash_coin")
@@ -107,7 +106,7 @@ async def test_standby_from_error_refunds_and_stays_in_error():
     machine = make_machine(products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     vmc.set_state("error")
     seed_credit(vmc, 150)
@@ -132,7 +131,7 @@ async def test_standby_refused_while_dispensing():
     machine = make_machine(products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     vmc.set_state("dispensing")
     seed_credit(vmc, 300)
