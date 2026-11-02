@@ -8,10 +8,9 @@
    Task 10 review round 1) that htmx's fragment parser would then treat as
    a document, swapping the entire <main> in.
 
-   controls.html's own `{% if command %}` branch includes this same file,
-   so the full-page render (were anything ever to hit it with a command
-   set) and the confirm endpoint's fragment render produce identical
-   markup for a given command/confirming pair.
+   controls.html includes this same file once per command on its first
+   render, so the full-page render and the confirm endpoint's fragment
+   render produce identical markup for a given command/confirming pair.
 
    Context required: `command` (str) and, from context.template_context,
    `confirming` (bool) — everything confirm_button.html itself needs
