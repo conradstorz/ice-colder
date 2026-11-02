@@ -11,11 +11,12 @@ import json
 import secrets
 import sqlite3
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
 from loguru import logger
 from pydantic import ValidationError
@@ -159,6 +160,9 @@ DELETE_MEMBERSHIPS_SQL = "DELETE FROM memberships WHERE fingerprint = ?"
 _FLEET = "fleet"
 
 
+T = TypeVar("T")
+
+
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else value.astimezone(UTC).isoformat()
 
@@ -260,15 +264,25 @@ def _alert_state(row: sqlite3.Row) -> AlertState:
     )
 
 
-_ALERT_DELETES = (
+_MACHINE_STATE_DELETES = (
     "DELETE FROM machine_alert_state WHERE fingerprint = ?",
     "DELETE FROM alert_prefs WHERE fingerprint = ?",
     "DELETE FROM alert_deliveries WHERE fingerprint = ?",
     "DELETE FROM alert_events WHERE fingerprint = ?",
-    # Not alert data: the tuple name is historic. It is the per-machine
-    # cleanup run on owner change, unbind and delete.
+    # Per-machine state dropped on owner change, unbind and delete (the
+    # memberships delete is DELETE_MEMBERSHIPS_SQL, run first).
     "DELETE FROM machine_views WHERE fingerprint = ?",
 )
+
+
+def _wipe_machine_state(conn: sqlite3.Connection, fingerprint: str) -> None:
+    """Delete the memberships and per-machine alert/view state of a machine.
+
+    Reads the module-level ``DELETE_MEMBERSHIPS_SQL`` at call time (tests
+    monkeypatch it)."""
+    conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
+    for statement in _MACHINE_STATE_DELETES:
+        conn.execute(statement, (fingerprint,))
 
 
 class SqliteRepository:
@@ -288,6 +302,14 @@ class SqliteRepository:
             yield conn
         finally:
             conn.close()
+
+    def _one(
+        self, sql: str, params: tuple, mapper: Callable[[sqlite3.Row], T]
+    ) -> T | None:
+        """The first row of a read-only query through ``mapper``, or ``None``."""
+        with self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return None if row is None else mapper(row)
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -359,9 +381,7 @@ class SqliteRepository:
             )
 
     def account(self, id: str) -> Account | None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM accounts WHERE id = ?", (id,)).fetchone()
-        return None if row is None else _account(row)
+        return self._one("SELECT * FROM accounts WHERE id = ?", (id,), _account)
 
     def set_suspended(self, id: str, suspended_at: datetime | None) -> None:
         with self._tx() as conn:
@@ -395,11 +415,9 @@ class SqliteRepository:
             )
 
     def machine(self, fingerprint: str) -> Machine | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM machines WHERE fingerprint = ?", (fingerprint,)
-            ).fetchone()
-        return None if row is None else _machine(row)
+        return self._one(
+            "SELECT * FROM machines WHERE fingerprint = ?", (fingerprint,), _machine
+        )
 
     def resolve_short(self, short16: str) -> Machine | None:
         if not short16 or any(c in short16 for c in "%_\\"):
@@ -488,9 +506,7 @@ class SqliteRepository:
                     (fingerprint, before["claim_code_hash"], _iso(now)),
                 )
             if before["owner_id"] != account_id:
-                conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
-                for statement in _ALERT_DELETES:
-                    conn.execute(statement, (fingerprint,))
+                _wipe_machine_state(conn, fingerprint)
             return True
 
     def can_upload_bundle(
@@ -535,9 +551,7 @@ class SqliteRepository:
                 " WHERE fingerprint = ?",
                 (fingerprint,),
             )
-            conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
-            for statement in _ALERT_DELETES:
-                conn.execute(statement, (fingerprint,))
+            _wipe_machine_state(conn, fingerprint)
 
     def count_unclaimed_machines(self) -> int:
         """Machines with no owner (never claimed, or unbound)."""
@@ -581,9 +595,7 @@ class SqliteRepository:
                 "DELETE FROM consumed_claim_hashes WHERE fingerprint = ?", (fp,)
             )
             conn.execute("DELETE FROM bundle_uploads WHERE fingerprint = ?", (fp,))
-            conn.execute(DELETE_MEMBERSHIPS_SQL, (fp,))
-            for statement in _ALERT_DELETES:
-                conn.execute(statement, (fp,))
+            _wipe_machine_state(conn, fp)
             conn.execute("DELETE FROM machines WHERE fingerprint = ?", (fp,))
 
     def purge_unclaimed_machines(self, not_seen_since: datetime) -> list[str]:
@@ -748,11 +760,9 @@ class SqliteRepository:
             )
 
     def invitation(self, token: str) -> Invitation | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM invitations WHERE token = ?", (token,)
-            ).fetchone()
-        return None if row is None else _invitation(row)
+        return self._one(
+            "SELECT * FROM invitations WHERE token = ?", (token,), _invitation
+        )
 
     def invitations_by(
         self, inviter_id: str, fingerprint: str | None, now: datetime
@@ -820,12 +830,11 @@ class SqliteRepository:
     # alerts
 
     def alert_state(self, fingerprint: str) -> AlertState | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM machine_alert_state WHERE fingerprint = ?",
-                (fingerprint,),
-            ).fetchone()
-        return None if row is None else _alert_state(row)
+        return self._one(
+            "SELECT * FROM machine_alert_state WHERE fingerprint = ?",
+            (fingerprint,),
+            _alert_state,
+        )
 
     @staticmethod
     def _upsert_alert_state(conn: sqlite3.Connection, state: AlertState) -> None:
@@ -891,21 +900,7 @@ class SqliteRepository:
                     e.product,
                 ),
             )
-            stored.append(
-                StoredEvent(
-                    fingerprint=e.fingerprint,
-                    kind=e.kind,
-                    at=e.at,
-                    key=e.key,
-                    code=e.code,
-                    severity=e.severity,
-                    gate=e.gate,
-                    description=e.description,
-                    sku=e.sku,
-                    product=e.product,
-                    id=cur.lastrowid,
-                )
-            )
+            stored.append(StoredEvent(**asdict(e), id=cur.lastrowid))
         return stored
 
     def mark_offline_if_unchanged(

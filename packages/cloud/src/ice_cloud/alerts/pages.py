@@ -4,14 +4,14 @@ with each recipient's delivery state. Owners and techs may read it."""
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
+from ice_cloud.alerts.format import as_utc, event_row
 from ice_cloud.auth import require_machine_access
 from ice_cloud.people import recipients_context
-from ice_cloud.portal import LEVEL_FLEET, page_context, resolve_ui
+from ice_cloud.portal import LEVEL_FLEET, portal_context, resolve_ui
 from ice_contracts.cloud.signing import short_fingerprint
 from ice_ui.levels import Level
 
@@ -20,13 +20,9 @@ router = APIRouter()
 HISTORY_LIMIT = 200
 
 
-def _utc(at) -> datetime:
-    return at.astimezone(UTC)
-
-
 def _delivery_line(status: str, sent_at, error: str | None, *, detail: bool) -> str:
     if status == "sent" and sent_at is not None:
-        return f"sent {_utc(sent_at):%H:%M} UTC"
+        return f"sent {as_utc(sent_at):%H:%M} UTC"
     if status == "failed":
         return f"failed: {error or 'unknown error'}" if detail else "failed"
     return status
@@ -69,16 +65,7 @@ async def alerts_page(request: Request, access=Depends(require_machine_access())
                     ),
                 }
             )
-        rows.append(
-            {
-                "kind": e.kind,
-                "at": f"{_utc(e.at):%Y-%m-%d %H:%M} UTC",
-                "code": e.code or "",
-                "description": e.description or e.key or "",
-                "product": e.product or "",
-                "deliveries": lines,
-            }
-        )
+        rows.append({**event_row(e), "deliveries": lines})
     recipients = (
         await recipients_context(request, machine, account, role)
         if role in ("owner", "tech")
@@ -90,7 +77,7 @@ async def alerts_page(request: Request, access=Depends(require_machine_access())
     return ui.templates.TemplateResponse(
         request,
         "alerts.html",
-        page_context(
+        portal_context(
             request,
             account,
             ui,

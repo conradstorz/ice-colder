@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from ice_cloud.auth import require_htmx, require_machine_access, require_signed_in
-from ice_cloud.portal import LEVEL_FLEET, page_context, resolve_ui
+from ice_cloud.portal import LEVEL_FLEET, portal_context, resolve_ui
 from ice_cloud.store.repository import Account, Invitation, Machine
 from ice_contracts.cloud.signing import short_fingerprint
 from ice_ui.levels import Level
@@ -108,7 +108,7 @@ async def _page(
     return ui.templates.TemplateResponse(
         request,
         "people.html",
-        page_context(
+        portal_context(
             request,
             account,
             ui,
@@ -265,7 +265,7 @@ def _invite_response(request, account, token, found, *, lapsed=False):
     return ui.templates.TemplateResponse(
         request,
         "invite.html",
-        page_context(
+        portal_context(
             request,
             account,
             ui,

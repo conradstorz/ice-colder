@@ -67,18 +67,7 @@ class OfflineSweep:
             return []
         if now - self._started_at <= limit:
             return []
-        row = AlertEventRow(
-            fingerprint=machine.fingerprint,
-            kind="offline",
-            at=now,
-            key=None,
-            code=None,
-            severity=None,
-            gate=None,
-            description=None,
-            sku=None,
-            product=None,
-        )
+        row = AlertEventRow.bare(machine.fingerprint, "offline", now)
         # Event and mark commit together, and only if no report landed since the
         # state was read (a fresh report must not be overwritten by this pass).
         stored = await asyncio.to_thread(

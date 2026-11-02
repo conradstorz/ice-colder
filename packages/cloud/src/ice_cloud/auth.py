@@ -43,7 +43,7 @@ from ice_cloud.oidc import IdentityClaims, OidcProvider, SignInError, b64d, b64e
 from ice_cloud.oidc_google import GoogleProvider
 from ice_cloud.settings import CloudSettings
 from ice_cloud.store.repository import Account, EmailConflict, Machine
-from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
+from ice_cloud.context import page_context
 from ice_contracts.cloud import signing
 from ice_ui.htmx import require_htmx  # noqa: F401  (re-exported for routes)
 from ice_ui.levels import Level
@@ -210,6 +210,14 @@ async def require_admin(
     return account
 
 
+async def find_machine(repo, short: str) -> Machine | None:
+    """The machine a short fingerprint names, or ``None`` (malformed or unknown)."""
+    short16 = signing.parse_short_fingerprint(short)
+    if not short16:
+        return None
+    return await asyncio.to_thread(repo.resolve_short, short16)
+
+
 def require_machine_access(*, owner_only: bool = False):
     """Build a dependency yielding ``(account, machine, role)`` for ``{short}``.
 
@@ -225,10 +233,7 @@ def require_machine_access(*, owner_only: bool = False):
         account: Account = Depends(require_signed_in),
     ) -> tuple[Account, Machine, Role]:
         repo = request.app.state.repo
-        short16 = signing.parse_short_fingerprint(short)
-        machine = (
-            await asyncio.to_thread(repo.resolve_short, short16) if short16 else None
-        )
+        machine = await find_machine(repo, short)
         if machine is None:
             raise HTTPException(status_code=404)
         role: Role | None = await asyncio.to_thread(
@@ -251,14 +256,10 @@ router = APIRouter()
 def _login_page(
     request: Request, *, error: str | None = None, status: int = 200
 ) -> Response:
-    registry = request.app.state.registry
-    ui = registry.resolve(registry.installed_digest)
+    ui = request.app.state.registry.installed()
     settings: CloudSettings = request.app.state.settings
     context = {
-        "request": request,
-        "current_user": None,
-        "perms": REMOTE_VIEWER_PERMISSIONS,
-        "level": LEVEL_LOGIN,
+        **page_context(request, viewer=None, level=LEVEL_LOGIN, badge=None),
         "configured": settings.google_configured,
         "next": safe_next(request.query_params.get("next")),
         "error": error,

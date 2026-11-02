@@ -14,11 +14,12 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from ice_cloud.auth import require_htmx, require_signed_in
-from ice_cloud.portal import COOKIE, LEVEL_FLEET
+from ice_cloud.context import page_context
+from ice_cloud.portal import LEVEL_FLEET, set_machine_cookie
 from ice_cloud.store.repository import Account
 from ice_cloud.viewer import RemoteViewer, admin_switch
 from ice_common.secrets import hash_secret, verify_secret
-from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
+
 from ice_contracts.cloud.signing import parse_short_fingerprint
 from ice_ui.levels import Level
 
@@ -52,17 +53,18 @@ def _page(
     status_code: int = 200,
     headers: dict[str, str] | None = None,
 ) -> Response:
-    registry = request.app.state.registry
-    ui = registry.resolve(registry.installed_digest)
+    ui = request.app.state.registry.installed()
     return ui.templates.TemplateResponse(
         request,
         "claim.html",
         {
-            "request": request,
-            "current_user": RemoteViewer(display_name=account.name),
-            "perms": REMOTE_VIEWER_PERMISSIONS,
-            "level": LEVEL_CLAIM,
-            "hat_switch": admin_switch(request.app.state.settings, account),
+            **page_context(
+                request,
+                viewer=RemoteViewer(display_name=account.name),
+                level=LEVEL_CLAIM,
+                hat_switch=admin_switch(request.app.state.settings, account),
+                badge=None,
+            ),
             "error": error,
             "fingerprint": fingerprint,
         },
@@ -153,11 +155,5 @@ async def claim_submit(
     backoff.record_success("claim", subject, client)
     backoff.record_success("claim", ANY_SUBJECT, client, trusted=True)
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(
-        COOKIE,
-        machine.fingerprint,
-        httponly=True,
-        samesite="lax",
-        secure=not state.settings.insecure_cookies,
-    )
+    set_machine_cookie(response, state.settings, machine.fingerprint)
     return response

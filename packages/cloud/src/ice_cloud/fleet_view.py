@@ -38,9 +38,13 @@ _STATUS_RANK = {
 }
 
 
+def age_seconds(report: MachineReport, now: datetime) -> float:
+    """Seconds since the report was sent (negative when it is dated ahead of ``now``)."""
+    return (now - report.sent_at).total_seconds()
+
+
 def is_stale(report: MachineReport, now: datetime) -> bool:
-    age = (now - report.sent_at).total_seconds()
-    return age > STALE_FACTOR * report.report_interval_seconds
+    return age_seconds(report, now) > STALE_FACTOR * report.report_interval_seconds
 
 
 def classify(report: MachineReport | None, now: datetime) -> MachineStatus:
@@ -165,9 +169,7 @@ def _row(
     installed_digest: str,
     now: datetime,
 ) -> MachineRow:
-    age = (
-        max((now - report.sent_at).total_seconds(), 0.0) if report is not None else None
-    )
+    age = max(age_seconds(report, now), 0.0) if report is not None else None
     reasons = report.health.payment_reasons if report is not None else []
     expires = machine.claim_code_expires_at
     return MachineRow(

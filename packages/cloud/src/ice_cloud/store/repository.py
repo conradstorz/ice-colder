@@ -93,6 +93,29 @@ class AlertEventRow:
     sku: str | None
     product: str | None
 
+    @classmethod
+    def from_fault(
+        cls, fingerprint: str, kind: str, at: datetime, fault: FaultView
+    ) -> AlertEventRow:
+        """A ``raised``/``cleared`` event describing ``fault``."""
+        return cls(
+            fingerprint=fingerprint,
+            kind=kind,
+            at=at,
+            key=fault.key,
+            code=fault.code,
+            severity=fault.severity,
+            gate=fault.gate,
+            description=fault.description,
+            sku=fault.sku,
+            product=fault.product,
+        )
+
+    @classmethod
+    def bare(cls, fingerprint: str, kind: str, at: datetime) -> AlertEventRow:
+        """An ``offline``/``online`` event, which names no fault."""
+        return cls(fingerprint, kind, at, None, None, None, None, None, None, None)
+
 
 @dataclass(frozen=True)
 class StoredEvent(AlertEventRow):

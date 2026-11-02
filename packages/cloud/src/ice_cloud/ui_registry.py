@@ -159,6 +159,10 @@ class UiRegistry:
             return ResolvedUi(templates, cached / "static", False, digest, True)
         return self._installed(mismatch=True)
 
+    def installed(self) -> ResolvedUi:
+        """The installed ``ice_ui``, unflagged."""
+        return self.resolve(self.installed_digest)
+
     def _installed_factory(self) -> Jinja2Templates:
         result = make_templates(TEMPLATES_DIR, extra_dirs=[self._cloud_templates])
         # Every cloud-rendered page (portal, fleet, admin, claim, login, me,
