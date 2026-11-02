@@ -23,13 +23,10 @@ from .helpers import (
 router = APIRouter()
 
 
-@router.get(
-    "/products/{sku}/placement",
-    response_class=HTMLResponse,
-    dependencies=[Depends(web_auth.require(Permission.edit_placement))],
-)
-async def placement_form(request: Request, sku: str):
-    product = context.product_or_404(sku)
+def _render_placement(
+    request: Request, product, error: str | None = None, status_code: int = 200
+) -> HTMLResponse:
+    sku = product.sku
     level = Level.child(
         _product_level(product), "Placement", f"/products/{sku}/placement"
     )
@@ -42,9 +39,19 @@ async def placement_form(request: Request, sku: str):
             product=product,
             inventory_count=_inventory_count(sku),
             tracked=_is_tracked(sku),
-            error=None,
+            error=error,
         ),
+        status_code=status_code,
     )
+
+
+@router.get(
+    "/products/{sku}/placement",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.edit_placement))],
+)
+async def placement_form(request: Request, sku: str):
+    return _render_placement(request, context.product_or_404(sku))
 
 
 @router.post(
@@ -66,22 +73,7 @@ async def update_placement(
     tracked = track_inventory is not None
 
     def _rerender(error: str) -> HTMLResponse:
-        level = Level.child(
-            _product_level(product), "Placement", f"/products/{sku}/placement"
-        )
-        return templates.TemplateResponse(
-            request,
-            "product_placement.html",
-            context.template_context(
-                request,
-                level=level,
-                product=product,
-                inventory_count=_inventory_count(sku),
-                tracked=_is_tracked(sku),
-                error=error,
-            ),
-            status_code=400,
-        )
+        return _render_placement(request, product, error, status_code=400)
 
     if inventory_count < 0:
         # Mirror ice_edge/config/config_store.py's slot < 0 guard: reject the

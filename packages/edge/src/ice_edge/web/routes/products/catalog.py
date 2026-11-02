@@ -38,6 +38,33 @@ def _length_error(sku: str, name: str, *, check_sku: bool = True) -> str | None:
     return None
 
 
+def _render_catalog_form(
+    request: Request,
+    product,
+    *,
+    price_text: str,
+    error: str | None,
+    button_value: str,
+    status_code: int = 200,
+):
+    level = Level.child(
+        _product_level(product), "Catalog", f"/products/{product.sku}/catalog"
+    )
+    return templates.TemplateResponse(
+        request,
+        "product_catalog.html",
+        context.template_context(
+            request,
+            level=level,
+            product=product,
+            price_text=price_text,
+            error=error,
+            button_value=button_value,
+        ),
+        status_code=status_code,
+    )
+
+
 @router.get(
     "/products/new",
     response_class=HTMLResponse,
@@ -85,8 +112,8 @@ async def create_product(
     tracked = track_inventory is not None
     sku = sku.strip()
     name = name.strip()
-    length_error = _length_error(sku, name)
-    if length_error:
+
+    def fail(error: str, status: int = 400):
         return _render_product_form(
             request,
             mode=mode,
@@ -98,85 +125,33 @@ async def create_product(
             slot=slot,
             inventory_count=inventory_count,
             tracked=tracked,
-            error=length_error,
+            error=error,
             button=button,
-            status_code=400,
+            status_code=status,
         )
+
+    length_error = _length_error(sku, name)
+    if length_error:
+        return fail(length_error)
     try:
         price_cents = parse_price_form(price)
     except ValueError as exc:
-        return _render_product_form(
-            request,
-            mode=mode,
-            source_sku=source_sku,
-            sku=sku,
-            name=name,
-            price_text=price,
-            kind=kind,
-            slot=slot,
-            inventory_count=inventory_count,
-            tracked=tracked,
-            error=str(exc),
-            button=button,
-            status_code=400,
-        )
+        return fail(str(exc))
     parsed_button, button_error = _clean_button(button)
     if button_error:
-        return _render_product_form(
-            request,
-            mode=mode,
-            source_sku=source_sku,
-            sku=sku,
-            name=name,
-            price_text=price,
-            kind=kind,
-            slot=slot,
-            inventory_count=inventory_count,
-            tracked=tracked,
-            error=button_error,
-            button=button,
-            status_code=400,
-        )
+        return fail(button_error)
 
     if inventory_count < 0:
         logger.warning(
             f"Cannot add product SKU={sku}: inventory_count "
             f"{inventory_count} is invalid (must be >= 0)"
         )
-        return _render_product_form(
-            request,
-            mode=mode,
-            source_sku=source_sku,
-            sku=sku,
-            name=name,
-            price_text=price,
-            kind=kind,
-            slot=slot,
-            inventory_count=inventory_count,
-            tracked=tracked,
-            button=button,
-            error="Inventory count cannot be negative.",
-            status_code=400,
-        )
+        return fail("Inventory count cannot be negative.")
 
     try:
         parsed_slot = int(slot) if slot not in (None, "") else None
     except ValueError:
-        return _render_product_form(
-            request,
-            mode=mode,
-            source_sku=source_sku,
-            sku=sku,
-            name=name,
-            price_text=price,
-            kind=kind,
-            slot=slot,
-            inventory_count=inventory_count,
-            tracked=tracked,
-            button=button,
-            error="Slot must be a whole number.",
-            status_code=400,
-        )
+        return fail("Slot must be a whole number.")
 
     success = add_product(
         context.config,
@@ -188,23 +163,9 @@ async def create_product(
         button=parsed_button,
     )
     if not success:
-        return _render_product_form(
-            request,
-            mode=mode,
-            source_sku=source_sku,
-            sku=sku,
-            name=name,
-            price_text=price,
-            kind=kind,
-            slot=slot,
-            inventory_count=inventory_count,
-            tracked=tracked,
-            button=button,
-            error=(
-                "Could not add product — the SKU may already exist, or "
-                "the slot is invalid or already in use."
-            ),
-            status_code=400,
+        return fail(
+            "Could not add product — the SKU may already exist, or "
+            "the slot is invalid or already in use."
         )
 
     if context.inventory_manager:
@@ -222,18 +183,12 @@ async def create_product(
 )
 async def catalog_form(request: Request, sku: str):
     product = context.product_or_404(sku)
-    level = Level.child(_product_level(product), "Catalog", f"/products/{sku}/catalog")
-    return templates.TemplateResponse(
+    return _render_catalog_form(
         request,
-        "product_catalog.html",
-        context.template_context(
-            request,
-            level=level,
-            product=product,
-            price_text=cents_to_dollar_text(product.price_cents),
-            error=None,
-            button_value=product.button or "",
-        ),
+        product,
+        price_text=cents_to_dollar_text(product.price_cents),
+        error=None,
+        button_value=product.button or "",
     )
 
 
@@ -268,24 +223,16 @@ async def update_catalog(
         price_cents = product.price_cents
         price_error = str(exc)
     if price_error or button_error or len(name) > MAX_PRODUCT_NAME_LENGTH:
-        level = Level.child(
-            _product_level(product), "Catalog", f"/products/{sku}/catalog"
-        )
-        return templates.TemplateResponse(
+        return _render_catalog_form(
             request,
-            "product_catalog.html",
-            context.template_context(
-                request,
-                level=level,
-                product=product,
-                price_text=price
-                if price_error
-                else cents_to_dollar_text(product.price_cents),
-                error=_length_error(sku, name, check_sku=False)
-                or button_error
-                or price_error,
-                button_value=button,
-            ),
+            product,
+            price_text=price
+            if price_error
+            else cents_to_dollar_text(product.price_cents),
+            error=_length_error(sku, name, check_sku=False)
+            or button_error
+            or price_error,
+            button_value=button,
             status_code=400,
         )
     success = update_product(
@@ -301,20 +248,12 @@ async def update_catalog(
         # The only way update_product can fail with slot=None is an
         # unknown SKU — a race with a concurrent delete, since
         # product_or_404 above already confirmed it existed this request.
-        level = Level.child(
-            _product_level(product), "Catalog", f"/products/{sku}/catalog"
-        )
-        return templates.TemplateResponse(
+        return _render_catalog_form(
             request,
-            "product_catalog.html",
-            context.template_context(
-                request,
-                level=level,
-                product=product,
-                price_text=cents_to_dollar_text(product.price_cents),
-                error="Could not save changes.",
-                button_value=button,
-            ),
+            product,
+            price_text=cents_to_dollar_text(product.price_cents),
+            error="Could not save changes.",
+            button_value=button,
             status_code=400,
         )
     if context.machine_instance:

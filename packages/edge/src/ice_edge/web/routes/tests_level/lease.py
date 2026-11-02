@@ -1,7 +1,8 @@
 import time
+from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
@@ -113,6 +114,32 @@ def _acquire_lease_or_refusal(machine, principal: web_auth.Principal) -> str | N
     if granted:
         return None
     return _BUSY_REFUSAL_WORDING if reason in _BUSY_REFUSALS else reason
+
+
+def _refusal(request: Request, reason: str) -> Response:
+    """The inline refusal fragment every test action answers with."""
+    return templates.TemplateResponse(
+        request,
+        "partials/test_refusal.html",
+        context.template_context(request, reason=reason),
+    )
+
+
+def _require_lease(
+    request: Request,
+    principal: web_auth.Principal,
+    refuse: Callable[[Request, str], Response] = _refusal,
+) -> Response | None:
+    """None once the caller's session holds the lease (and the machine
+    exists); otherwise the refusal response, built by *refuse* (run-all
+    renders its refusal inside its own table partial)."""
+    machine = context.machine_instance
+    if machine is None:
+        return refuse(request, "VMC not initialized")
+    reason = _acquire_lease_or_refusal(machine, principal)
+    if reason:
+        return refuse(request, reason)
+    return None
 
 
 @router.get(

@@ -15,9 +15,13 @@ import time
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
-from ice_contracts.board.common import TESTABLE_COMMANDS
+from ice_contracts.board.common import (
+    POWER_CYCLE_DWELL_RANGE,
+    TESTABLE_COMMANDS,
+    WATER_VALVE_SECONDS_RANGE,
+)
 from ice_contracts.board.ice_maker_monitor import (
     CONTRACT_VERSION as ICE_MAKER_CONTRACT_VERSION,
 )
@@ -32,7 +36,7 @@ from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import LEVEL_TESTS, Level
 from ice_edge.web.routes.health import _subsystem_summary
-from ice_edge.web.routes.tests_level.lease import _acquire_lease_or_refusal
+from ice_edge.web.routes.tests_level.lease import _refusal, _require_lease
 from ice_ui.templating import templates
 
 
@@ -99,20 +103,9 @@ def testable_commands(subsystem: str, advertised) -> frozenset[str]:
 
 
 # Param-widget ranges for the actuator commands (system-tests design §1.3):
-# `water_valve`'s `seconds` and `power_cycle`'s `dwell_seconds`. These
-# literals mirror ice_contracts/board/common.py's COMMAND_PARAM_VALIDATORS exactly --
-# that module is outside this task's file list (see task-13a-report.md),
-# and it exposes validator *functions*, not reusable range constants, so a
-# second copy of the bounds is unavoidable here. Kept from silently
-# drifting apart by tests/test_routes_tests.py, which calls the real
-# validators at these exact boundary values and fails loudly if they ever
-# disagree.
-WATER_VALVE_SECONDS_RANGE: tuple[int, int] = (1, 10)
-
-
-POWER_CYCLE_DWELL_RANGE: tuple[int, int] = (5, 300)
-
-
+# `water_valve`'s `seconds` and `power_cycle`'s `dwell_seconds`. The bounds
+# (WATER_VALVE_SECONDS_RANGE / POWER_CYCLE_DWELL_RANGE) are imported from
+# ice_contracts.board.common, the same constants its param validators use.
 POWER_CYCLE_DWELL_DEFAULT: int = 30
 
 
@@ -143,6 +136,29 @@ def _params_widget(command: str, products: list) -> dict | None:
 
 
 # --- Task 13b: action-route helpers -----------------------------------
+
+
+def products_by_slot() -> list:
+    """The catalog sorted by slot (empty with no config), for the slot pickers."""
+    return (
+        sorted(context.config.products, key=lambda p: p.slot) if context.config else []
+    )
+
+
+def _int_in_range(
+    name: str, raw: str | int | None, lo: int, hi: int, default: int | None = None
+) -> int:
+    """*raw* as an int in [lo, hi]; ValueError with an operator-safe message
+    otherwise. A None or empty *raw* falls back to *default* when one is given."""
+    if default is not None and raw in (None, ""):
+        raw = default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if not (lo <= value <= hi):
+        raise ValueError(f"{name} must be between {lo} and {hi}")
+    return value
 
 
 def _parse_command_params(
@@ -223,27 +239,14 @@ def _parse_command_params(
         return {"cents": min(coins), "reason": "admin", "sale_id": None}
     if command == "water_valve":
         lo, hi = WATER_VALVE_SECONDS_RANGE
-        try:
-            value = int(seconds)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("seconds must be an integer") from exc
-        if not (lo <= value <= hi):
-            raise ValueError(f"seconds must be between {lo} and {hi}")
-        return {"seconds": value}
+        return {"seconds": _int_in_range("seconds", seconds, lo, hi)}
     if command == "power_cycle":
         lo, hi = POWER_CYCLE_DWELL_RANGE
-        raw = (
-            dwell_seconds
-            if dwell_seconds not in (None, "")
-            else POWER_CYCLE_DWELL_DEFAULT
-        )
-        try:
-            value = int(raw)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("dwell_seconds must be an integer") from exc
-        if not (lo <= value <= hi):
-            raise ValueError(f"dwell_seconds must be between {lo} and {hi}")
-        return {"dwell_seconds": value}
+        return {
+            "dwell_seconds": _int_in_range(
+                "dwell_seconds", dwell_seconds, lo, hi, POWER_CYCLE_DWELL_DEFAULT
+            )
+        }
     return {}
 
 
@@ -371,9 +374,7 @@ async def tests_subsystem(request: Request, subsystem: str):
         raise HTTPException(status_code=404, detail=f"Unknown subsystem '{subsystem}'")
     row = _subsystem_summary()[subsystem]
     testable = testable_commands(subsystem, row["commands"])
-    products = (
-        sorted(context.config.products, key=lambda p: p.slot) if context.config else []
-    )
+    products = products_by_slot()
 
     automatic = [
         {"name": c, "widget": _params_widget(c, products)}
@@ -421,6 +422,14 @@ async def tests_run_all_confirm(
     )
 
 
+def _run_all_refusal(request: Request, reason: str) -> Response:
+    return templates.TemplateResponse(
+        request,
+        "partials/test_run_all_table.html",
+        context.template_context(request, rows=[], refusal=reason),
+    )
+
+
 @router.post(
     "/tests/run-all",
     response_class=HTMLResponse,
@@ -437,21 +446,9 @@ async def tests_run_all(request: Request):
     fragment if the lease can't be taken at all).
     """
     principal = web_auth.current_principal(request)
-    machine = context.machine_instance
-    if machine is None:
-        return templates.TemplateResponse(
-            request,
-            "partials/test_run_all_table.html",
-            context.template_context(request, rows=[], refusal="VMC not initialized"),
-        )
-
-    refusal = _acquire_lease_or_refusal(machine, principal)
-    if refusal:
-        return templates.TemplateResponse(
-            request,
-            "partials/test_run_all_table.html",
-            context.template_context(request, rows=[], refusal=refusal),
-        )
+    refused = _require_lease(request, principal, _run_all_refusal)
+    if refused is not None:
+        return refused
 
     subsystems = _subsystem_summary()
     rows: list[dict] = []
@@ -547,28 +544,12 @@ async def post_test_command(
         # refusal, not a 400/500, and raised before any lease is ever
         # taken (see _parse_command_params's docstring), so there is
         # nothing to release here.
-        return templates.TemplateResponse(
-            request,
-            "partials/test_refusal.html",
-            context.template_context(request, reason=str(exc)),
-        )
+        return _refusal(request, str(exc))
 
     principal = web_auth.current_principal(request)
-    machine = context.machine_instance
-    if machine is None:
-        return templates.TemplateResponse(
-            request,
-            "partials/test_refusal.html",
-            context.template_context(request, reason="VMC not initialized"),
-        )
-
-    refusal = _acquire_lease_or_refusal(machine, principal)
-    if refusal:
-        return templates.TemplateResponse(
-            request,
-            "partials/test_refusal.html",
-            context.template_context(request, reason=refusal),
-        )
+    refused = _require_lease(request, principal)
+    if refused is not None:
+        return refused
 
     result = await _run_command(subsystem, command, params, principal)
     return templates.TemplateResponse(

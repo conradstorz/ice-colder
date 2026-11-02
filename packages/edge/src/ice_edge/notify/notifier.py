@@ -11,13 +11,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from email.message import EmailMessage
 from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from ice_common.config_model import _is_placeholder_host, ConfigModel, Channel
-from ice_edge.notify.mailer import smtp_send
+from ice_edge.notify import mailer
 
 if TYPE_CHECKING:
     from ice_edge.monitoring.health_monitor import Alert
@@ -150,7 +149,7 @@ class Notifier:
         return True
 
     async def _send_email(self, alert: Alert, email_config) -> bool:
-        """Send an alert email. Runs SMTP in executor to avoid blocking."""
+        """Send an alert email through the shared mailer (SMTP runs in an executor)."""
         subject = f"[VMC {alert.level.upper()}] {alert.source}: {alert.message[:60]}"
         body = (
             f"VMC Health Alert\n"
@@ -160,17 +159,4 @@ class Notifier:
             f"Message: {alert.message}\n"
         )
 
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = email_config.default_from
-        msg["To"] = self._owner.email
-        msg.set_content(body)
-
-        loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(None, smtp_send, email_config, msg)
-            logger.info(f"Notifier: Email sent to {self._owner.email}")
-            return True
-        except Exception as e:
-            logger.error(f"Notifier: Email send failed: {e}")
-            return False
+        return await mailer.send_email(email_config, self._owner.email, subject, body)
