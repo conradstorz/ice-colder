@@ -10,10 +10,12 @@ executor resolution 1) — this file owns only the new /products/* routes.
 
 import pytest
 
+from ice_common.config_model import MAX_PRODUCT_NAME_LENGTH, MAX_SKU_LENGTH
 from ice_edge.vend.dispenser_gate import DispenserProfileGate
 from ice_edge.access.access import Role
 from ice_edge.config import config_store
 from ice_edge.web import context
+from tests.dom_utils import find_by_id, parse_elements
 
 
 def _state(cfg, inv):
@@ -1020,3 +1022,31 @@ class TestPriceForm:
         _add(client, "PF-3", price="2.5")
         resp = client.get("/products/PF-3/catalog")
         assert 'value="2.50"' in resp.text
+
+
+class TestProductFormMaxlength:
+    """The SKU and name inputs take their maxlength from the template
+    globals max_sku_length / max_product_name_length, which template_context
+    fills from the same constants the server enforces."""
+
+    @staticmethod
+    def _input(html, element_id):
+        found = find_by_id(parse_elements(html), element_id)
+        assert len(found) == 1, f"expected one #{element_id}, got {len(found)}"
+        assert found[0].tag == "input"
+        return found[0]
+
+    def test_new_form_sku_and_name_maxlength_match_constants(self, client, wired):
+        resp = client.get("/products/new")
+        assert resp.status_code == 200
+        sku = self._input(resp.text, "sku")
+        name = self._input(resp.text, "name")
+        assert sku.attrs.get("maxlength") == str(MAX_SKU_LENGTH)
+        assert name.attrs.get("maxlength") == str(MAX_PRODUCT_NAME_LENGTH)
+
+    def test_catalog_name_maxlength_matches_constant(self, client, wired):
+        _add(client, "MAXLEN-1")
+        resp = client.get("/products/MAXLEN-1/catalog")
+        assert resp.status_code == 200
+        name = self._input(resp.text, "name")
+        assert name.attrs.get("maxlength") == str(MAX_PRODUCT_NAME_LENGTH)

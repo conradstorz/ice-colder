@@ -1,3 +1,6 @@
-{% set status_value = badge_status if badge_status is defined else m.status.value %}{% if status_value == "online" %}<span class="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700">Online</span>
+{# Status badge for one machine row (admin_machines.html, fleet.html).
+   Optional inputs: badge_status is "online", "silent" or anything else
+   (rendered as "Never reported"); it defaults to m.status.value.
+   silent_label is the text of the silent badge; it defaults to "Silent". #}{% set status_value = badge_status if badge_status is defined else m.status.value %}{% if status_value == "online" %}<span class="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700">Online</span>
 {% elif status_value == "silent" %}<span class="text-xs px-1.5 py-0.5 rounded bg-red-50 text-red-600">{{ silent_label|default("Silent") }}</span>
 {% else %}<span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">Never reported</span>{% endif %}

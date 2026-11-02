@@ -2,7 +2,8 @@
    they were factored out. Extra attributes come in as keyword arguments;
    an underscore in the name becomes a hyphen (aria_describedby ->
    aria-describedby), True renders a bare attribute and False/None omits it.
-   `variant="plain"` is the plainer input look the user pages use;
+   `variant="plain"` is the plainer input look, used only by the user pages
+   (user.html, user_form.html);
    `mono` adds the monospace face; `extra_class` appends classes. #}
 {% macro _attrs(attrs) -%}
 {%- for k, v in attrs.items() if v is not none and v is not false -%}
