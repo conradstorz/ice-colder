@@ -3183,7 +3183,7 @@ class TestRunTestSale:
         and no PAY-104 fires.
 
         Production paths reached: VMC.process_payment (unmodified),
-        VMC._snapshot (this fix's `is_test=self._sale.is_test`),
+        VMC.snapshot (this fix's `is_test=self._sale.is_test`),
         Machine.set_session_store (this fix's is_test boot branch), and
         Machine.pending_sale_for_recovery (this fix's is_test guard).
         """
@@ -3287,7 +3287,7 @@ class TestRunTestSale:
 
         Production paths reached: VMC.deposit_funds, VMC.select_product,
         VMC.process_payment/_consume_credits_fifo (all unmodified),
-        VMC._snapshot (is_test=False for a real sale), Machine.set_session_store
+        VMC.snapshot (is_test=False for a real sale), Machine.set_session_store
         (the pre-existing is_open() branch, untouched by this fix), and
         Machine.pending_sale_for_recovery (returns the pending sale as before).
         """
