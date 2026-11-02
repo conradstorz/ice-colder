@@ -79,19 +79,27 @@ class _RealClock:
         await asyncio.sleep(seconds)
 
 
-class CommandTimeout(Exception):
+class _SubsystemCommandError(Exception):
+    """Shared base: a failure of *command* on *subsystem*. Subclasses set
+    ``_message`` (formatted with ``subsystem`` and ``command``)."""
+
+    _message = "{subsystem!r} failed {command!r}"
+
+    def __init__(self, subsystem: str, command: str):
+        self.subsystem = subsystem
+        self.command = command
+        super().__init__(self._message.format(subsystem=subsystem, command=command))
+
+
+class CommandTimeout(_SubsystemCommandError):
     """No ack arrived for *command* on *subsystem* after every attempt
     (including retries) was exhausted, or the broker was unreachable when
     ``send`` was called.
     """
 
-    def __init__(self, subsystem: str, command: str):
-        self.subsystem = subsystem
-        self.command = command
-        super().__init__(
-            f"No ack from subsystem={subsystem!r} for command={command!r} "
-            "after all attempts"
-        )
+    _message = (
+        "No ack from subsystem={subsystem!r} for command={command!r} after all attempts"
+    )
 
 
 class CommandNotSent(CommandTimeout):
@@ -101,7 +109,7 @@ class CommandNotSent(CommandTimeout):
     send. Existing ``except CommandTimeout`` handlers keep working."""
 
 
-class CompletionTimeout(Exception):
+class CompletionTimeout(_SubsystemCommandError):
     """*command* on *subsystem* was accepted (its ack arrived), but no
     completion signal arrived within its own, separate completion timeout
     (``ice_contracts.board.common.COMPLETION_TIMEOUTS``).
@@ -113,12 +121,7 @@ class CompletionTimeout(Exception):
     failures mean very different things to an operator.
     """
 
-    def __init__(self, subsystem: str, command: str):
-        self.subsystem = subsystem
-        self.command = command
-        super().__init__(
-            f"{subsystem!r} accepted {command!r} but never reported completion"
-        )
+    _message = "{subsystem!r} accepted {command!r} but never reported completion"
 
 
 class CommandDispatcher:
@@ -254,6 +257,18 @@ class CommandDispatcher:
         if len(self._early_completions) > _EARLY_COMPLETIONS_MAX:
             self._early_completions.popitem(last=False)
 
+    async def _wait(self, future: asyncio.Future, timeout: float) -> CommandAck | None:
+        """Wait up to *timeout* (on the injected clock) for *future*; its result,
+        or None if the timeout won."""
+        sleep_task = asyncio.ensure_future(self._clock.sleep(timeout))
+        done, _pending = await asyncio.wait(
+            {future, sleep_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if future in done:
+            sleep_task.cancel()
+            return future.result()
+        return None
+
     async def send(
         self,
         subsystem: str,
@@ -299,14 +314,9 @@ class CommandDispatcher:
 
                 await self._mqtt.publish(topic, cmd)
 
-                sleep_task = asyncio.ensure_future(self._clock.sleep(self._timeout))
-                done, _pending = await asyncio.wait(
-                    {future, sleep_task}, return_when=asyncio.FIRST_COMPLETED
-                )
-
-                if future in done:
-                    sleep_task.cancel()
-                    return future.result()
+                ack = await self._wait(future, self._timeout)
+                if ack is not None:
+                    return ack
 
                 # Timed out this attempt: abandon this Future (leave it
                 # pending/unresolved — a late ack for it is simply never
@@ -382,13 +392,9 @@ class CommandDispatcher:
         self._pending_completions[request_id] = future
         timeout = timeout_fn(params or {})
         try:
-            sleep_task = asyncio.ensure_future(self._clock.sleep(timeout))
-            done, _pending = await asyncio.wait(
-                {future, sleep_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if future in done:
-                sleep_task.cancel()
-                return future.result()
+            ack = await self._wait(future, timeout)
+            if ack is not None:
+                return ack
 
             logger.warning(
                 f"CommandDispatcher: {subsystem!r} accepted {command!r} "
