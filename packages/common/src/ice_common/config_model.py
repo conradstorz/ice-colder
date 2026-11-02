@@ -33,7 +33,7 @@ Define a uniform gateway interface (e.g. send(to, body, **kwargs) and start_rece
 
 Implement one adapter class per channel using the patterns above
 
-Wire them into your CommunicationConfig so cfg.comm.email returns your SMTP/SES client, cfg.comm.slack your Slack client, etc.
+Wire them into your CommunicationConfig (the ConfigModel.communication section) so each channel gateway is reached through it, e.g. email_gateway for your SMTP/SES client, sms_gateway for SMS, etc.
 
 class ConfigModel(BaseModel): holds high-level fields for version, physical, payment, communication
 
