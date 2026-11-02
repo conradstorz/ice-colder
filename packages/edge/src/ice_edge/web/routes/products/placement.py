@@ -81,6 +81,7 @@ async def update_placement(
                 tracked=_is_tracked(sku),
                 error=error,
             ),
+            status_code=400,
         )
 
     if inventory_count < 0:

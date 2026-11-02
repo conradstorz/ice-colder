@@ -307,7 +307,7 @@ class TestPlacementWrites:
             "/products/PLC-6/placement",
             data={"slot": "6", "inventory_count": "-3", "track_inventory": "on"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
         assert inv.get_count("PLC-6") == 9
         updated = next(p for p in cfg.products if p.sku == "PLC-6")
         assert updated.slot == 1
@@ -332,7 +332,7 @@ class TestPlacementWrites:
             "/products/PLC-8/placement",
             data={"slot": "1", "inventory_count": "50"},  # slot 1 is PLC-7's
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
         updated = next(p for p in cfg.products if p.sku == "PLC-8")
         assert updated.slot == 2
         assert inv.get_count("PLC-8") == 9
@@ -402,7 +402,7 @@ class TestCreateCopyDelete:
                 "inventory_count": "-1",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
         assert not any(p.sku == "NEG-NEW" for p in cfg.products)
 
     def test_copy_prefills_from_source_and_reads_live_count(self, client, wired):
@@ -598,7 +598,7 @@ class TestCatalogChangedCalled:
                 "inventory_count": "-1",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
         assert calls == []  # rejected form (negative inventory_count)
 
         resp = client.post(
@@ -648,7 +648,7 @@ class TestCatalogChangedCalled:
             "/products/CC-PLC-B/placement",
             data={"slot": "1", "inventory_count": "5"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
         assert calls == []
 
         resp = client.post(
