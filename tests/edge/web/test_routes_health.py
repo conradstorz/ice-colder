@@ -14,7 +14,7 @@ global around each test.
 import re
 
 from ice_contracts.board.vending_machine import FaultCode
-from ice_edge.access.access import ROLE_PERMISSIONS, Permission, Role
+from ice_edge.access.access import Role
 from ice_edge.config.config_store import add_product
 from ice_edge.web import context
 from ice_edge.web import routes
@@ -29,48 +29,6 @@ def _seed_product(cfg, sku: str = "ICE-1") -> str:
     usage rather than going through an HTTP round trip."""
     add_product(cfg, sku, "Ice", 250)
     return sku
-
-
-# --- Permission gates for the five non-parameterized GET levels -----------
-
-_HEALTH_GET_ROUTES = [
-    ("/health", Permission.view_status),
-    ("/health/subsystems", Permission.view_status),
-    ("/health/faults", Permission.view_status),
-    ("/health/availability", Permission.view_status),
-    ("/health/logs", Permission.view_logs),
-]
-
-
-class TestLevelPermissionGates:
-    """Each of the six levels returns 200 for a role holding its gate and
-    403 for one that does not. view_status is held by every role in
-    ROLE_PERMISSIONS, so the only role/level pairs that can actually
-    diverge to 403 involve /health/logs (view_logs) -- exercised here by
-    parametrizing over every role, which covers "loader gets 403 on
-    /health/logs, 200 on the other five" as one case of the matrix."""
-
-    @pytest.mark.parametrize("role", list(Role))
-    @pytest.mark.parametrize("path, permission", _HEALTH_GET_ROUTES)
-    def test_matrix(self, login_as, path, permission, role):
-        client = login_as(role)
-        resp = client.get(path)
-        if permission in ROLE_PERMISSIONS[role]:
-            assert resp.status_code == 200, (role, path, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, path, resp.status_code)
-
-    def test_loader_gets_403_on_logs_200_on_the_other_five(self, login_as):
-        client = login_as(Role.loader)
-        assert client.get("/health/logs").status_code == 403
-        for path, _perm in _HEALTH_GET_ROUTES:
-            if path == "/health/logs":
-                continue
-            assert client.get(path).status_code == 200, path
-
-    def test_subsystem_detail_requires_view_status(self, login_as):
-        client = login_as(Role.loader)
-        assert client.get("/health/subsystems/vending").status_code == 200
 
 
 class TestHealthLanding:

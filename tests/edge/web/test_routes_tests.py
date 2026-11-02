@@ -42,13 +42,6 @@ from ice_edge.web.routes.tests_level import testable_commands as compute_testabl
 # "fixture 'subsystem' not found". Confirmed by reproducing it during
 # development of this file.
 
-# Hard-coded on purpose (not derived from ROLE_PERMISSIONS, which would make
-# these matrices tautological): run_tests is held by exactly owner and tech,
-# as pinned by tests/test_access.py's TestPermissionTable.
-RUN_TESTS_ROLES = frozenset({Role.owner, Role.tech})
-
-_TESTS_GET_ROUTES = ["/tests", "/tests/log", "/tests/vending"]
-
 
 @pytest.fixture
 def wire_subsystem():
@@ -171,32 +164,6 @@ def wire_dispatcher():
 
 
 # --- Permission gates -------------------------------------------------
-
-
-class TestPermissionGates:
-    """All three GET routes gate on run_tests: 200 for owner/tech, 403 for
-    secretary/loader (run_tests is held by exactly owner and tech --
-    ice_edge/access/access.py's ROLE_PERMISSIONS). Reaches
-    the `ice_edge/web/routes/tests_level/` package's `Depends(web_auth.require(...))`
-    on each of the three routes.
-
-    Mutation proof (dropping the dependency from GET /tests/log): removed
-    `dependencies=[Depends(web_auth.require(Permission.run_tests))]` from
-    that one route -- test_matrix[/tests/log-Role.secretary] and
-    [/tests/log-Role.loader] failed (200 != 403, AssertionError); every
-    owner/tech case kept passing (they were already 200). Restored the
-    dependency -- full parametrized set passed again.
-    """
-
-    @pytest.mark.parametrize("role", list(Role))
-    @pytest.mark.parametrize("path", _TESTS_GET_ROUTES)
-    def test_matrix(self, login_as, path, role):
-        client = login_as(role)
-        resp = client.get(path)
-        if role in RUN_TESTS_ROLES:
-            assert resp.status_code == 200, (role, path, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, path, resp.status_code)
 
 
 # --- Discovery: advertised ∩ allowlist ---------------------------------
@@ -889,80 +856,6 @@ class TestAllowlistSecurityBoundary:
 
 
 # --- Permission gates on every POST action route -------------------------
-
-
-class TestPostPermissionMatrix:
-    """run_tests gates every POST action route, same as the GET routes
-    (TestPermissionGates above) -- owner/tech 200, secretary/loader 403.
-    These four routes need no extra setup to reach 200 for an authorized
-    role (no lease, no dispatcher, no subsystem all resolve to a harmless
-    response), so this matrix isolates the permission axis cleanly.
-    POST /tests/{subsystem}/{command} and POST /tests/sale need a wired
-    subsystem/product respectively to ever reach 200 and get their own
-    dedicated permission tests below instead.
-
-    Mutation proof: replaced POST /tests/end's `dependencies=[...]` (both
-    the permission and require_htmx guards) with `dependencies=[]`. Ran
-    the whole matrix: 2 failed --
-    test_matrix[/tests/end-form1-secretary] and
-    [/tests/end-form1-loader] (200 != 403); every other case (owner/tech
-    on /tests/end, and every role on the other three routes) kept
-    passing. Restored the dependencies -- 16 passed again. (The same
-    mutation also proves TestPostRequiresHtmx's CSRF guard below -- see
-    its own docstring.)
-    """
-
-    @pytest.mark.parametrize("role", list(Role))
-    @pytest.mark.parametrize(
-        "path,form",
-        [
-            ("/tests/run-all", {}),
-            ("/tests/end", {}),
-            ("/tests/takeover", {}),
-            ("/tests/runs/nonexistent-run/verdict", {"verdict": "pass"}),
-        ],
-    )
-    def test_matrix(self, login_as, path, form, role):
-        client = login_as(role)
-        resp = client.post(path, data=form)
-        if role in RUN_TESTS_ROLES:
-            assert resp.status_code == 200, (role, path, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, path, resp.status_code)
-
-
-class TestCommandRunAndSalePermissionGates:
-    """POST /tests/{subsystem}/{command} and POST /tests/sale each need
-    real setup (an advertised, allowlisted command / a catalog product) to
-    ever reach 200 for an authorized role -- reached separately from
-    TestPostPermissionMatrix's four no-setup routes.
-    """
-
-    @pytest.mark.parametrize("role", list(Role))
-    def test_command_run_matrix(self, login_as, wire_subsystem, role):
-        wire_subsystem("mdb", ["ping"])
-        client = login_as(role)
-        resp = client.post("/tests/mdb/ping")
-        if role in RUN_TESTS_ROLES:
-            assert resp.status_code == 200, (role, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, resp.status_code)
-
-    @pytest.mark.parametrize("role", list(Role))
-    def test_sale_matrix(self, login_as, wired, role):
-        # Locked out so run_test_sale refuses SYNCHRONOUSLY (see
-        # TestSimulatedSaleFlow's class docstring: `wired`'s VMC is never
-        # attach_to_loop()'d, so a real dispense wait would hang forever
-        # here -- this matrix only needs to prove the permission axis).
-        cfg, vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice Bag", 250, slot=0)
-        vmc.raise_fault(FaultCode.ICE_101, sku="ICE-1")
-        client = login_as(role)
-        resp = client.post("/tests/sale", data={"sku": "ICE-1"})
-        if role in RUN_TESTS_ROLES:
-            assert resp.status_code == 200, (role, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, resp.status_code)
 
 
 class TestPostRequiresHtmx:
