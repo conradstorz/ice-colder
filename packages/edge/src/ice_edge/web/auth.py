@@ -39,8 +39,7 @@ ENROLL_COOKIE_MAX_AGE = 600
 # standby maintenance lease bound to it (system-tests design §2.2a), alive
 # forever. /screen/body also polls on a timer and does resolve a session
 # (Permission.view_status, held by every role), but it is deliberately not
-# listed here: CLAUDE.md keeps /screen and /screen/body byte-identical to
-# origin/main and out of scope for this part.
+# listed here, so it stays out of scope for this part.
 POLLING_PATHS = frozenset({"/status", "/kpi", "/pill"})
 
 # The per-board live window (subsystem-windows design §4.6/4.7) polls every

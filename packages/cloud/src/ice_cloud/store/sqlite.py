@@ -1,4 +1,4 @@
-"""SQLite implementation of :class:`SqliteRepository`: the only module with SQL.
+"""The cloud's SQLite data-access layer (``SqliteRepository``); the only module with SQL.
 
 One connection per call, WAL, ``synchronous=NORMAL``, foreign keys on (the
 edge's ``EventRecorder`` pattern). Schema changes are an ordered list of
@@ -963,10 +963,10 @@ class SqliteRepository:
     def recent_alert_events(
         self, *, limit: int, fingerprint: str | None = None
     ) -> list[tuple[StoredEvent, Machine]]:
-        # e.fingerprint equals m.fingerprint, so selecting only the machine's
-        # other columns avoids a name collision for both row mappers.
         """The newest ``limit`` events across all machines (or only those of
         ``fingerprint`` when given), newest first, each with its machine."""
+        # e.fingerprint equals m.fingerprint, so selecting only the machine's
+        # other columns avoids a name collision for both row mappers.
         where = " WHERE e.fingerprint = ?" if fingerprint is not None else ""
         args: tuple = (fingerprint, limit) if fingerprint is not None else (limit,)
         with self._connect() as conn:

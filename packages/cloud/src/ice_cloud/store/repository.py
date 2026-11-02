@@ -1,4 +1,4 @@
-"""The cloud's data-access contract (identity spec sections 3 and 7).
+"""Row types returned by :class:`SqliteRepository` (identity spec sections 3 and 7).
 
 Routes and services depend on :class:`SqliteRepository`, never on SQL. Every method
 is named for a use case. Times are timezone-aware UTC ``datetime`` values.

@@ -20,7 +20,7 @@ Moved out of the root `CLAUDE.md`: background and history, not working rules.
 | Edge §2.9 store-and-forward uplink | `ice_edge.uplink` |
 | Edge §2.10 supervisor | `ice_edge.supervisor` + `ice_common.task_supervisor` |
 | §3 Payments | `ice_edge.payment` (MDB arrives through `ice_edge.hal`) |
-| §4 CCTV | `ice_edge.cctv` (stub) |
+| §4 CCTV | not built (the `ice_edge.cctv` stub was removed 2026-11-02; the spec keeps the intent) |
 | §5 Roles/access | `ice_contracts.access` (model) + `ice_edge.access` (store) |
 | §7 Reporting / alerting | `ice_edge.reporting`, `ice_edge.notify` |
 | §7 "local and remote use the same UI" | `ice_ui` (both `ice_edge.web` and `ice_cloud.portal` render it) |
