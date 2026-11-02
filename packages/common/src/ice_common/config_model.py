@@ -147,6 +147,19 @@ class Product(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_price(cls, data: Any) -> Any:
+        # The dollar `price` upgrade was removed; refuse rather than silently
+        # fall back to the 100-cent default and sell at the wrong price.
+        if isinstance(data, dict) and "price" in data:
+            raise ValueError(
+                f"Product {data.get('sku', '?')!r}: the legacy dollar 'price' key "
+                "is no longer supported; remove it and set 'price_cents' in "
+                "integer cents"
+            )
+        return data
+
     @field_validator("price_cents")
     @classmethod
     def _warn_high_price(cls, value: int) -> int:

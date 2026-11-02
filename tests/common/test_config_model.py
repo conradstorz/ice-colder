@@ -423,3 +423,20 @@ def test_mdb_policy_rejects_bad_values(bad):
 
     with pytest.raises(ValidationError):
         MdbPolicyConfig(**bad)
+
+
+def test_product_legacy_price_only_rejected():
+    with pytest.raises(ValidationError, match="legacy dollar 'price' key"):
+        Product.model_validate({"sku": "A", "name": "x", "price": 3.0, "slot": 1})
+
+
+def test_product_legacy_price_with_price_cents_rejected():
+    with pytest.raises(ValidationError, match="'A'"):
+        Product.model_validate(
+            {"sku": "A", "name": "x", "price": 3.0, "price_cents": 300, "slot": 1}
+        )
+
+
+def test_product_price_cents_only_accepted():
+    p = Product.model_validate({"sku": "A", "name": "x", "price_cents": 300, "slot": 1})
+    assert p.price_cents == 300
