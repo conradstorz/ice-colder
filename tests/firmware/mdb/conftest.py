@@ -12,16 +12,19 @@ The opt-in skip (``ICE_COLDER_BOARD_TESTS`` unset) is the parent conftest's.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
-import threading
 import uuid
 
 import pytest
 
 from ice_sims.mdb.simulator import MdbSimulator
 from tests.firmware.board_client import BoardClient, broker_address, mqtt_auth
-from tests.firmware.conftest import Target, clear_retained
+from tests.firmware.conftest import (
+    Target,
+    clear_retained,
+    sim_on_thread,
+    wait_until_answering,
+)
 
 
 class _NoCustomer:
@@ -31,24 +34,12 @@ class _NoCustomer:
         await asyncio.Event().wait()
 
 
-async def _wait_until_answering(host: str, port: int, machine_id: str) -> None:
-    async with BoardClient(host, port, machine_id, subsystem="mdb") as client:
-        for _ in range(15):
-            rid = await client.send("ping")
-            try:
-                await client.acks(rid, 1, 2)
-                return
-            except TimeoutError:
-                continue
-    raise RuntimeError(f"mdb board {machine_id} did not answer ping")
-
-
 @pytest.fixture(scope="package")
 def mdb_target():
     host, port = broker_address()
     machine_id = os.environ.get("ICE_COLDER_BOARD_MACHINE_ID")
     if machine_id:
-        asyncio.run(_wait_until_answering(host, port, machine_id))
+        asyncio.run(wait_until_answering(host, port, machine_id, "mdb"))
         yield Target(host, port, machine_id, False)
         return
 
@@ -60,28 +51,11 @@ def mdb_target():
         customer=_NoCustomer(),
         **mqtt_auth(),
     )
-    ready = threading.Event()
-    state: dict = {}
-
-    def run() -> None:
-        async def main() -> None:
-            state["task"] = asyncio.current_task()
-            state["loop"] = asyncio.get_running_loop()
-            ready.set()
-            with contextlib.suppress(asyncio.CancelledError):
-                await sim.run()
-
-        asyncio.run(main())
-
-    thread = threading.Thread(target=run, name="conformance-mdb-sim", daemon=True)
-    thread.start()
-    assert ready.wait(10)
     try:
-        asyncio.run(_wait_until_answering(host, port, machine_id))
-        yield Target(host, port, machine_id, True, sim.client_id)
+        with sim_on_thread(sim, "conformance-mdb-sim"):
+            asyncio.run(wait_until_answering(host, port, machine_id, "mdb"))
+            yield Target(host, port, machine_id, True, sim.client_id)
     finally:
-        state["loop"].call_soon_threadsafe(state["task"].cancel)
-        thread.join(10)
         asyncio.run(clear_retained(host, port, machine_id))
 
 

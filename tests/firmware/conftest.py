@@ -23,7 +23,12 @@ import aiomqtt
 import pytest
 
 from ice_sims.vending.simulator import VendingMachineSimulator
-from tests.firmware.board_client import BoardClient, broker_address, mqtt_auth
+from tests.firmware.board_client import (
+    SUBSYSTEM,
+    BoardClient,
+    broker_address,
+    mqtt_auth,
+)
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -81,9 +86,11 @@ async def clear_retained(host: str, port: int, machine_id: str) -> None:
             await client.publish(topic, b"", retain=True)
 
 
-async def _wait_until_answering(host: str, port: int, machine_id: str) -> None:
+async def wait_until_answering(
+    host: str, port: int, machine_id: str, subsystem: str = SUBSYSTEM
+) -> None:
     """Ping until the board acks, so no test races the simulator's startup."""
-    async with BoardClient(host, port, machine_id) as client:
+    async with BoardClient(host, port, machine_id, subsystem=subsystem) as client:
         for _ in range(15):
             rid = await client.send("ping")
             try:
@@ -91,22 +98,12 @@ async def _wait_until_answering(host: str, port: int, machine_id: str) -> None:
                 return
             except TimeoutError:
                 continue
-    raise RuntimeError(f"board {machine_id} did not answer ping")
+    raise RuntimeError(f"{subsystem} board {machine_id} did not answer ping")
 
 
-@pytest.fixture(scope="package")
-def target():
-    host, port = broker_address()
-    if not _is_sim():
-        machine_id = os.environ["ICE_COLDER_BOARD_MACHINE_ID"]
-        asyncio.run(_wait_until_answering(host, port, machine_id))
-        yield Target(host, port, machine_id, False)
-        return
-
-    machine_id = f"conf-{uuid.uuid4().hex[:8]}"
-    sim = VendingMachineSimulator(
-        broker=host, port=port, machine_id=machine_id, **mqtt_auth()
-    )
+@contextlib.contextmanager
+def sim_on_thread(sim, name: str = "conformance-sim"):
+    """Run ``sim`` on its own thread and event loop; cancel and join on exit."""
     ready = threading.Event()
     state: dict = {}
 
@@ -120,15 +117,34 @@ def target():
 
         asyncio.run(main())
 
-    thread = threading.Thread(target=run, name="conformance-sim", daemon=True)
+    thread = threading.Thread(target=run, name=name, daemon=True)
     thread.start()
     assert ready.wait(10)
     try:
-        asyncio.run(_wait_until_answering(host, port, machine_id))
-        yield Target(host, port, machine_id, True, sim.client_id)
+        yield
     finally:
         state["loop"].call_soon_threadsafe(state["task"].cancel)
         thread.join(10)
+
+
+@pytest.fixture(scope="package")
+def target():
+    host, port = broker_address()
+    if not _is_sim():
+        machine_id = os.environ["ICE_COLDER_BOARD_MACHINE_ID"]
+        asyncio.run(wait_until_answering(host, port, machine_id))
+        yield Target(host, port, machine_id, False)
+        return
+
+    machine_id = f"conf-{uuid.uuid4().hex[:8]}"
+    sim = VendingMachineSimulator(
+        broker=host, port=port, machine_id=machine_id, **mqtt_auth()
+    )
+    try:
+        with sim_on_thread(sim):
+            asyncio.run(wait_until_answering(host, port, machine_id))
+            yield Target(host, port, machine_id, True, sim.client_id)
+    finally:
         asyncio.run(clear_retained(host, port, machine_id))
 
 

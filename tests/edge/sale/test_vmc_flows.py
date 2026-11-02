@@ -1595,57 +1595,82 @@ async def _enables(machine) -> list[bool]:
     return accepts(machine)
 
 
-async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment():
-    vmc, monitor, avail, published, machine = _wired_vmc()
+async def _wired_with_everything_alive():
+    vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
     set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
+    return vmc, monitor, avail, machine
+
+
+def _heartbeat(subsystem):
+    def restore(monitor, machine):
+        monitor.record_heartbeat(subsystem, {"uptime_seconds": 5})
+
+    return restore
+
+
+def _lose(subsystem):
+    def lose(monitor, machine):
+        monitor.mark_offline(subsystem)
+
+    return lose
+
+
+_LOSSES = [
+    pytest.param("COM-101", _lose("vending"), _heartbeat("vending"), id="vending"),
+    pytest.param(
+        "COM-102", _lose("ice_maker"), _heartbeat("ice_maker"), id="ice_maker"
+    ),
+    pytest.param("PAY-101", _lose("mdb"), _heartbeat("mdb"), id="mdb"),
+    pytest.param(
+        "COM-103",
+        lambda monitor, machine: machine.on_mqtt_connection(False),
+        lambda monitor, machine: machine.on_mqtt_connection(True),
+        id="mqtt",
+    ),
+]
+
+
+@pytest.mark.parametrize(("code", "lose", "restore"), _LOSSES)
+async def test_loss_raises_its_fault_and_recovery_clears_it(code, lose, restore):
+    vmc, monitor, avail, machine = await _wired_with_everything_alive()
+    assert code not in fault_codes(vmc)
+
+    lose(monitor, machine)
+    assert code in fault_codes(vmc)
+
+    restore(monitor, machine)
+    assert code not in fault_codes(vmc)
+
+
+@pytest.mark.parametrize(
+    ("subsystem", "blocked_reason"),
+    [("vending", "vending_alive"), ("ice_maker", None), ("mdb", "payment_alive")],
+)
+async def test_subsystem_loss_blocks_sales_not_payment(subsystem, blocked_reason):
+    vmc, monitor, avail, machine = await _wired_with_everything_alive()
+    assert avail.sale_available("ice")[0] is True
+
+    monitor.mark_offline(subsystem)
+    available, reasons = avail.sale_available("ice")
+    assert available is False
+    if blocked_reason is not None:
+        assert blocked_reason in reasons
     assert avail.payment_enabled is True
 
-    monitor.mark_offline("vending")
-    codes = fault_codes(vmc)
-    assert "COM-101" in codes
-    assert avail.payment_enabled is True
-    assert avail.sale_available("ice")[0] is False
-    assert "vending_alive" in avail.sale_available("ice")[1]
-
-    monitor.record_heartbeat("vending", {"uptime_seconds": 5})
-    assert "COM-101" not in fault_codes(vmc)
+    monitor.record_heartbeat(subsystem, {"uptime_seconds": 5})
     assert avail.sale_available("ice")[0] is True
 
 
-async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
-    vmc, monitor, avail, published, machine = _wired_vmc()
-    _all_alive(monitor, machine)
-    set_coin_status(avail, "ready")
-    await machine.telemetry.handle_hardware_io(
-        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
-    )
-    monitor.mark_offline("ice_maker")
-    assert "COM-102" in fault_codes(vmc)
-    assert avail.sale_available("ice")[0] is False
-    assert avail.payment_enabled is True
-
-
-async def test_mdb_loss_is_pay_101_and_blocks_sales_not_payment():
-    vmc, monitor, avail, _, machine = _wired_vmc()
-    _all_alive(monitor, machine)
-    monitor.mark_offline("mdb")
-    assert "PAY-101" in fault_codes(vmc)
-    assert avail.payment_enabled is True
-    assert "payment_alive" in avail.sale_available("ice")[1]
-
-
-async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
+async def test_mqtt_reconnect_republishes_the_payment_enable():
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
     machine.on_mqtt_connection(False)
-    assert "COM-103" in fault_codes(vmc)
     before = len(await _enables(machine))
     machine.on_mqtt_connection(True)
-    assert "COM-103" not in fault_codes(vmc)
     assert len(await _enables(machine)) > before
 
 
@@ -1929,23 +1954,36 @@ async def test_boot_with_escrow_raises_pay_104_without_blocking(tmp_path):
     assert store.load() is not None  # kept as evidence until cleared
 
 
-async def test_boot_mid_dispense_raises_pay_104(tmp_path):
-    vmc, avail, _, machine = _boot_with(
-        tmp_path,
-        SessionSnapshot(
-            state="dispensing",
-            credit_escrow_cents=0,
-            selected_sku="ICE-1",
-            dispense_slot=0,
-        ),
+def _escrow_snapshot(tmp_path):
+    return SessionSnapshot(state="interacting_with_user", credit_escrow_cents=125)
+
+
+def _mid_dispense_snapshot(tmp_path):
+    return SessionSnapshot(
+        state="dispensing",
+        credit_escrow_cents=0,
+        selected_sku="ICE-1",
+        dispense_slot=0,
     )
-    assert "PAY-104" in fault_codes(vmc)
 
 
-async def test_boot_with_corrupt_file_raises_pay_104(tmp_path):
+def _corrupt_file(tmp_path):
     (tmp_path / "session.json").write_text("garbage", encoding="utf-8")
-    vmc, avail, _, machine = _boot_with(tmp_path, None)
+    return None
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        pytest.param(_escrow_snapshot, id="escrow"),
+        pytest.param(_mid_dispense_snapshot, id="mid_dispense"),
+        pytest.param(_corrupt_file, id="corrupt_file"),
+    ],
+)
+async def test_boot_with_an_uncertain_session_raises_pay_104(tmp_path, prepare):
+    vmc, avail, _, machine = _boot_with(tmp_path, prepare(tmp_path))
     assert "PAY-104" in fault_codes(vmc)
+    assert avail.payment_enabled is True
 
 
 async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):

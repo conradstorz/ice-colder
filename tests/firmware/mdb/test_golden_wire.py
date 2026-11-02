@@ -4,37 +4,26 @@ Always runs: no broker, no flag. Pydantic ignores extra keys, so each golden's e
 is asserted separately.
 """
 
-import json
 import typing
 
 import pytest
 
 from ice_contracts.board import payment
-from ice_contracts.board.common import STANDARD_COMMANDS, CommandAck
-from ice_contracts.board.mqtt_messages import SubsystemHeartbeat
+from ice_contracts.board.common import STANDARD_COMMANDS
 from ice_contracts.board.payment import PaymentEventEnvelope, PaymentState
 from ice_contracts.board.vending_machine import SubsystemCapabilities
+from tests.firmware import golden_common
+from tests.firmware.golden_common import (
+    COMMON_MODELS,
+    check_validates_with_exact_keys,
+)
 from tests.repo_root import REPO_ROOT
 
 GOLDEN = REPO_ROOT / "firmware" / "mdb" / "test" / "golden"
 
 ENVELOPE_KEYS = {"event_id", "boot_id", "seq", "ts", "event"}
-ACK_KEYS = {"request_id", "command", "status", "phase"}
-CAPABILITIES_KEYS = {
-    "subsystem", "firmware", "contract_version", "brand", "model",
-    "hardware_id", "ip", "channels", "commands",
-}  # fmt: skip
 # golden file stem -> (model, exact key set)
-MODELS = {
-    "capabilities": (SubsystemCapabilities, CAPABILITIES_KEYS),
-    "heartbeat": (SubsystemHeartbeat, {"subsystem", "uptime_seconds"}),
-    "lwt": (SubsystemHeartbeat, {"subsystem", "uptime_seconds"}),
-    "ack_ok_accepted": (CommandAck, ACK_KEYS),
-    "ack_ok_completed": (CommandAck, ACK_KEYS | {"result"}),
-    "ack_failed": (CommandAck, ACK_KEYS | {"detail"}),
-    "ack_rejected": (CommandAck, ACK_KEYS | {"detail"}),
-    "ack_unsupported": (CommandAck, ACK_KEYS | {"detail"}),
-}  # fmt: skip
+MODELS = COMMON_MODELS
 STATE_STEMS = ("state", "state_inhibited")
 STATE_KEYS = set(PaymentState.model_fields)
 DEVICE_KEYS = {
@@ -59,7 +48,7 @@ BODY_MODELS = _body_models()
 
 
 def load(stem: str) -> dict:
-    return json.loads((GOLDEN / f"{stem}.json").read_text(encoding="utf-8"))
+    return golden_common.load(GOLDEN, stem)
 
 
 def test_every_golden_file_is_covered():
@@ -90,10 +79,7 @@ def test_event_golden_validates_with_exact_keys(kind):
 
 @pytest.mark.parametrize("stem", sorted(MODELS))
 def test_golden_validates_with_exact_keys(stem):
-    model, keys = MODELS[stem]
-    data = load(stem)
-    model.model_validate(data)
-    assert set(data) == keys
+    check_validates_with_exact_keys(MODELS, GOLDEN, stem)
 
 
 @pytest.mark.parametrize("stem", STATE_STEMS)

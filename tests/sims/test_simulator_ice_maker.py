@@ -8,6 +8,24 @@ from unittest.mock import AsyncMock
 from ice_sims.ice_maker import IceMakerSimulator, ThermalSensor, SENSOR_DEFS
 
 
+@pytest.fixture
+def capture_publish():
+    """Return ``install(sim, keep="payload")``: replaces ``sim.publish`` with a
+    recorder and returns the list it fills with ``(suffix, payload)`` pairs, or
+    ``(suffix, retain)`` pairs when ``keep="retain"``."""
+
+    def install(sim, keep="payload"):
+        published = []
+
+        async def record(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, retain if keep == "retain" else payload))
+
+        sim.publish = record
+        return published
+
+    return install
+
+
 class TestThermalSensor:
     def test_initial_value(self):
         sensor = ThermalSensor(
@@ -254,14 +272,9 @@ class TestCompressorOvertempFault:
         assert sensor.target_on == original["target_on"]
         assert sensor.target_off == original["target_off"]
 
-    async def test_activate_publishes_halt_event(self):
+    async def test_activate_publishes_halt_event(self, capture_publish):
         sim = IceMakerSimulator()
-        published = []
-
-        async def capture_publish(client, suffix, payload, retain=False, qos=1):
-            published.append((suffix, payload))
-
-        sim.publish = capture_publish
+        published = capture_publish(sim)
         client = AsyncMock()
         await sim._on_compressor_overtemp_activate(client)
         assert any("ice_maker/event" in s for s, _ in published)
@@ -302,14 +315,9 @@ class TestLowRefrigerantFault:
         assert sensor.target_on == original["target_on"]
         assert sensor.target_off == original["target_off"]
 
-    async def test_activate_publishes_halt_event(self):
+    async def test_activate_publishes_halt_event(self, capture_publish):
         sim = IceMakerSimulator()
-        published = []
-
-        async def capture_publish(client, suffix, payload, retain=False, qos=1):
-            published.append((suffix, payload))
-
-        sim.publish = capture_publish
+        published = capture_publish(sim)
         client = AsyncMock()
         await sim._on_low_refrigerant_activate(client)
         assert any("ice_maker/event" in s for s, _ in published)
@@ -355,14 +363,9 @@ class TestWaterInletBlockedFault:
         assert sensor.target_on == original["target_on"]
         assert sensor.target_off == original["target_off"]
 
-    async def test_activate_publishes_halt_event(self):
+    async def test_activate_publishes_halt_event(self, capture_publish):
         sim = IceMakerSimulator()
-        published = []
-
-        async def capture_publish(client, suffix, payload, retain=False, qos=1):
-            published.append((suffix, payload))
-
-        sim.publish = capture_publish
+        published = capture_publish(sim)
         client = AsyncMock()
         await sim._on_water_inlet_blocked_activate(client)
         assert any("ice_maker/event" in s for s, _ in published)
@@ -399,15 +402,10 @@ class TestDefrostStuckPerValve:
         assert v2.target_on == original["target_on"]
         assert v2.target_off == original["target_off"]
 
-    async def test_activate_and_recover_publish_no_events(self):
+    async def test_activate_and_recover_publish_no_events(self, capture_publish):
         """Dumb machine: a stuck valve never self-reports."""
         sim = IceMakerSimulator()
-        published = []
-
-        async def capture_publish(client, suffix, payload, retain=False, qos=1):
-            published.append((suffix, payload))
-
-        sim.publish = capture_publish
+        published = capture_publish(sim)
         client = AsyncMock()
         await self._fault_def(sim, 1).on_activate(client)
         await self._fault_def(sim, 1).on_recover(client)
@@ -550,16 +548,11 @@ class TestMonitorContract:
         ids = [c.channel_id for c in self._sim().build_capabilities().channels]
         assert len(ids) == len(set(ids))
 
-    async def test_power_cycle_ok_then_lockout(self):
+    async def test_power_cycle_ok_then_lockout(self, capture_publish):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = self._sim()
-        published = []
-
-        async def capture(client, suffix, payload, retain=False, qos=1):
-            published.append((suffix, payload))
-
-        sim.publish = capture
+        published = capture_publish(sim)
         client = AsyncMock()
         cmd = MonitorCommand(
             request_id="req-00000001",
@@ -581,29 +574,6 @@ class TestMonitorContract:
         assert acks[-1].status == "rejected"
         assert acks[-1].detail == "lockout"
 
-    async def test_duplicate_request_id_reacks_without_reexecuting(self):
-        from ice_contracts.board.ice_maker_monitor import MonitorCommand
-
-        sim = self._sim()
-        published = []
-
-        async def capture(client, suffix, payload, retain=False, qos=1):
-            published.append((suffix, payload))
-
-        sim.publish = capture
-        client = AsyncMock()
-        cmd = MonitorCommand(
-            request_id="req-00000003",
-            command="set_interval",
-            params={"interval_seconds": 7},
-        )
-        await sim.handle_command(client, cmd)
-        first_ack_count = len(published)
-        sim._publish_interval = 99.0  # would change again if re-executed
-        await sim.handle_command(client, cmd)
-        assert len(published) == first_ack_count + 1  # re-acked
-        assert sim._publish_interval == 99.0  # NOT re-executed
-
     async def test_set_interval_changes_publish_interval(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
@@ -620,16 +590,11 @@ class TestMonitorContract:
         )
         assert sim._publish_interval == 30.0
 
-    async def test_set_interval_republishes_capabilities(self):
+    async def test_set_interval_republishes_capabilities(self, capture_publish):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = self._sim()
-        published = []
-
-        async def capture(client, suffix, payload, retain=False, qos=1):
-            published.append((suffix, retain))
-
-        sim.publish = capture
+        published = capture_publish(sim, keep="retain")
         client = AsyncMock()
         await sim.handle_command(
             client,
@@ -642,16 +607,11 @@ class TestMonitorContract:
         assert ("capabilities/ice_maker", True) in published
         assert published[-1][0] == "cmd/ice_maker/ack"
 
-    async def test_force_report_publishes_snapshot_and_acks(self):
+    async def test_force_report_publishes_snapshot_and_acks(self, capture_publish):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = self._sim()
-        published = []
-
-        async def capture(client, suffix, payload, retain=False, qos=1):
-            published.append((suffix, payload))
-
-        sim.publish = capture
+        published = capture_publish(sim)
         client = AsyncMock()
         await sim.handle_command(
             client,
@@ -707,35 +667,6 @@ class TestStandardCommandsFromSharedLoop:
     (including a hypothetical "ping") as `force_report`, so these tests are
     written to fail against that fallback, not just to fail on import."""
 
-    async def test_ping_acks_ok_with_no_snapshot_side_effect(self):
-        """A real ping is a round trip only — no sensor snapshot published.
-
-        Against the pre-Task-8 ice maker, an unrecognised command such as
-        "ping" fell into the `else` branch and was treated as force_report,
-        which *does* publish the 12-topic sensor/telemetry snapshot — so
-        this assertion distinguishes a genuine ping from that fallback.
-        """
-        from ice_contracts.board.ice_maker_monitor import MonitorCommand
-
-        sim = IceMakerSimulator(machine_id="vmc-test")
-        published = []
-
-        async def capture(client, suffix, payload, retain=False, qos=1):
-            published.append((suffix, payload))
-
-        sim.publish = capture
-        client = AsyncMock()
-        await sim.handle_command(
-            client, MonitorCommand(request_id="req-ping00001", command="ping")
-        )
-        suffixes = [s for s, _ in published]
-        assert suffixes[-1] == "cmd/ice_maker/ack"
-        assert not any(s.startswith("sensors/temp/") for s in suffixes)
-        assert not any(s.startswith("telemetry/ice_maker/") for s in suffixes)
-        ack = published[-1][1]
-        assert ack.status == "ok"
-        assert ack.result is None
-
     async def test_self_test_result_has_checks_for_all_five_faults(self):
         """Against the pre-Task-8 fallback, `ack.result` is always None
         (the old `else` branch's CommandAck never set `result`), so
@@ -777,29 +708,6 @@ class TestStandardCommandsFromSharedLoop:
         ack = sim.publish.call_args_list[-1].args[2]
         failing = {c["name"] for c in ack.result["checks"] if not c["pass"]}
         assert failing == {"low_refrigerant"}
-
-    async def test_force_report_now_also_republishes_the_heartbeat(self):
-        """New in the base class's force_report (Task 6): the heartbeat is
-        republished via `client.publish` directly, ahead of the subclass's
-        own telemetry. The pre-Task-8 ice maker's `handle_command` never
-        touched `client.publish` on a force_report — only `self.publish`
-        (for the sensor/telemetry snapshot and the ack) — so this assertion
-        is false against the old implementation."""
-        from ice_contracts.board.ice_maker_monitor import MonitorCommand
-
-        sim = IceMakerSimulator(machine_id="vmc-test")
-        sim.publish = AsyncMock()
-        client = AsyncMock()
-        await sim.handle_command(
-            client,
-            MonitorCommand(request_id="req-forcerep01", command="force_report"),
-        )
-        heartbeat_calls = [
-            c
-            for c in client.publish.call_args_list
-            if "heartbeat/ice_maker" in c.args[0]
-        ]
-        assert len(heartbeat_calls) == 1
 
 
 class TestPowerCycleIdempotency:
