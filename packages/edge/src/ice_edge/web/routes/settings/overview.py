@@ -8,8 +8,16 @@ from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import (
     LEVEL_SETTINGS,
+    LEVEL_SETTINGS_COMMS,
+    LEVEL_SETTINGS_CONTACTS,
+    LEVEL_SETTINGS_MACHINE,
+    LEVEL_SETTINGS_MQTT,
+    LEVEL_SETTINGS_PAYMENTS,
+    LEVEL_SETTINGS_REPORTS,
+    LEVEL_SETTINGS_WEB,
 )
 from ice_ui.templating import templates
+from ice_ui.tiles import tile
 
 
 router = APIRouter()
@@ -30,55 +38,55 @@ async def settings_home(request: Request):
     has_contacts = Permission.edit_contacts in perms
     has_secrets = Permission.edit_secrets in perms
     tiles = [
-        {
-            "title": "Machine",
-            "url": "/settings/machine",
-            "icon": "settings",
-            "context": "Name, location",
-            "enabled": has_contacts,
-        },
-        {
-            "title": "Contacts",
-            "url": "/settings/contacts",
-            "icon": "settings",
-            "context": "Owner, technicians",
-            "enabled": has_contacts,
-        },
-        {
-            "title": "Payments",
-            "url": "/settings/payments",
-            "icon": "settings",
-            "context": "Stripe, PayPal, MDB",
-            "enabled": has_secrets,
-        },
-        {
-            "title": "Comms",
-            "url": "/settings/comms",
-            "icon": "settings",
-            "context": "Email, SMS gateways",
-            "enabled": has_secrets,
-        },
-        {
-            "title": "MQTT",
-            "url": "/settings/mqtt",
-            "icon": "settings",
-            "context": "Broker, credentials",
-            "enabled": has_secrets,
-        },
-        {
-            "title": "Web",
-            "url": "/settings/web",
-            "icon": "settings",
-            "context": "Host, port, proxies",
-            "enabled": has_secrets,
-        },
-        {
-            "title": "Reports",
-            "url": "/settings/reports",
-            "icon": "reports",
-            "context": "Scheduled summary email",
-            "enabled": has_contacts,
-        },
+        tile(
+            "Machine",
+            LEVEL_SETTINGS_MACHINE.url,
+            "settings",
+            "Name, location",
+            has_contacts,
+        ),
+        tile(
+            "Contacts",
+            LEVEL_SETTINGS_CONTACTS.url,
+            "settings",
+            "Owner, technicians",
+            has_contacts,
+        ),
+        tile(
+            "Payments",
+            LEVEL_SETTINGS_PAYMENTS.url,
+            "settings",
+            "Stripe, PayPal, MDB",
+            has_secrets,
+        ),
+        tile(
+            "Comms",
+            LEVEL_SETTINGS_COMMS.url,
+            "settings",
+            "Email, SMS gateways",
+            has_secrets,
+        ),
+        tile(
+            "MQTT",
+            LEVEL_SETTINGS_MQTT.url,
+            "settings",
+            "Broker, credentials",
+            has_secrets,
+        ),
+        tile(
+            "Web",
+            LEVEL_SETTINGS_WEB.url,
+            "settings",
+            "Host, port, proxies",
+            has_secrets,
+        ),
+        tile(
+            "Reports",
+            LEVEL_SETTINGS_REPORTS.url,
+            "reports",
+            "Scheduled summary email",
+            has_contacts,
+        ),
     ]
     return templates.TemplateResponse(
         request,

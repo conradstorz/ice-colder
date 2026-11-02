@@ -9,6 +9,7 @@ from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import LEVEL_PRODUCTS
 from ice_ui.templating import templates
+from ice_ui.tiles import tile
 
 from .helpers import (
     _inventory_count,
@@ -67,20 +68,20 @@ async def product_detail(request: Request, sku: str):
     locked_code = _locked_skus().get(sku)
 
     tiles = [
-        {
-            "title": "Catalog",
-            "url": f"/products/{sku}/catalog",
-            "icon": "products",
-            "context": f"{format_cents(product.price_cents)} · {product.kind}",
-            "enabled": Permission.edit_catalog in perms,
-        },
-        {
-            "title": "Placement",
-            "url": f"/products/{sku}/placement",
-            "icon": "inventory",
-            "context": f"Slot {product.slot} · {count} in stock",
-            "enabled": Permission.edit_placement in perms,
-        },
+        tile(
+            "Catalog",
+            f"/products/{sku}/catalog",
+            "products",
+            f"{format_cents(product.price_cents)} · {product.kind}",
+            Permission.edit_catalog in perms,
+        ),
+        tile(
+            "Placement",
+            f"/products/{sku}/placement",
+            "inventory",
+            f"Slot {product.slot} · {count} in stock",
+            Permission.edit_placement in perms,
+        ),
     ]
 
     return templates.TemplateResponse(

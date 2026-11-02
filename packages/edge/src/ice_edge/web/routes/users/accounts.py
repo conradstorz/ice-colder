@@ -6,11 +6,15 @@ from ice_edge.access.auth_policy import pin_problem
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import (
+    LEVEL_DEVICES,
     LEVEL_USERS,
+    LEVEL_USERS_CODES,
     LEVEL_USERS_NEW,
+    LEVEL_USERS_OWNERSHIP,
     Level,
 )
 from ice_ui.templating import templates
+from ice_ui.tiles import tile
 
 
 router = APIRouter()
@@ -123,29 +127,26 @@ def _render_users_page(request: Request, *, notice: str | None = None):
     unused_codes = context.access_store.unused_emergency_code_count()
     pending_transfer = context.access_store.pending_transfer
     tiles = [
-        {
-            "title": "Devices",
-            "url": "/devices",
-            "icon": "users",
-            "context": f"{len(context.access_store.devices)} known",
-            "enabled": True,
-        },
-        {
-            "title": "Emergency codes",
-            "url": "/users/codes",
-            "icon": "settings",
-            "context": f"{unused_codes} unused",
-            "enabled": can_own,
-        },
-        {
-            "title": "Ownership",
-            "url": "/users/ownership",
-            "icon": "settings",
-            "context": (
-                "Transfer pending" if pending_transfer else "Report & transfer"
-            ),
-            "enabled": can_own,
-        },
+        tile(
+            "Devices",
+            LEVEL_DEVICES.url,
+            "users",
+            f"{len(context.access_store.devices)} known",
+        ),
+        tile(
+            "Emergency codes",
+            LEVEL_USERS_CODES.url,
+            "settings",
+            f"{unused_codes} unused",
+            can_own,
+        ),
+        tile(
+            "Ownership",
+            LEVEL_USERS_OWNERSHIP.url,
+            "settings",
+            "Transfer pending" if pending_transfer else "Report & transfer",
+            can_own,
+        ),
     ]
     return templates.TemplateResponse(
         request,
