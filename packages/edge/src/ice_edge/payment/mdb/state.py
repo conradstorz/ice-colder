@@ -76,12 +76,10 @@ class StateConsumer:
     def _apply_status(self, device: str, status: str) -> None:
         code = _DEVICE_FAULTS[device]
         if status in _RAISE:
-            if not self._faults.has(code):
-                self._faults.raise_fault(code)
-        elif status in _CLEAR and self._faults.has(code):
-            self._faults.clear_fault(code.value, by="auto")
+            self._faults.ensure_raised(code)
+        elif status in _CLEAR:
+            self._faults.ensure_cleared(code)
 
     def _clear_if_active(self, device: str) -> None:
         code = _DEVICE_FAULTS[device]
-        if self._faults.has(code):
-            self._faults.clear_fault(code.value, by="auto")
+        self._faults.ensure_cleared(code)

@@ -91,8 +91,7 @@ class EventIntake:
             f"{why}; gaps={self._gaps} unknown_kinds={self._unknown_kinds} "
             f"malformed={self._malformed}"
         )
-        if not self._faults.has(FaultCode.PAY_105):
-            self._faults.raise_fault(FaultCode.PAY_105, outcome=outcome)
+        self._faults.ensure_raised(FaultCode.PAY_105, outcome=outcome)
 
     # -- handler -----------------------------------------------------------
 

@@ -54,3 +54,36 @@ def test_unsubscribing_twice_is_harmless():
     unsubscribe()
     unsubscribe()
     assert len(subs) == 1
+
+
+def test_health_edge_fires_failed_every_time_and_ok_only_on_recovery():
+    from ice_common.observers import HealthEdge
+
+    calls: list[str] = []
+    edge = HealthEdge(lambda: calls.append("failed"), lambda: calls.append("ok"))
+    edge.ok()
+    assert calls == []
+    edge.failed()
+    edge.failed()
+    assert calls == ["failed", "failed"]
+    edge.ok()
+    edge.ok()
+    assert calls == ["failed", "failed", "ok"]
+    edge.failed()
+    assert calls[-1] == "failed"
+
+
+def test_health_edge_tolerates_none_callbacks_and_logs_raising_ones():
+    from ice_common.observers import HealthEdge
+
+    edge = HealthEdge(None, None)
+    edge.failed()
+    edge.ok()
+
+    def boom() -> None:
+        raise RuntimeError("x")
+
+    edge = HealthEdge(boom, boom)
+    edge.failed()
+    edge.ok()
+    assert edge.is_failing is False

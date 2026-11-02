@@ -65,9 +65,7 @@ class InputFaults:
         self._raise(FaultCode.WTR_107)
 
     def _raise(self, code: FaultCode) -> None:
-        if not self._faults.has(code):
-            self._faults.raise_fault(code)
+        self._faults.ensure_raised(code)
 
     def _clear(self, code: FaultCode) -> None:
-        if self._faults.has(code):
-            self._faults.clear_fault(code.value, by="hardware")
+        self._faults.ensure_cleared(code, by="hardware")

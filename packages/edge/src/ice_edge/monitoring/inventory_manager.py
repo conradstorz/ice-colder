@@ -16,6 +16,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from ice_common.observers import HealthEdge
 from ice_common.paths import atomic_write
 
 INVENTORY_PATH = Path("inventory.json")
@@ -40,9 +41,7 @@ class InventoryManager:
         # event loop, which also calls _save() synchronously — guard the
         # tmp-write-then-replace sequence against concurrent writers.
         self._save_lock = threading.Lock()
-        self._on_save_failed: Callable[[], None] | None = None
-        self._on_save_ok: Callable[[], None] | None = None
-        self._last_save_failed = False
+        self._save_health = HealthEdge(None, None)
         self._load(products)
 
     def _load(self, products: list):
@@ -79,8 +78,7 @@ class InventoryManager:
         Both run on the thread that called `_save` (the event loop, or the
         `save_async` worker thread); a raising observer is logged, never
         propagated."""
-        self._on_save_failed = on_failed
-        self._on_save_ok = on_ok
+        self._save_health = HealthEdge(on_failed, on_ok)
 
     def _save(self):
         """Persist current counts to disk atomically."""
@@ -89,18 +87,13 @@ class InventoryManager:
                 atomic_write(Path(self._path), json.dumps(dict(self._counts), indent=2))
             except Exception as e:
                 logger.error(f"Failed to save inventory: {e}")
-                self._last_save_failed = True
-                cb = self._on_save_failed
+                failed = True
             else:
-                if not self._last_save_failed:
-                    return
-                self._last_save_failed = False
-                cb = self._on_save_ok
-        if cb is not None:
-            try:
-                cb()
-            except Exception:
-                logger.exception("InventoryManager: save observer raised")
+                failed = False
+        if failed:
+            self._save_health.failed()
+        else:
+            self._save_health.ok()
 
     def get_count(self, sku: str) -> int:
         """Return current inventory count for a SKU."""

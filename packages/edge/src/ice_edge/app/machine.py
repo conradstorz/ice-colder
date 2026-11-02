@@ -573,14 +573,12 @@ class Machine:
         does, so neither source can clear the other's alert."""
         if failing:
             self._data104_sources.add(source)
-            if not self._faults.has(FaultCode.DATA_104):
-                self._faults.raise_fault(FaultCode.DATA_104)
+            self._faults.ensure_raised(FaultCode.DATA_104)
             return
         was_failing = bool(self._data104_sources)
         self._data104_sources.discard(source)
         if was_failing and not self._data104_sources:
-            if self._faults.has(FaultCode.DATA_104):
-                self._faults.clear_fault(FaultCode.DATA_104.value, by="auto")
+            self._faults.ensure_cleared(FaultCode.DATA_104)
 
     def _raise_session_unsaved(self) -> None:
         """``StatusOutputs`` could not write the session snapshot."""
@@ -605,21 +603,17 @@ class Machine:
     def _raise_event_unwritten(self) -> None:
         """An event row could not be written: DATA-105 (machine-scope, never
         payment-blocking) once."""
-        if not self._faults.has(FaultCode.DATA_105):
-            self._faults.raise_fault(FaultCode.DATA_105)
+        self._faults.ensure_raised(FaultCode.DATA_105)
 
     def _clear_event_unwritten(self) -> None:
-        if self._faults.has(FaultCode.DATA_105):
-            self._faults.clear_fault(FaultCode.DATA_105.value, by="auto")
+        self._faults.ensure_cleared(FaultCode.DATA_105)
 
     def _raise_inventory_unsaved(self) -> None:
         """Inventory counts could not be saved: DATA-106 once."""
-        if not self._faults.has(FaultCode.DATA_106):
-            self._faults.raise_fault(FaultCode.DATA_106)
+        self._faults.ensure_raised(FaultCode.DATA_106)
 
     def _clear_inventory_unsaved(self) -> None:
-        if self._faults.has(FaultCode.DATA_106):
-            self._faults.clear_fault(FaultCode.DATA_106.value, by="auto")
+        self._faults.ensure_cleared(FaultCode.DATA_106)
 
     def set_mqtt_client(self, client) -> None:
         """Attach an MQTTClient instance for publishing status and receiving events."""

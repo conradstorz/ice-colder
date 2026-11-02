@@ -307,6 +307,17 @@ class FakeFaults:
         self.active = {c for c in self.active if getattr(c, "value", c) != key}
         return True
 
+    def ensure_raised(self, code, *, outcome=None) -> bool:
+        if self.has(code):
+            return False
+        self.raise_fault(code, outcome=outcome)
+        return True
+
+    def ensure_cleared(self, code, *, by="auto") -> bool:
+        if not self.has(code):
+            return False
+        return self.clear_fault(code.value, by=by)
+
 
 class FakeStore:
     def __init__(self, *, clear_result: bool = True):
