@@ -193,6 +193,21 @@ class AccessStore:
         return self._wall().isoformat()
 
     def load(self) -> None:
+        """Read the file, then sweep abandoned device enrolments.
+
+        Enroll tokens and OTPs are memory-only, so at load none can be live
+        and the sweep cannot interrupt an enrolment. A missing or corrupt
+        file is never written.
+        """
+        if not self._read():
+            return
+        try:
+            self.prune_devices()
+        except Exception as e:  # a read-only disk must not stop boot
+            logger.warning(f"AccessStore: could not prune stale devices: {e}")
+
+    def _read(self) -> bool:
+        """Load the file into memory; True only when it was read cleanly."""
         self.users = {}
         self.devices = {}
         self._emergency_codes: list[dict] = []
@@ -202,7 +217,7 @@ class AccessStore:
         self._raw_extra = {}
         self.corrupt = False
         if not self._path.exists():
-            return
+            return False
         self._tighten_permissions()
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
@@ -262,6 +277,8 @@ class AccessStore:
                 "dashboard will serve an error page. The VMC and MQTT client "
                 "are unaffected."
             )
+            return False
+        return True
 
     def _tighten_permissions(self) -> None:
         if os.name != "posix":
@@ -343,7 +360,7 @@ class AccessStore:
         try:
             self.save()
         except Exception:
-            self.load()
+            self._read()  # not load(): its prune would write again
             raise
 
     # --- users ---
@@ -451,6 +468,7 @@ class AccessStore:
 
     def create_device(self, label: str, shared: bool) -> tuple[Device, str]:
         """Return the record and the raw cookie token (never stored)."""
+        self.prune_devices()
         token = generate_token()
         device = Device(
             id=str(uuid.uuid4()),
@@ -497,11 +515,21 @@ class AccessStore:
         self._commit()
 
     def prune_devices(self) -> int:
-        """Drop devices older than 24 h that never completed enrollment."""
+        """Drop devices older than 24 h that never completed enrollment.
+
+        A device with a live enroll token or pending OTP bound to it is
+        mid-enrolment (the login route reuses an old untrusted device from
+        the cookie) and is kept.
+        """
         cutoff = self._wall() - timedelta(hours=DEVICE_PRUNE_HOURS)
+        now = self._clock()
+        enrolling = {c for _, c, exp in self._enroll_tokens.values() if exp >= now}
+        enrolling |= {
+            d for (_, d), (_, exp) in self._pending_otps.items() if exp >= now
+        }
         removed = 0
         for device in list(self.devices.values()):
-            if device.trusted_user_ids:
+            if device.trusted_user_ids or device.id in enrolling:
                 continue
             try:
                 created = datetime.fromisoformat(device.created_at)
