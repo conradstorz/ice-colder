@@ -75,7 +75,6 @@ if _BROKER_AVAILABLE is None:
     _BROKER_AVAILABLE = asyncio.run(_check_broker())
 
 pytestmark = [
-    pytest.mark.asyncio,
     pytest.mark.skipif(
         not _BROKER_AVAILABLE, reason="MQTT broker not available on localhost:1883"
     ),

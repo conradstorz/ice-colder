@@ -184,7 +184,6 @@ class TestHADiscovery:
         ids = [e["object_id"] for e in entities]
         assert len(ids) == len(set(ids))
 
-    @pytest.mark.asyncio
     async def test_discovery_publishes_all_entities(self):
         """Smoke test: the base class publishes all 12 ice maker entities."""
         sim = IceMakerSimulator(machine_id="vmc-test")
@@ -230,7 +229,6 @@ class TestIceMakerFaultRegistration:
 
 
 class TestCompressorOvertempFault:
-    @pytest.mark.asyncio
     async def test_activate_forces_compressor_off(self):
         sim = IceMakerSimulator()
         sim.compressor_on = True
@@ -238,7 +236,6 @@ class TestCompressorOvertempFault:
         await sim._on_compressor_overtemp_activate(client)
         assert sim.compressor_on is False
 
-    @pytest.mark.asyncio
     async def test_activate_overrides_refrigerant_high_targets(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
@@ -247,7 +244,6 @@ class TestCompressorOvertempFault:
         assert sensor.target_on == 95.0
         assert sensor.target_off == 95.0
 
-    @pytest.mark.asyncio
     async def test_recover_restores_refrigerant_high_targets(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
@@ -258,7 +254,6 @@ class TestCompressorOvertempFault:
         assert sensor.target_on == original["target_on"]
         assert sensor.target_off == original["target_off"]
 
-    @pytest.mark.asyncio
     async def test_activate_publishes_halt_event(self):
         sim = IceMakerSimulator()
         published = []
@@ -289,7 +284,6 @@ class TestCompressorOvertempFault:
 
 
 class TestLowRefrigerantFault:
-    @pytest.mark.asyncio
     async def test_activate_pins_refrigerant_low_target(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
@@ -298,7 +292,6 @@ class TestLowRefrigerantFault:
         assert sensor.target_on == 10.0
         assert sensor.target_off == 10.0
 
-    @pytest.mark.asyncio
     async def test_recover_restores_refrigerant_low_targets(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
@@ -309,7 +302,6 @@ class TestLowRefrigerantFault:
         assert sensor.target_on == original["target_on"]
         assert sensor.target_off == original["target_off"]
 
-    @pytest.mark.asyncio
     async def test_activate_publishes_halt_event(self):
         sim = IceMakerSimulator()
         published = []
@@ -345,7 +337,6 @@ class TestLowRefrigerantFault:
 
 
 class TestWaterInletBlockedFault:
-    @pytest.mark.asyncio
     async def test_activate_pins_water_bath_target(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
@@ -354,7 +345,6 @@ class TestWaterInletBlockedFault:
         assert sensor.target_on == 20.0
         assert sensor.target_off == 20.0
 
-    @pytest.mark.asyncio
     async def test_recover_restores_water_bath_targets(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
@@ -365,7 +355,6 @@ class TestWaterInletBlockedFault:
         assert sensor.target_on == original["target_on"]
         assert sensor.target_off == original["target_off"]
 
-    @pytest.mark.asyncio
     async def test_activate_publishes_halt_event(self):
         sim = IceMakerSimulator()
         published = []
@@ -388,7 +377,6 @@ class TestDefrostStuckPerValve:
     async def _force_active(cls, sim, valve: int, client) -> None:
         await sim.activate_fault(client, cls._fault_def(sim, valve), recover_in=9e9)
 
-    @pytest.mark.asyncio
     async def test_activate_pins_only_that_valve(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
@@ -401,7 +389,6 @@ class TestDefrostStuckPerValve:
         assert v2.target_on == original["target_on"]
         assert v2.target_off == original["target_off"]
 
-    @pytest.mark.asyncio
     async def test_recover_restores_only_that_valve(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
@@ -412,7 +399,6 @@ class TestDefrostStuckPerValve:
         assert v2.target_on == original["target_on"]
         assert v2.target_off == original["target_off"]
 
-    @pytest.mark.asyncio
     async def test_activate_and_recover_publish_no_events(self):
         """Dumb machine: a stuck valve never self-reports."""
         sim = IceMakerSimulator()
@@ -478,7 +464,6 @@ class TestAckedBounded:
     `IDEMPOTENCY_CACHE_SIZE` (32), not the ice maker's former private
     `_ACKED_MAX` (256, deleted along with `_acked` itself)."""
 
-    @pytest.mark.asyncio
     async def test_acked_stays_bounded(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
         from ice_sims.base import IDEMPOTENCY_CACHE_SIZE
@@ -495,7 +480,6 @@ class TestAckedBounded:
             await sim.handle_command(client, cmd)
         assert len(sim._acked) <= limit
 
-    @pytest.mark.asyncio
     async def test_acked_keeps_most_recent_entries(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
         from ice_sims.base import IDEMPOTENCY_CACHE_SIZE
@@ -566,7 +550,6 @@ class TestMonitorContract:
         ids = [c.channel_id for c in self._sim().build_capabilities().channels]
         assert len(ids) == len(set(ids))
 
-    @pytest.mark.asyncio
     async def test_power_cycle_ok_then_lockout(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
@@ -598,7 +581,6 @@ class TestMonitorContract:
         assert acks[-1].status == "rejected"
         assert acks[-1].detail == "lockout"
 
-    @pytest.mark.asyncio
     async def test_duplicate_request_id_reacks_without_reexecuting(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
@@ -622,7 +604,6 @@ class TestMonitorContract:
         assert len(published) == first_ack_count + 1  # re-acked
         assert sim._publish_interval == 99.0  # NOT re-executed
 
-    @pytest.mark.asyncio
     async def test_set_interval_changes_publish_interval(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
@@ -639,7 +620,6 @@ class TestMonitorContract:
         )
         assert sim._publish_interval == 30.0
 
-    @pytest.mark.asyncio
     async def test_set_interval_republishes_capabilities(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
@@ -662,7 +642,6 @@ class TestMonitorContract:
         assert ("capabilities/ice_maker", True) in published
         assert published[-1][0] == "cmd/ice_maker/ack"
 
-    @pytest.mark.asyncio
     async def test_force_report_publishes_snapshot_and_acks(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
@@ -684,7 +663,6 @@ class TestMonitorContract:
         assert "telemetry/ice_maker/bin_level" in suffixes
         assert suffixes[-1] == "cmd/ice_maker/ack"
 
-    @pytest.mark.asyncio
     async def test_snapshot_publishes_readings_at_qos_0(self):
         sim = self._sim()
         client = AsyncMock()
@@ -729,7 +707,6 @@ class TestStandardCommandsFromSharedLoop:
     (including a hypothetical "ping") as `force_report`, so these tests are
     written to fail against that fallback, not just to fail on import."""
 
-    @pytest.mark.asyncio
     async def test_ping_acks_ok_with_no_snapshot_side_effect(self):
         """A real ping is a round trip only — no sensor snapshot published.
 
@@ -759,7 +736,6 @@ class TestStandardCommandsFromSharedLoop:
         assert ack.status == "ok"
         assert ack.result is None
 
-    @pytest.mark.asyncio
     async def test_self_test_result_has_checks_for_all_five_faults(self):
         """Against the pre-Task-8 fallback, `ack.result` is always None
         (the old `else` branch's CommandAck never set `result`), so
@@ -784,7 +760,6 @@ class TestStandardCommandsFromSharedLoop:
         }
         assert all(c["pass"] for c in checks)
 
-    @pytest.mark.asyncio
     async def test_self_test_fails_exactly_the_injected_fault(self):
         """Guards against a stale snapshot: activate a fault mid-flight and
         confirm the check that fails is the one just activated, not a fixed
@@ -803,7 +778,6 @@ class TestStandardCommandsFromSharedLoop:
         failing = {c["name"] for c in ack.result["checks"] if not c["pass"]}
         assert failing == {"low_refrigerant"}
 
-    @pytest.mark.asyncio
     async def test_force_report_now_also_republishes_the_heartbeat(self):
         """New in the base class's force_report (Task 6): the heartbeat is
         republished via `client.publish` directly, ahead of the subclass's
@@ -829,7 +803,6 @@ class TestStandardCommandsFromSharedLoop:
 
 
 class TestPowerCycleIdempotency:
-    @pytest.mark.asyncio
     async def test_duplicate_request_id_does_not_power_cycle_twice(self):
         """Counts the observable side effect (the commanded power_off event
         appended to `_pending_events`) rather than just comparing two acks:

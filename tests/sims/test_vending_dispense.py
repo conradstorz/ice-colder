@@ -117,7 +117,6 @@ def _water_profile(lag_seconds: float = 5.0) -> WaterFillProfile:
     )
 
 
-@pytest.mark.asyncio
 async def test_execute_profile_runs_a_bagged_ice_profile_on_a_fake_board():
     board = ListBoard()
     cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=_ice_profile())
@@ -134,7 +133,6 @@ async def test_execute_profile_runs_a_bagged_ice_profile_on_a_fake_board():
     assert 17.0 in board.sleeps
 
 
-@pytest.mark.asyncio
 async def test_dispenser_and_simulator_yield_the_same_event_sequence():
     cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=_ice_profile())
 
@@ -157,7 +155,6 @@ async def test_dispenser_and_simulator_yield_the_same_event_sequence():
     assert [e for e in board.events if e[0] in {"hw", "status"}] == sim_events
 
 
-@pytest.mark.asyncio
 async def test_second_run_is_not_switched_off_by_the_first_runs_lag():
     """C4: one `Dispenser`, two runs, each through its own board. Run 1's
     lag-off is gated; run 2 claims the accessory back and cancels it."""
@@ -186,7 +183,6 @@ async def test_second_run_is_not_switched_off_by_the_first_runs_lag():
     assert dispenser.pending_lag_off == {}
 
 
-@pytest.mark.asyncio
 async def test_motor_stall_fault_is_read_from_the_board():
     board = ListBoard(faults={"motor_stall"})
     cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=_ice_profile())
@@ -196,7 +192,6 @@ async def test_motor_stall_fault_is_read_from_the_board():
     assert ("status", "error", "stall 10.0 A") in board.events
 
 
-@pytest.mark.asyncio
 async def test_dispense_handler_drives_its_one_dispenser_through_a_fresh_board():
     sim = VendingMachineSimulator()
     run = AsyncMock()
@@ -237,7 +232,6 @@ def _hw_events(board: ListBoard) -> list[tuple[str, bool]]:
     return [e[1:] for e in board.events if e[0] == "hw"]
 
 
-@pytest.mark.asyncio
 async def test_catch_release_holds_the_catch_through_the_fill_and_drops_the_bag():
     board = ListBoard()
 
@@ -254,7 +248,6 @@ async def test_catch_release_holds_the_catch_through_the_fill_and_drops_the_bag(
     assert board.events.index(("hw", "trap_door_catch", False)) < terminal
 
 
-@pytest.mark.asyncio
 async def test_auger_jam_still_leaves_the_catch_de_energized():
     board = ListBoard(faults={"auger_jam"})
 
@@ -265,7 +258,6 @@ async def test_auger_jam_still_leaves_the_catch_de_energized():
     assert catch == [True, False]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("fault", ["motor_stall", "ice_bin_empty"])
 async def test_every_failure_path_de_energizes_the_catch(fault):
     board = ListBoard(faults={fault})
@@ -277,7 +269,6 @@ async def test_every_failure_path_de_energizes_the_catch(fault):
     assert catch[-1] is False
 
 
-@pytest.mark.asyncio
 async def test_a_stuck_water_valve_never_leaves_the_catch_energized():
     board = ListBoard(faults={"water_valve_stuck_open", "motor_stall"})
 
@@ -289,7 +280,6 @@ async def test_a_stuck_water_valve_never_leaves_the_catch_energized():
     assert _statuses(board)[-1] == "error"  # the stall's failure outcome
 
 
-@pytest.mark.asyncio
 async def test_a_cancelled_catch_vend_de_energizes_the_catch():
     gate = asyncio.Event()
     board = ListBoard(gate=gate)
@@ -307,7 +297,6 @@ async def test_a_cancelled_catch_vend_de_energizes_the_catch():
     assert ("hw", "trap_door_catch", False) in board.events
 
 
-@pytest.mark.asyncio
 async def test_ice_bin_empty_runs_the_fill_to_its_max_time_and_reports_bin_empty():
     board = ListBoard(faults={"ice_bin_empty"})
 
@@ -319,7 +308,6 @@ async def test_ice_bin_empty_runs_the_fill_to_its_max_time_and_reports_bin_empty
     assert not any(e[0] == "publish" and "bin" in e[1] for e in board.events)
 
 
-@pytest.mark.asyncio
 async def test_sensor_release_variant_still_works_on_declared_channels():
     profile = _ice_profile().model_copy(deep=True)
     profile.release = ReleaseBySensor(
@@ -340,7 +328,6 @@ async def test_sensor_release_variant_still_works_on_declared_channels():
     assert ("service_door", True) in _hw_events(board)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("slot, gallons", [(1, 3.785), (2, 18.927)])
 async def test_water_vend_counts_fill_pulses_to_the_target(slot, gallons):
     board = ListBoard()
@@ -365,7 +352,6 @@ async def test_water_vend_counts_fill_pulses_to_the_target(slot, gallons):
     assert board.draws == [pytest.approx(gallons / 3.785411784, rel=0.001)]
 
 
-@pytest.mark.asyncio
 async def test_profile_naming_an_undeclared_channel_errors_without_driving_anything():
     profile = _ice_profile().model_copy(deep=True)
     profile.release = ReleaseBySensor(
@@ -389,7 +375,6 @@ async def test_profile_naming_an_undeclared_channel_errors_without_driving_anyth
     assert "door_sensor" in statuses[0][2]
 
 
-@pytest.mark.asyncio
 async def test_profile_driving_a_declared_input_errors_without_driving_anything():
     profile = _ice_profile().model_copy(deep=True)
     profile.agitate.motor_channel = "bag_full_sensor"  # an input
@@ -405,7 +390,6 @@ async def test_profile_driving_a_declared_input_errors_without_driving_anything(
     assert "bag_full_sensor" in statuses[0][2]
 
 
-@pytest.mark.asyncio
 async def test_a_profile_sensing_a_current_channel_is_refused():
     profile = _ice_profile().model_copy(deep=True)
     profile.agitate.stall_current_amps = 5.0

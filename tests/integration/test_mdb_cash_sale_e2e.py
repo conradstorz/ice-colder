@@ -48,7 +48,6 @@ async def _broker_reachable() -> bool:
 
 
 pytestmark = [
-    pytest.mark.asyncio,
     pytest.mark.skipif(
         not asyncio.run(_broker_reachable()),
         reason="MQTT broker not available on localhost:1883",
