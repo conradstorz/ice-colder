@@ -4,9 +4,11 @@ import json
 import re
 import shutil
 import tarfile
+from datetime import timedelta
 
 import pytest
 
+from ice_cloud.store import AlertEventRow
 from ice_ui.bundle import INSTALLED_ROOT, build_bundle
 from tests.cloud.conftest import (
     marked_bundle,
@@ -20,7 +22,7 @@ from tests.cloud.conftest import (
     short,
     signed,
 )
-from tests.cloud.sql_helpers import cloud_db, grant_tech
+from tests.cloud.sql_helpers import cloud_db, grant_tech, record_alert_events
 from tests.cloud.reports import make_report
 
 
@@ -70,6 +72,68 @@ def test_fleet_lists_only_my_machines_with_roles(cloud):
     assert ">owner<" in page.text and ">tech<" in page.text
     assert "Online" in page.text and "1 active fault" in page.text
     assert 'href="/claim"' in page.text
+
+
+def _alert(fp, at, kind="raised"):
+    return AlertEventRow(
+        fingerprint=fp,
+        kind=kind,
+        at=at,
+        key="WTR-1:machine",
+        code="WTR-1",
+        severity="critical",
+        gate="safety",
+        description="Sump high",
+        sku=None,
+        product=None,
+    )
+
+
+def test_fleet_shows_each_machines_own_alert_count(cloud):
+    a, b, c = Signer(), Signer(), Signer()
+    owner = login(cloud, "owner@example.com")
+    for s, name in ((a, "m-A"), (b, "m-B"), (c, "m-C")):
+        push(cloud, s, make_report(machine_id=name))
+        claim(cloud, s, owner)
+    now = cloud.app.state.now()
+    record_alert_events(
+        cloud_db(cloud),
+        [
+            _alert(a.fingerprint, now),
+            _alert(a.fingerprint, now - timedelta(hours=1)),
+            _alert(a.fingerprint, now - timedelta(hours=30)),
+            _alert(a.fingerprint, now, kind="cleared"),
+            _alert(b.fingerprint, now, kind="offline"),
+        ],
+    )
+    text = cloud.get("/fleet").text
+    rows = {label: text.index(label) for label in ("m-A", "m-B", "m-C")}
+    ordered = sorted(rows, key=rows.get)
+    segment = {
+        label: text[rows[label] : rows[nxt]] for label, nxt in zip(ordered, ordered[1:])
+    }
+    assert "2 alerts / 24 h" in segment["m-A"]
+    assert "1 alerts / 24 h" in segment["m-B"]
+    assert "0 alerts / 24 h" in text[rows[ordered[-1]] :]
+
+
+def test_fleet_reads_alert_counts_in_one_query(cloud, monkeypatch):
+    a, b, c = Signer(), Signer(), Signer()
+    owner = login(cloud, "owner@example.com")
+    for s, name in ((a, "m-A"), (b, "m-B"), (c, "m-C")):
+        push(cloud, s, make_report(machine_id=name))
+        claim(cloud, s, owner)
+    repo = cloud.app.state.repo
+    real = repo.alert_counts_since
+    calls = []
+
+    def spy(since):
+        calls.append(since)
+        return real(since)
+
+    monkeypatch.setattr(repo, "alert_counts_since", spy)
+    assert cloud.get("/fleet").status_code == 200
+    assert len(calls) == 1
 
 
 def test_fleet_empty_state_still_offers_claim(cloud):

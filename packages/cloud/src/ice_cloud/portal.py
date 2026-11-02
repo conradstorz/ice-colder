@@ -228,6 +228,9 @@ async def fleet(request: Request, account: Account = Depends(require_signed_in))
             -views[e[0].fingerprint].timestamp() if e[0].fingerprint in views else 0.0,
         )
     )
+    alert_counts = await asyncio.to_thread(
+        state.repo.alert_counts_since, state.now() - timedelta(hours=24)
+    )
     rows = []
     for machine, role in entries:
         report = await asyncio.to_thread(state.store.latest, machine.fingerprint)
@@ -244,11 +247,7 @@ async def fleet(request: Request, account: Account = Depends(require_signed_in))
                     else ""
                 ),
                 "fault_line": _fault_count(report) if report is not None else "",
-                "alerts_24h": await asyncio.to_thread(
-                    state.repo.alert_count_since,
-                    machine.fingerprint,
-                    state.now() - timedelta(hours=24),
-                ),
+                "alerts_24h": alert_counts.get(machine.fingerprint, 0),
             }
         )
     ui = _resolve(request, None)

@@ -496,7 +496,7 @@ def test_record_and_list_alert_events_newest_first(repo, db_path):
     assert repo.alert_events(FP_2, limit=10) == []
 
 
-def test_alert_count_since_counts_raised_and_offline_only(repo, db_path):
+def test_alert_counts_since_counts_raised_and_offline_only(repo, db_path):
     repo.register_machine(FP, KEY, "a", T0)
     record_alert_events(
         db_path,
@@ -508,7 +508,7 @@ def test_alert_count_since_counts_raised_and_offline_only(repo, db_path):
             _event(kind="online", at=T0),
         ],
     )
-    assert repo.alert_count_since(FP, T0 - timedelta(hours=24)) == 2
+    assert repo.alert_counts_since(T0 - timedelta(hours=24)) == {FP: 2}
 
 
 def test_people_for_alerts_owner_first_then_techs_with_muted(repo, db_path):

@@ -981,16 +981,6 @@ class SqliteRepository:
             ).fetchall()
         return [(_event(r), _machine(r)) for r in rows]
 
-    def alert_count_since(self, fingerprint: str, since: datetime) -> int:
-        """Events at or after ``since``, counting ``raised`` and ``offline`` only
-        (neither ``cleared`` nor ``online`` is an alert)."""
-        with self._connect() as conn:
-            return conn.execute(
-                "SELECT COUNT(*) AS n FROM alert_events WHERE fingerprint = ?"
-                " AND at >= ? AND kind NOT IN ('cleared', 'online')",
-                (fingerprint, _iso(since)),
-            ).fetchone()["n"]
-
     def cleared_since_last_sent(
         self, fingerprint: str, account_id: str
     ) -> list[StoredEvent]:
