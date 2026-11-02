@@ -58,7 +58,7 @@ class SessionSnapshot:
     selected_sku: Optional[str] = None
     dispense_slot: Optional[int] = None
     # The dispense mechanism in flight ("bagged_ice"/"water_fill"), set from
-    # VMC._sale_mechanism at the moment _snapshot() is built (plan: dispenser
+    # VMC._sale_mechanism at the moment snapshot() is built (plan: dispenser
     # profiles, Task 3). Additive and defaults to None, so a snapshot written
     # before this field existed -- which has no "dispense_mechanism" key at
     # all -- still loads via SessionSnapshot(**raw).
@@ -71,7 +71,7 @@ class SessionSnapshot:
     pending_sale_shares: Optional[dict[str, int]] = None
     # True only for TestSaleRunner.run_test_sale's simulated sale (system-tests design
     # §2.3/§6), set from the sale's own self._sale_is_test at the moment
-    # VMC._snapshot() is built -- never derived from the maintenance lease,
+    # VMC.snapshot() is built -- never derived from the maintenance lease,
     # which (per spec §6) is never persisted and so has nothing to consult
     # after a restart. Defaults False so a snapshot written before this
     # field existed -- which has no "is_test" key at all -- loads as a

@@ -715,7 +715,7 @@ async def test_snapshot_records_mechanism(tmp_path):
     await asyncio.sleep(0)
 
     # vmc.snapshot() is the public, read-only wrapper over the VMC's
-    # private _snapshot() (VMC public surface design, section 3, Task 2).
+    # private snapshot() (VMC public surface design, section 3, Task 2).
     snap = vmc.snapshot()
 
     assert snap.dispense_mechanism == "bagged_ice"

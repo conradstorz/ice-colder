@@ -128,9 +128,6 @@ class VMC:
 
     def snapshot(self, state: str | None = None) -> SessionSnapshot:
         """Build a `SessionSnapshot` of the current live state (pure, no side effects)."""
-        return self._snapshot(state)
-
-    def _snapshot(self, state: str | None = None) -> SessionSnapshot:
         product = self.selected_product
         effective_state = state or self.state
         return SessionSnapshot(
@@ -505,7 +502,7 @@ class VMC:
         if self._tasks.loop and self.selected_product:
             self._cycle = self._dispense_factory(self._sale)
             self._cycle.start(
-                lambda s: self._snapshot(s) if self._outputs.session_store else None
+                lambda s: self.snapshot(s) if self._outputs.session_store else None
             )
 
     @logger.catch()
