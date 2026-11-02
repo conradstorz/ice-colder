@@ -25,7 +25,7 @@ WATER = Product(sku="WATER-1GAL", slot=2, kind="water")
 GOOD = """\
 # dispensers.toml — physical dispense parameters, one table per slot.
 # Generated reference: dispensers.example.toml. Validate with
-#   uv run python -m ice_edge.vend.dispensers --check
+#   uv run python -m ice_edge.vend --check
 schema_version = 1
 
 [slot.1]

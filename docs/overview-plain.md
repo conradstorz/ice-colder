@@ -163,7 +163,7 @@ All Python work goes through `uv`. Firmware work goes through PlatformIO from th
 | Run the whole machine in Docker, with simulators and broker | `docker compose up --build` |
 | Run the tests | `uv run pytest` |
 | Lint and format | `uv run ruff check --fix .` then `uv run ruff format .` |
-| Check a dispenser profile file | `uv run python -m ice_edge.vend.dispensers --check` |
+| Check a dispenser profile file | `uv run python -m ice_edge.vend --check` |
 | Build the vending firmware | `pio run -e kc868-a8` in `firmware/vending/` |
 | Build the MDB firmware | `pio run -e esp32-s3-devkitc-1` in `firmware/mdb/` |
 | Firmware host tests | `pio test -e native` in either firmware folder |
