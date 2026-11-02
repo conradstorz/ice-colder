@@ -1,0 +1,15 @@
+# Contracts (`ice_contracts`)
+
+Scoped `CLAUDE.md`, loaded when working under `packages/contracts/`. Moved from the root `CLAUDE.md`; project-wide rules stay there.
+
+## Fault Codes and Severity
+
+`DATA-101` (sale write failed; held in fallback file) and `DATA-102` (event database was reset after corruption; history before the reset is lost) are both **alert-class** (`Severity.warning`, `Scope.machine`) and are **deliberately absent from `PAYMENT_BLOCKING_FAULTS`**. Neither fault can ever stop the machine taking money. Both are registered in `packages/contracts/src/ice_contracts/board/vending_machine.py`.
+
+`DATA-104` (session snapshot could not be saved; a crash now would lose the live sale's evidence) is the same alert class, absent from `PAYMENT_BLOCKING_FAULTS`, raised by `Machine` when `StatusOutputs` reports a failed snapshot write and cleared by the next successful one; it rode in the same 2.2.0 contract entry as `DATA-103`.
+
+`DATA-105` (an event row could not be written; KPIs and history may be incomplete) and `DATA-106` (inventory counts could not be saved; stock levels revert on restart) are the same alert class, absent from `PAYMENT_BLOCKING_FAULTS`, added in contract 2.3.0 (additive). `EventRecorder.set_write_observers(on_failed, on_ok)` is called from the writer thread after a failed insert (`on_ok` only on the first success after a failure) and `InventoryManager.set_save_observers` likewise from `_save`; `Machine.set_event_recorder`/`set_inventory_manager` wire them to raise `DATA-105`/`DATA-106` once and clear them `by="auto"`, hopping to the event loop with `call_soon_threadsafe` (directly when no loop is attached).
+
+`DATA-103` (event database could not be initialised; writes are still attempted and a failed sale write is journalled to the fallback file, the DATA-101 path) is the same alert class and also absent from `PAYMENT_BLOCKING_FAULTS`; it is raised by `reconcile_sales_journal_faults` when `EventRecorder` could not open `events.db` for a non-corruption reason (read-only volume, locked, unopenable path), which no longer stops startup and never renames the file aside. It is not auto-cleared in that process. When the cause is a schema newer than the build knows (`EventRecorder.db_newer_than_code`, a downgrade), the database is read-only: `record_sale` appends the sale to the journal without inserting, `replay_sales_journal` returns 0 and leaves the file, and queued event rows are discarded. Cash collections have no journal, so one made in that state is logged as an error and not recorded; the right build replays the journal on its next start. Adding it bumped `CONTRACT_VERSION` 2.1.0 -> 2.2.0 (additive). An unhandled exception in `main()` now exits 1 rather than 0.
+
+`PAYMENT_BLOCKING_FAULTS` holds **seven** codes: `ICE-402`, `WTR-103`, `WTR-104`, `ENV-102`, `ENV-103`, `PWR-102`, and `SVC-102` (the maintenance lease, above). `SVC-102` is the one member that is not `critical` severity — it is a deliberate operator-held lease rather than a hardware failure, and it clears itself the moment the lease is released; membership in the frozenset, not severity, is what gates payment.
