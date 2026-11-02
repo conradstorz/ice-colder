@@ -20,7 +20,8 @@ static const BoardIdentity kIdentity = {"vending", "vend> ", "vend", true};
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "firmware %s", vendcore::kFirmwareVersion);
     static Settings settings;
-    boardidf::board_boot(kIdentity, settings, polarity_register);
+    polarity_register();
+    boardidf::board_boot(kIdentity, settings, nullptr);
 
     QueueHandle_t cmd_q = xQueueCreate(8, sizeof(CmdItem));
     QueueHandle_t evt_q = xQueueCreate(128, sizeof(vendcore::Event));

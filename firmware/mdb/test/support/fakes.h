@@ -1,6 +1,7 @@
 // Host-test fakes for the mdbcore ports. Fixed arrays only, no heap.
 #pragma once
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
