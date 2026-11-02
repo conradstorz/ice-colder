@@ -2,12 +2,11 @@
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
-from loguru import logger
 
-from ice_edge.config import config_store
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
+from ice_edge.web.routes.settings.common import save_or_rerender
 from ice_ui.levels import (
     LEVEL_SETTINGS_MACHINE,
 )
@@ -68,9 +67,6 @@ async def update_machine(
     physical.common_name = name
     physical.location.address = address
     physical.location.notes = notes
-    try:
-        config_store.save_config(context.config)
-    except Exception as e:
-        logger.error(f"settings/machine: save_config failed: {e}")
-        return _render_machine_form(request, error=f"Could not save changes: {e}")
-    return context.hx_redirect("/settings/machine")
+    return save_or_rerender(
+        "machine", lambda error: _render_machine_form(request, error=error)
+    )

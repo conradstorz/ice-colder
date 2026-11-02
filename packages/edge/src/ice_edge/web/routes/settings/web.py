@@ -2,12 +2,11 @@
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
-from loguru import logger
 
-from ice_edge.config import config_store
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
+from ice_edge.web.routes.settings.common import save_or_rerender
 from ice_ui.levels import (
     LEVEL_SETTINGS_WEB,
 )
@@ -68,9 +67,4 @@ async def update_web(
         if line.strip()
     ]
     context.config.web.trusted_proxies = proxies
-    try:
-        config_store.save_config(context.config)
-    except Exception as e:
-        logger.error(f"settings/web: save_config failed: {e}")
-        return _render_web_form(request, error=f"Could not save changes: {e}")
-    return context.hx_redirect("/settings/web")
+    return save_or_rerender("web", lambda error: _render_web_form(request, error=error))

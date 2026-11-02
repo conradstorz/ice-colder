@@ -49,7 +49,13 @@ ROUTER_ATTR = {"auth": "public"}
 # Helper sub-modules: shared code with no routes, so no router of their own.
 # The guard checks instead that no route decorator appears in them.
 HELPER_MODULES = frozenset(
-    {"products.helpers", "reports.compute", "reports.helpers", "settings.secrets"}
+    {
+        "products.helpers",
+        "reports.compute",
+        "reports.helpers",
+        "settings.common",
+        "settings.secrets",
+    }
 )
 
 _ROUTE_DECORATOR_ATTRS = frozenset(

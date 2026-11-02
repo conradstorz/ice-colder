@@ -2,14 +2,13 @@
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
-from loguru import logger
 from pydantic import ValidationError
 
 from ice_common.config_model import ReportsConfig
-from ice_edge.config import config_store
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
+from ice_edge.web.routes.settings.common import save_or_rerender
 from ice_ui.levels import (
     LEVEL_SETTINGS_REPORTS,
 )
@@ -124,9 +123,6 @@ async def update_reports(
         )
 
     context.config.reports = new_reports
-    try:
-        config_store.save_config(context.config)
-    except Exception as e:
-        logger.error(f"settings/reports: save_config failed: {e}")
-        return _render_reports_form(request, error=f"Could not save changes: {e}")
-    return context.hx_redirect("/settings/reports")
+    return save_or_rerender(
+        "reports", lambda error: _render_reports_form(request, error=error)
+    )

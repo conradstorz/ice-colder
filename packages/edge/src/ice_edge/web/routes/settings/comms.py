@@ -2,14 +2,13 @@
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
-from loguru import logger
 from pydantic import SecretStr
 
-from ice_edge.config import config_store
 from ice_edge.access.access import Permission
 from ice_edge.notify.mailer import send_email
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
+from ice_edge.web.routes.settings.common import save_or_rerender
 from ice_ui.levels import (
     LEVEL_SETTINGS_COMMS,
 )
@@ -84,12 +83,9 @@ async def update_comms(
     if _secret_changed(sms_auth_token):
         sms.auth_token = SecretStr(sms_auth_token)
 
-    try:
-        config_store.save_config(context.config)
-    except Exception as e:
-        logger.error(f"settings/comms: save_config failed: {e}")
-        return _render_comms_form(request, error=f"Could not save changes: {e}")
-    return context.hx_redirect("/settings/comms")
+    return save_or_rerender(
+        "comms", lambda error: _render_comms_form(request, error=error)
+    )
 
 
 @router.post(
