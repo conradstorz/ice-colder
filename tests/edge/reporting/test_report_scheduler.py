@@ -35,98 +35,25 @@ suppressing branch cannot be passing merely because it was never reached.
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from ice_common.config_model import ConfigModel
 from ice_edge.reporting import report_scheduler
 from ice_edge.ledger.event_recorder import EventRecorder
+from tests.edge.reporting.tz import (
+    FIXED_TZ,
+    SyntheticDstTz,
+    SyntheticFallBackTz,
+    fixed_dt,
+)
 
-# A fixed, deterministic offset -- not the machine's own timezone -- so every
-# assertion below is independent of whatever system runs the suite. Mirrors
-# tests/test_reports.py's own FIXED_TZ convention.
-FIXED_TZ = timezone(timedelta(hours=-5))
-
-
-def _dt(year, month, day, hour=0, minute=0, second=0):
-    return datetime(year, month, day, hour, minute, second, tzinfo=FIXED_TZ)
-
-
-# --------------------------------------------------------------------------
-# Synthetic DST tzinfo doubles for Finding 2 -- mirrors
-# tests/test_reports.py's own `_SyntheticDstTz`/`_SyntheticFallBackTz`
-# (duplicated here rather than imported, since this task's permitted file
-# list does not include that test module, and `zoneinfo.ZoneInfo` is not
-# usable on this machine -- no tzdata installed, and adding the `tzdata`
-# package is forbidden, no new runtime dependency; `pyproject.toml`/
-# `uv.lock` must not change). See that module's docstrings for the full
-# rationale of the `fromutc`-returns-a-frozen-snapshot design (it is what
-# makes these classes reproduce the *specific* bug under review, matching
-# what `datetime.astimezone(None)` actually returns in production, rather
-# than a "fully dynamic" tzinfo that would self-correct even under the
-# unfixed code and prove nothing).
-# --------------------------------------------------------------------------
-
-
-class _SyntheticSpringForwardTz(tzinfo):
-    """One hard-coded UTC transition instant: UTC-5 before, UTC-4 after --
-    mirrors US Eastern's 2026-03-08 spring-forward (02:00 EST -> 03:00 EDT)."""
-
-    _TRANSITION_UTC = datetime(2026, 3, 8, 7, 0, 0)  # 02:00 EST == 03:00 EDT
-    _BEFORE = timedelta(hours=-5)  # EST
-    _AFTER = timedelta(hours=-4)  # EDT
-
-    def fromutc(self, dt):
-        naive_utc = dt.replace(tzinfo=None)
-        offset = self._BEFORE if naive_utc < self._TRANSITION_UTC else self._AFTER
-        return (dt + offset).replace(tzinfo=timezone(offset))
-
-    def utcoffset(self, dt):
-        if dt is None:
-            return self._BEFORE
-        naive_local = dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-        local_before_boundary = self._TRANSITION_UTC + self._BEFORE  # 02:00 local
-        return self._BEFORE if naive_local < local_before_boundary else self._AFTER
-
-    def dst(self, dt):
-        return timedelta(0)
-
-    def tzname(self, dt):
-        return "SYN-SPRING"
-
-
-SPRING_FORWARD_TZ = _SyntheticSpringForwardTz()
-
-
-class _SyntheticFallBackTz(tzinfo):
-    """Mirror image: offset *decreases* across the transition -- mirrors US
-    Eastern's 2026-11-01 fall-back (02:00 EDT -> 01:00 EST, both == 06:00 UTC)."""
-
-    _TRANSITION_UTC = datetime(2026, 11, 1, 6, 0, 0)  # 02:00 EDT == 01:00 EST
-    _BEFORE = timedelta(hours=-4)  # EDT
-    _AFTER = timedelta(hours=-5)  # EST
-
-    def fromutc(self, dt):
-        naive_utc = dt.replace(tzinfo=None)
-        offset = self._BEFORE if naive_utc < self._TRANSITION_UTC else self._AFTER
-        return (dt + offset).replace(tzinfo=timezone(offset))
-
-    def utcoffset(self, dt):
-        if dt is None:
-            return self._BEFORE
-        naive_local = dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-        local_before_boundary = self._TRANSITION_UTC + self._BEFORE  # 02:00 local
-        return self._BEFORE if naive_local < local_before_boundary else self._AFTER
-
-    def dst(self, dt):
-        return timedelta(0)
-
-    def tzname(self, dt):
-        return "SYN-FALLBACK"
-
-
-FALL_BACK_TZ = _SyntheticFallBackTz()
+# Shared synthetic DST doubles (tests/edge/reporting/tz.py): the spring-forward
+# and fall-back instants, and FIXED_TZ, which keeps every assertion below
+# independent of the machine's own timezone.
+SPRING_FORWARD_TZ = SyntheticDstTz()
+FALL_BACK_TZ = SyntheticFallBackTz()
 
 
 def _config(
@@ -173,25 +100,25 @@ def test_compute_next_due_off_returns_none():
     config = _config(schedule="off", hour=7, weekday=2)
     # An hour/weekday that WOULD be due if the schedule were on, proving
     # "off" is not merely "never reached this hour" by coincidence.
-    now = _dt(2026, 9, 20, 12, 0, 0)
+    now = fixed_dt(2026, 9, 20, 12, 0, 0)
     assert report_scheduler.compute_next_due(config, now) is None
 
 
 def test_compute_next_due_daily_before_hour_is_not_yet_due():
     config = _config(schedule="daily", hour=7)
-    now = _dt(2026, 9, 20, 6, 59, 59)
+    now = fixed_dt(2026, 9, 20, 6, 59, 59)
     due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert due is not None
-    assert due.due_at == _dt(2026, 9, 20, 7, 0, 0)
+    assert due.due_at == fixed_dt(2026, 9, 20, 7, 0, 0)
     assert now < due.due_at
-    assert due.period_start == _dt(2026, 9, 19, 0, 0, 0)
-    assert due.period_end == _dt(2026, 9, 20, 0, 0, 0)
+    assert due.period_start == fixed_dt(2026, 9, 19, 0, 0, 0)
+    assert due.period_end == fixed_dt(2026, 9, 20, 0, 0, 0)
     assert due.period_key == "daily:2026-09-19"
 
 
 def test_compute_next_due_daily_exactly_at_hour_is_due():
     config = _config(schedule="daily", hour=7)
-    now = _dt(2026, 9, 20, 7, 0, 0)
+    now = fixed_dt(2026, 9, 20, 7, 0, 0)
     due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert due.due_at == now
     assert now >= due.due_at
@@ -200,10 +127,10 @@ def test_compute_next_due_daily_exactly_at_hour_is_due():
 
 def test_compute_next_due_daily_just_after_hour_is_due():
     config = _config(schedule="daily", hour=7)
-    now = _dt(2026, 9, 20, 9, 0, 0)
+    now = fixed_dt(2026, 9, 20, 9, 0, 0)
     due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert now >= due.due_at
-    assert due.due_at == _dt(2026, 9, 20, 7, 0, 0)
+    assert due.due_at == fixed_dt(2026, 9, 20, 7, 0, 0)
     assert due.period_key == "daily:2026-09-19"
 
 
@@ -211,18 +138,18 @@ def test_compute_next_due_weekly_before_hour_on_configured_weekday():
     # weekday=2 -> Wednesday (Monday-based, matches date.weekday()).
     # 2026-09-16 is a Wednesday.
     config = _config(schedule="weekly", hour=9, weekday=2)
-    now = _dt(2026, 9, 16, 8, 59, 59)
+    now = fixed_dt(2026, 9, 16, 8, 59, 59)
     due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
-    assert due.due_at == _dt(2026, 9, 16, 9, 0, 0)
+    assert due.due_at == fixed_dt(2026, 9, 16, 9, 0, 0)
     assert now < due.due_at
-    assert due.period_start == _dt(2026, 9, 9, 0, 0, 0)
-    assert due.period_end == _dt(2026, 9, 16, 0, 0, 0)
+    assert due.period_start == fixed_dt(2026, 9, 9, 0, 0, 0)
+    assert due.period_end == fixed_dt(2026, 9, 16, 0, 0, 0)
     assert due.period_key == "weekly:2026-09-09"
 
 
 def test_compute_next_due_weekly_exactly_at_hour_is_due():
     config = _config(schedule="weekly", hour=9, weekday=2)
-    now = _dt(2026, 9, 16, 9, 0, 0)
+    now = fixed_dt(2026, 9, 16, 9, 0, 0)
     due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert now >= due.due_at
     assert due.period_key == "weekly:2026-09-09"
@@ -234,9 +161,9 @@ def test_compute_next_due_weekly_on_a_later_weekday_same_cycle():
     # unchanged from the Wednesday itself, and always due by now regardless
     # of time-of-day (the occurrence's own hour has necessarily passed).
     config = _config(schedule="weekly", hour=9, weekday=2)
-    now = _dt(2026, 9, 18, 0, 0, 1)
+    now = fixed_dt(2026, 9, 18, 0, 0, 1)
     due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
-    assert due.due_at == _dt(2026, 9, 16, 9, 0, 0)
+    assert due.due_at == fixed_dt(2026, 9, 16, 9, 0, 0)
     assert now >= due.due_at
     assert due.period_key == "weekly:2026-09-09"
 
@@ -378,7 +305,7 @@ def test_compute_next_due_threads_tz_param_not_now_tzinfo(monkeypatch):
     monkeypatch.setattr(report_scheduler, "to_local", _spy)
 
     config = _config(schedule="daily", hour=7)
-    now = _dt(2026, 9, 20, 9, 0, 0)  # aware in FIXED_TZ, not None
+    now = fixed_dt(2026, 9, 20, 9, 0, 0)  # aware in FIXED_TZ, not None
 
     due = report_scheduler.compute_next_due(config, now)  # tz defaults to None
 
@@ -513,7 +440,7 @@ def test_now_tz_incoherent_silent_on_production_frozen_now_with_tz_none(caplog):
     with `tz=None`. Must NOT warn: `tz=None` is itself the correct, DST-live
     choice, never incoherent with anything."""
     config = _config(schedule="daily", hour=7)
-    now = _dt(2026, 9, 20, 9, 0, 0)  # FIXED_TZ -- a frozen fixed offset
+    now = fixed_dt(2026, 9, 20, 9, 0, 0)  # FIXED_TZ -- a frozen fixed offset
 
     with caplog.at_level("WARNING"):
         due = report_scheduler.compute_next_due(config, now)  # tz defaults to None
@@ -713,11 +640,11 @@ async def test_run_off_schedule_sends_nothing(recorder, fast_sleep):
     mailer = _StubMailer()
     clock = _FakeClock(
         [
-            _dt(2026, 9, 20, 6, 0),
-            _dt(2026, 9, 20, 7, 0),
+            fixed_dt(2026, 9, 20, 6, 0),
+            fixed_dt(2026, 9, 20, 7, 0),
             # 9am is well past hour=7 -- if `off` were somehow ignored this
             # instant would send.
-            _dt(2026, 9, 20, 9, 0),
+            fixed_dt(2026, 9, 20, 9, 0),
         ]
     )
 
@@ -733,10 +660,10 @@ async def test_run_off_schedule_sends_nothing(recorder, fast_sleep):
     # really would be due -- proving `off` is what suppressed the send,
     # not that 9am was never going to be "due" in the first place.
     due = report_scheduler.compute_next_due(
-        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 9, 0), tz=FIXED_TZ
+        _config(schedule="daily", hour=7), fixed_dt(2026, 9, 20, 9, 0), tz=FIXED_TZ
     )
     assert due is not None
-    assert _dt(2026, 9, 20, 9, 0) >= due.due_at
+    assert fixed_dt(2026, 9, 20, 9, 0) >= due.due_at
 
 
 async def test_run_daily_sends_once_and_dedupes_same_period(recorder, fast_sleep):
@@ -746,9 +673,9 @@ async def test_run_daily_sends_once_and_dedupes_same_period(recorder, fast_sleep
     mailer = _StubMailer()
     clock = _FakeClock(
         [
-            _dt(2026, 9, 20, 6, 0),  # not yet due
-            _dt(2026, 9, 20, 9, 0),  # due -> sends
-            _dt(2026, 9, 20, 11, 0),  # same period, already sent -> no resend
+            fixed_dt(2026, 9, 20, 6, 0),  # not yet due
+            fixed_dt(2026, 9, 20, 9, 0),  # due -> sends
+            fixed_dt(2026, 9, 20, 11, 0),  # same period, already sent -> no resend
         ]
     )
 
@@ -819,9 +746,9 @@ async def test_run_writer_thread_dead_does_not_resend_within_same_process(
     mailer = _StubMailer()
     clock = _FakeClock(
         [
-            _dt(2026, 9, 20, 9, 0),  # due -> sends; marker can never land
-            _dt(2026, 9, 20, 11, 0),  # same period -- must not resend
-            _dt(2026, 9, 20, 13, 0),  # same period again -- must not resend
+            fixed_dt(2026, 9, 20, 9, 0),  # due -> sends; marker can never land
+            fixed_dt(2026, 9, 20, 11, 0),  # same period -- must not resend
+            fixed_dt(2026, 9, 20, 13, 0),  # same period again -- must not resend
         ]
     )
 
@@ -867,15 +794,15 @@ async def test_run_dedup_checks_all_sent_periods_not_only_the_latest_row(
 
     clock = _FakeClock(
         [
-            _dt(2026, 9, 20, 9, 0),  # pass 1: daily due -> sends daily:2026-09-19
+            fixed_dt(2026, 9, 20, 9, 0),  # pass 1: daily due -> sends daily:2026-09-19
             # pass 2: switches to weekly right before this instant, which is
             # due for the weekly cycle -> sends a DIFFERENT period, becoming
             # the newest report_sent row.
-            (_dt(2026, 9, 20, 10, 0), _switch_to_weekly),
+            (fixed_dt(2026, 9, 20, 10, 0), _switch_to_weekly),
             # pass 3: switches back to daily right before this instant --
             # daily:2026-09-19 (pass 1's period) is STILL the due period
             # (same calendar day, before the next day's due_at arrives).
-            (_dt(2026, 9, 20, 11, 0), _switch_back_to_daily),
+            (fixed_dt(2026, 9, 20, 11, 0), _switch_back_to_daily),
         ]
     )
 
@@ -900,10 +827,10 @@ async def test_run_dedup_checks_all_sent_periods_not_only_the_latest_row(
     # proving the dedup (not "never reached due") is what stopped the
     # resend.
     due_at_pass3 = report_scheduler.compute_next_due(
-        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 11, 0), tz=FIXED_TZ
+        _config(schedule="daily", hour=7), fixed_dt(2026, 9, 20, 11, 0), tz=FIXED_TZ
     )
     assert due_at_pass3.period_key == "daily:2026-09-19"
-    assert _dt(2026, 9, 20, 11, 0) >= due_at_pass3.due_at
+    assert fixed_dt(2026, 9, 20, 11, 0) >= due_at_pass3.due_at
 
 
 async def test_run_switch_daily_to_off_suppresses_a_send_that_was_due(
@@ -917,10 +844,10 @@ async def test_run_switch_daily_to_off_suppresses_a_send_that_was_due(
 
     clock = _FakeClock(
         [
-            _dt(2026, 9, 20, 6, 0),  # pass 1: not yet due (still daily)
+            fixed_dt(2026, 9, 20, 6, 0),  # pass 1: not yet due (still daily)
             # pass 2: config flips to off right before this instant, which
             # would otherwise be due.
-            (_dt(2026, 9, 20, 9, 0), _turn_off),
+            (fixed_dt(2026, 9, 20, 9, 0), _turn_off),
         ]
     )
 
@@ -933,9 +860,9 @@ async def test_run_switch_daily_to_off_suppresses_a_send_that_was_due(
     # Positive control: the very same instant, under the schedule as it
     # stood right before the flip, genuinely was due.
     due = report_scheduler.compute_next_due(
-        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 9, 0), tz=FIXED_TZ
+        _config(schedule="daily", hour=7), fixed_dt(2026, 9, 20, 9, 0), tz=FIXED_TZ
     )
-    assert _dt(2026, 9, 20, 9, 0) >= due.due_at
+    assert fixed_dt(2026, 9, 20, 9, 0) >= due.due_at
 
 
 async def test_run_switch_off_to_daily_schedules_from_the_new_hour(
@@ -951,12 +878,12 @@ async def test_run_switch_off_to_daily_schedules_from_the_new_hour(
     clock = _FakeClock(
         [
             # 8am is past the OLD default hour (7) but the schedule is off.
-            _dt(2026, 9, 20, 8, 0),
+            fixed_dt(2026, 9, 20, 8, 0),
             # Flips on with a NEW hour (20) right before this instant, which
             # is before the new hour -- must NOT send on the stale hour=7.
-            (_dt(2026, 9, 20, 8, 30), _turn_on_with_new_hour),
+            (fixed_dt(2026, 9, 20, 8, 30), _turn_on_with_new_hour),
             # Past the new hour -> sends.
-            _dt(2026, 9, 20, 21, 0),
+            fixed_dt(2026, 9, 20, 21, 0),
         ]
     )
 
@@ -988,8 +915,8 @@ async def test_run_period_already_sent_is_suppressed_next_period_sends(
     mailer = _StubMailer()
     clock = _FakeClock(
         [
-            _dt(2026, 9, 20, 9, 0),  # due for daily:2026-09-19 -- already sent
-            _dt(2026, 9, 21, 9, 0),  # due for daily:2026-09-20 -- must send
+            fixed_dt(2026, 9, 20, 9, 0),  # due for daily:2026-09-19 -- already sent
+            fixed_dt(2026, 9, 21, 9, 0),  # due for daily:2026-09-20 -- must send
         ]
     )
 
@@ -1025,8 +952,8 @@ async def test_run_startup_catchup_sends_exactly_one_most_recent_period(
     mailer = _StubMailer()
     clock = _FakeClock(
         [
-            _dt(2026, 9, 20, 9, 0),  # "startup": many days after the stale send
-            _dt(2026, 9, 20, 9, 30),  # same day/period -- must NOT resend
+            fixed_dt(2026, 9, 20, 9, 0),  # "startup": many days after the stale send
+            fixed_dt(2026, 9, 20, 9, 30),  # same day/period -- must NOT resend
         ]
     )
 
@@ -1057,9 +984,11 @@ async def test_run_send_failure_retries_at_next_due_period_not_next_pass(
     mailer = _StubMailer(results=[False, True])
     clock = _FakeClock(
         [
-            _dt(2026, 9, 20, 9, 0),  # due for daily:2026-09-19 -> fails
-            _dt(2026, 9, 20, 9, 30),  # SAME period, still due -> must NOT retry
-            _dt(2026, 9, 21, 9, 0),  # NEXT period due (daily:2026-09-20) -> retries
+            fixed_dt(2026, 9, 20, 9, 0),  # due for daily:2026-09-19 -> fails
+            fixed_dt(2026, 9, 20, 9, 30),  # SAME period, still due -> must NOT retry
+            fixed_dt(
+                2026, 9, 21, 9, 0
+            ),  # NEXT period due (daily:2026-09-20) -> retries
         ]
     )
 
@@ -1092,7 +1021,7 @@ async def test_run_recipients_are_owner_plus_extra_deduplicated(recorder, fast_s
         extra_recipients=["owner@example.com", "second@example.com"],
     )
     mailer = _StubMailer()
-    clock = _FakeClock([_dt(2026, 9, 20, 9, 0)])
+    clock = _FakeClock([fixed_dt(2026, 9, 20, 9, 0)])
 
     await _drain(config, recorder, mailer, clock)
 

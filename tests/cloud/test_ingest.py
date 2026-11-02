@@ -21,9 +21,8 @@ from tests.cloud.sql_helpers import CLOUD_DB_NAME, record_alert_events
 
 
 @pytest.fixture
-def client(tmp_path):
-    app = create_app(make_settings(tmp_path))
-    with TestClient(app) as c:
+def client(tmp_path, make_cloud):
+    with make_cloud(make_settings(tmp_path)) as c:
         yield c
 
 
@@ -231,14 +230,13 @@ def _variants(tmp_path, count):
     return out
 
 
-def test_bundle_cap_counts_only_the_last_30_days(tmp_path, signer, clock):
-    app = create_app(make_settings(tmp_path / "cloud"), now=clock)
-    with TestClient(app) as c:
+def test_bundle_cap_counts_only_the_last_30_days(tmp_path, signer, clock, make_cloud):
+    with make_cloud(make_settings(tmp_path / "cloud"), now=clock) as c:
         register(c, signer)
-        owner = app.state.repo.upsert_account_from_login(
+        owner = c.app.state.repo.upsert_account_from_login(
             "sub-o", "o@example.com", "O", clock()
         )
-        app.state.repo.claim_machine(signer.fingerprint, owner.id, clock())
+        c.app.state.repo.claim_machine(signer.fingerprint, owner.id, clock())
         bundles = _variants(tmp_path, 6)
         for digest, data in bundles[:4]:
             assert _put(c, signer, digest, data).status_code == 201
@@ -247,22 +245,23 @@ def test_bundle_cap_counts_only_the_last_30_days(tmp_path, signer, clock):
         assert _put(c, signer, *bundles[4]).status_code == 201
 
 
-def test_digest_the_cloud_already_holds_skips_the_cap(tmp_path, signer, clock):
+def test_digest_the_cloud_already_holds_skips_the_cap(
+    tmp_path, signer, clock, make_cloud
+):
     from tests.cloud.conftest import Signer
 
-    app = create_app(make_settings(tmp_path / "cloud"), now=clock)
-    with TestClient(app) as c:
+    with make_cloud(make_settings(tmp_path / "cloud"), now=clock) as c:
         other = Signer()
         bundles = _variants(tmp_path, 5)
         for s in (signer, other):
             register(c, s)
-            owner = app.state.repo.upsert_account_from_login(
+            owner = c.app.state.repo.upsert_account_from_login(
                 f"sub-{s.fingerprint[:6]}",
                 f"{s.fingerprint[:6]}@example.com",
                 "O",
                 clock(),
             )
-            app.state.repo.claim_machine(s.fingerprint, owner.id, clock())
+            c.app.state.repo.claim_machine(s.fingerprint, owner.id, clock())
         assert _put(c, signer, *bundles[4]).status_code == 201
         for digest, data in bundles[:4]:
             assert _put(c, other, digest, data).status_code == 201
@@ -282,9 +281,8 @@ def _register_request(client, signer, label="m-new"):
 
 
 @pytest.fixture
-def timed(tmp_path, clock):
-    app = create_app(make_settings(tmp_path / "cloud"), now=clock)
-    with TestClient(app) as c:
+def timed(tmp_path, clock, make_cloud):
+    with make_cloud(make_settings(tmp_path / "cloud"), now=clock) as c:
         yield c
 
 
@@ -371,17 +369,16 @@ async def test_concurrent_new_registrations_respect_the_cap(tmp_path, clock):
     assert app.state.repo.count_unclaimed_machines() == 2
 
 
-def test_unclaimed_machine_cap_blocks_new_but_not_known(tmp_path, clock):
+def test_unclaimed_machine_cap_blocks_new_but_not_known(tmp_path, clock, make_cloud):
     settings = make_settings(tmp_path / "cloud", max_unclaimed_machines=1)
-    app = create_app(settings, now=clock)
-    with TestClient(app) as c:
+    with make_cloud(settings, now=clock) as c:
         first, second = Signer(), Signer()
         assert _register_request(c, first).status_code == 200
         clock.advance(5)
         r = _register_request(c, second)
         assert r.status_code == 429 and r.headers["retry-after"] == "3600"
         assert _register_request(c, first).status_code == 200
-        repo = app.state.repo
+        repo = c.app.state.repo
         owner = repo.upsert_account_from_login("sub-o", "o@example.com", "O", clock())
         assert repo.claim_machine(first.fingerprint, owner.id, clock())
         assert _register_request(c, second).status_code == 200

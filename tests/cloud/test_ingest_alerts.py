@@ -2,9 +2,7 @@ import asyncio
 import threading
 
 import pytest
-from fastapi.testclient import TestClient
 
-from ice_cloud.app import create_app
 from tests.cloud.conftest import (
     claim,
     drain_alerts,
@@ -99,18 +97,18 @@ def test_alert_failure_still_200(cloud, signer, mailer, monkeypatch):
 @pytest.mark.parametrize("claimed", [False, True])
 @pytest.mark.parametrize("smtp", [False, True])
 def test_register_alerts_handled_requires_claim_and_smtp(
-    tmp_path, provider, mailer, claimed, smtp, signer
+    tmp_path, provider, mailer, claimed, smtp, signer, make_cloud
 ):
     extra = (
         {"smtp_host": "smtp.example.com", "smtp_from": "a@example.com"} if smtp else {}
     )
-    app = create_app(
+    with make_cloud(
         make_settings(tmp_path / "d", **extra),
         provider=provider,
         mailer=mailer,
         start_sweep=False,
-    )
-    with TestClient(app, follow_redirects=False) as c:
+        follow_redirects=False,
+    ) as c:
         if claimed:
             account = login(c, "owner@example.com")
             register(c, signer)
@@ -154,8 +152,8 @@ def test_resale_hides_previous_owner_history(cloud, signer, mailer, clock):
 
 
 @pytest.fixture
-def smtp_cloud(tmp_path, clock, provider, mailer):
-    app = create_app(
+def smtp_cloud(tmp_path, clock, provider, mailer, make_cloud):
+    with make_cloud(
         make_settings(
             tmp_path / "d", smtp_host="smtp.example.com", smtp_from="a@example.com"
         ),
@@ -163,8 +161,8 @@ def smtp_cloud(tmp_path, clock, provider, mailer):
         provider=provider,
         mailer=mailer,
         start_sweep=False,
-    )
-    with TestClient(app, follow_redirects=False) as c:
+        follow_redirects=False,
+    ) as c:
         yield c
 
 
@@ -228,7 +226,9 @@ def test_report_flag_tracks_delivery_health(smtp_cloud, signer, mailer, clock):
     assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=5))) is True
 
 
-def test_report_does_not_wait_for_slow_mail(tmp_path, clock, provider, signer):
+def test_report_does_not_wait_for_slow_mail(
+    tmp_path, clock, provider, signer, make_cloud
+):
     release = threading.Event()
 
     class Slow:
@@ -236,7 +236,7 @@ def test_report_does_not_wait_for_slow_mail(tmp_path, clock, provider, signer):
             while not release.is_set():
                 await asyncio.sleep(0.01)
 
-    app = create_app(
+    with make_cloud(
         make_settings(
             tmp_path / "d", smtp_host="smtp.example.com", smtp_from="a@example.com"
         ),
@@ -244,8 +244,8 @@ def test_report_does_not_wait_for_slow_mail(tmp_path, clock, provider, signer):
         provider=provider,
         mailer=Slow(),
         start_sweep=False,
-    )
-    with TestClient(app, follow_redirects=False) as c:
+        follow_redirects=False,
+    ) as c:
         _claimed(c, signer)
         r = signed(
             c,

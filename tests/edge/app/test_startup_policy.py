@@ -5,6 +5,7 @@ import time
 import pytest
 from loguru import logger
 
+from tests.edge.fault_helpers import fault_codes
 from ice_edge.app import startup_config
 from ice_edge.app.startup_config import warn_if_no_buttons, warn_if_setup_mode
 from ice_common.config_model import ConfigModel, Product, WebConfig
@@ -160,11 +161,11 @@ def test_reconcile_replays_nonempty_journal_and_clears_data_101(tmp_path, monkey
     # outlived the process) so this test actually exercises "clear", not just
     # "never got raised in the first place".
     vmc.raise_fault(FaultCode.DATA_101, outcome="pre-existing")
-    assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
+    assert "DATA-101" in fault_codes(vmc)
 
     reconcile_sales_journal_faults(machine, recorder)
 
-    assert "DATA-101" not in {f["code"] for f in vmc.active_faults()}
+    assert "DATA-101" not in fault_codes(vmc)
     # The journal must be drained -- absent or empty, not merely "replay
     # returned > 0" (see reconcile_sales_journal_faults' own docstring).
     assert (
@@ -221,7 +222,7 @@ def test_reconcile_replay_returning_zero_does_not_wrongly_clear_data_101(
 
     reconcile_sales_journal_faults(machine, recorder)
 
-    assert "DATA-101" not in {f["code"] for f in vmc.active_faults()}
+    assert "DATA-101" not in fault_codes(vmc)
     assert (
         not journal_path.exists()
         or not journal_path.read_text(encoding="utf-8").strip()
@@ -251,13 +252,13 @@ def test_reconcile_corrupt_db_raises_data_102_and_vmc_stays_usable(
 
     reconcile_sales_journal_faults(machine, recorder)  # must not raise/exit
 
-    assert "DATA-102" in {f["code"] for f in vmc.active_faults()}
+    assert "DATA-102" in fault_codes(vmc)
     # The VMC keeps working: its fault registry and FSM are untouched by the
     # data-layer problem (DATA-102 is deliberately absent from
     # PAYMENT_BLOCKING_FAULTS -- see ice_contracts/board/vending_machine.py).
     assert vmc.state == "idle"
     assert vmc.clear_fault("DATA-102") is True
-    assert "DATA-102" not in {f["code"] for f in vmc.active_faults()}
+    assert "DATA-102" not in fault_codes(vmc)
 
 
 @pytest.mark.parametrize("unavailable", [True, False])
@@ -407,7 +408,7 @@ def test_reconcile_raises_data_101_when_replay_commits_but_journal_rewrite_fails
         machine, RewriteFailsAfterCommitRecorder()
     )  # must not raise/exit
 
-    assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
+    assert "DATA-101" in fault_codes(vmc)
 
     # The row genuinely landed in `sales` -- this is "committed but not
     # drained", not merely "nothing happened".

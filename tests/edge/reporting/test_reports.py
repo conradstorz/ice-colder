@@ -1,26 +1,22 @@
 # tests/test_reports.py
 import csv
 import io
-import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from ice_edge.reporting import reports
 from ice_edge.ledger.event_recorder import EventRecorder
-
-# A fixed, DST-free offset -- deliberately not the machine's own timezone, so
-# bucket-boundary assignment is proven independent of whatever system the
-# tests happen to run on. Passed explicitly as `tz=` to every by_period call
-# in this file.
-FIXED_TZ = timezone(timedelta(hours=-5))
-
-
-def _dt(year, month, day, hour=0, minute=0, second=0):
-    return datetime(year, month, day, hour, minute, second, tzinfo=FIXED_TZ)
+from tests.edge.db_helpers import db_rows, insert_events
+from tests.edge.reporting.tz import (
+    FIXED_TZ,
+    SyntheticDstTz,
+    SyntheticFallBackTz,
+    fixed_dt,
+)
 
 
 @pytest.fixture
@@ -31,71 +27,12 @@ def fixed_now(monkeypatch):
     the module's `time` binding (not the global clock) lets tests use
     literal dates for buckets near that cutoff.
     """
-    now = _dt(2026, 10, 13, 12).timestamp()
+    now = fixed_dt(2026, 10, 13, 12).timestamp()
     monkeypatch.setattr(reports, "time", SimpleNamespace(time=lambda: now))
     return now
 
 
-class _SyntheticDstTz(tzinfo):
-    """Deterministic stand-in for a real DST spring-forward transition.
-
-    `zoneinfo.ZoneInfo` is not usable on this machine: there is no tzdata
-    installed, and `ZoneInfo("America/New_York")` raises
-    `ZoneInfoNotFoundError`. Adding the `tzdata` package is forbidden (no
-    new runtime dependency; `pyproject.toml`/`uv.lock` must not change).
-    This hard-codes ONE UTC transition instant -- UTC-5 before it, UTC-4
-    after, mirroring US Eastern's spring-forward -- using only the
-    standard library. That is arguably better than a real zone for a test
-    anyway: fully deterministic and immune to any future tz-database
-    change.
-
-    `fromutc` deliberately returns a datetime whose attached tzinfo is a
-    plain, FROZEN `datetime.timezone` snapshot -- exactly what
-    `datetime.astimezone(None)` returns in production (see
-    `ice_edge.reporting.reports.to_local`) -- rather than `self`. That is what
-    makes this class reproduce the *specific* bug under review: code that
-    calls `to_local` once and then advances by `timedelta` alone carries
-    that stale, `dt`-independent snapshot forward and never re-derives the
-    true offset for a later date. (A "fully dynamic" tzinfo whose
-    `utcoffset()` genuinely reads its `dt` argument on every call would
-    self-correct even under the old, unfixed loop -- via Python's own
-    aware-datetime subtraction always re-deriving `.utcoffset()` from
-    each operand's own fields -- which would prove nothing about the bug
-    this class exists to catch. Verified empirically before writing this
-    class: a naively "dynamic" tzinfo passed explicitly does NOT reproduce
-    the merge: only a snapshot-per-call tzinfo, matching what
-    `astimezone(None)` actually returns, does.)
-    """
-
-    _TRANSITION_UTC = datetime(2026, 3, 8, 7, 0, 0)  # 02:00 EST == 03:00 EDT
-    _BEFORE = timedelta(hours=-5)  # EST
-    _AFTER = timedelta(hours=-4)  # EDT
-
-    def fromutc(self, dt):
-        naive_utc = dt.replace(tzinfo=None)
-        offset = self._BEFORE if naive_utc < self._TRANSITION_UTC else self._AFTER
-        return (dt + offset).replace(tzinfo=timezone(offset))
-
-    def utcoffset(self, dt):
-        # Reached only when this class is attached directly to a
-        # wall-clock datetime (as `_syn_midnight` below does, to build
-        # ground-truth "true local midnight" instants for the test) --
-        # never reached via `fromutc` above, which returns a frozen
-        # `datetime.timezone` instead of `self`.
-        if dt is None:
-            return self._BEFORE
-        naive_local = dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-        local_before_boundary = self._TRANSITION_UTC + self._BEFORE  # 02:00 local
-        return self._BEFORE if naive_local < local_before_boundary else self._AFTER
-
-    def dst(self, dt):
-        return timedelta(0)
-
-    def tzname(self, dt):
-        return "SYN"
-
-
-SYN_TZ = _SyntheticDstTz()
+SYN_TZ = SyntheticDstTz()
 
 
 def _syn_midnight(year, month, day):
@@ -103,58 +40,7 @@ def _syn_midnight(year, month, day):
     return datetime(year, month, day, tzinfo=SYN_TZ)
 
 
-class _SyntheticFallBackTz(tzinfo):
-    """Deterministic stand-in for a real DST FALL-BACK transition.
-
-    Mirror image of `_SyntheticDstTz` above: the offset *decreases* across
-    the transition (-04:00 -> -05:00, mirroring US Eastern's fall back from
-    EDT to EST) instead of increasing. Same rationale for existing
-    (no `zoneinfo`/`tzdata` on this machine, none may be added) and the
-    same `fromutc`-returns-a-frozen-offset trick so this class reproduces
-    the *specific* bug under review: a loop that re-derives and re-floors
-    the next boundary but judges advancement by epoch alone. On this
-    fall-back direction, the re-derived, re-floored candidate can land back
-    on the SAME local calendar bucket as `current` -- just under the new,
-    smaller-magnitude offset -- while its epoch is still strictly greater
-    (by exactly the one-hour DST delta). That is precisely the case an
-    epoch-only `next_start <= current` guard cannot see.
-
-    The transition instant: local wall time reaches 02:00 EDT (-04:00) and
-    falls back to 01:00 EST (-05:00) -- both equal to 06:00 UTC on
-    2026-11-01, which is `_TRANSITION_UTC` below. Only used at local
-    midnight and other non-ambiguous hours in this test file, never inside
-    the repeated 01:00-02:00 local hour, so there is no ambiguity to
-    resolve for the instants this file actually builds.
-    """
-
-    _TRANSITION_UTC = datetime(2026, 11, 1, 6, 0, 0)  # 02:00 EDT == 01:00 EST
-    _BEFORE = timedelta(hours=-4)  # EDT
-    _AFTER = timedelta(hours=-5)  # EST
-
-    def fromutc(self, dt):
-        naive_utc = dt.replace(tzinfo=None)
-        offset = self._BEFORE if naive_utc < self._TRANSITION_UTC else self._AFTER
-        return (dt + offset).replace(tzinfo=timezone(offset))
-
-    def utcoffset(self, dt):
-        # Reached only when this class is attached directly to a
-        # wall-clock datetime (as `_syn_fb_midnight` below does) -- never
-        # reached via `fromutc` above, which returns a frozen
-        # `datetime.timezone` instead of `self`.
-        if dt is None:
-            return self._BEFORE
-        naive_local = dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-        local_before_boundary = self._TRANSITION_UTC + self._BEFORE  # 02:00 local
-        return self._BEFORE if naive_local < local_before_boundary else self._AFTER
-
-    def dst(self, dt):
-        return timedelta(0)
-
-    def tzname(self, dt):
-        return "SYNFB"
-
-
-SYN_FB_TZ = _SyntheticFallBackTz()
+SYN_FB_TZ = SyntheticFallBackTz()
 
 
 def _syn_fb_midnight(year, month, day):
@@ -242,7 +128,7 @@ class TestResolveWindow:
 
 class TestByPeriodBucketing:
     def test_day_boundary_belongs_to_later_bucket(self, recorder):
-        boundary = _dt(2026, 1, 15)  # midnight, fixed tz
+        boundary = fixed_dt(2026, 1, 15)  # midnight, fixed tz
         before = boundary - timedelta(seconds=1)
 
         recorder.record_sale(
@@ -265,7 +151,7 @@ class TestByPeriodBucketing:
         assert earlier_bucket["vends"] == 1
 
     def test_week_boundary_monday_start_belongs_to_later_bucket(self, recorder):
-        monday = _dt(2026, 1, 5)  # confirmed Monday, midnight, fixed tz
+        monday = fixed_dt(2026, 1, 5)  # confirmed Monday, midnight, fixed tz
         sunday_end = monday - timedelta(seconds=1)  # previous Sunday 23:59:59
 
         recorder.record_sale("A", "Alpha", 1, 200, {"cash": 200}, ts=monday.timestamp())
@@ -289,7 +175,7 @@ class TestByPeriodBucketing:
             assert bucket_dt.weekday() == 0
 
     def test_month_boundary_belongs_to_later_bucket(self, recorder):
-        first_of_feb = _dt(2026, 2, 1)
+        first_of_feb = fixed_dt(2026, 2, 1)
         end_of_jan = first_of_feb - timedelta(seconds=1)
 
         recorder.record_sale(
@@ -307,7 +193,7 @@ class TestByPeriodBucketing:
         by_start = {r["bucket_start"]: r for r in rows}
 
         later_month = by_start[first_of_feb.isoformat()]
-        earlier_month = by_start[_dt(2026, 1, 1).isoformat()]
+        earlier_month = by_start[fixed_dt(2026, 1, 1).isoformat()]
 
         assert later_month["revenue_cents"] == 400
         assert earlier_month["revenue_cents"] == 600
@@ -578,8 +464,8 @@ class TestByPeriodSkuFilter:
         # Two SKUs, two day-buckets each -- proves the filter narrows to
         # one SKU's own revenue/vends AND that bucketing still works
         # (each SKU's sales land in the correct, separate bucket).
-        day0 = _dt(2026, 4, 1)
-        day1 = _dt(2026, 4, 2)
+        day0 = fixed_dt(2026, 4, 1)
+        day1 = fixed_dt(2026, 4, 2)
 
         recorder.record_sale("A", "Alpha", 1, 300, {"cash": 300}, ts=day0.timestamp())
         recorder.record_sale("B", "Beta", 2, 500, {"cash": 500}, ts=day0.timestamp())
@@ -623,23 +509,14 @@ class TestByPeriodSkuFilter:
         now = time.time()
         recorder.record_sale("A", "Alpha", 1, 200, {"cash": 200}, ts=now - 20)
 
-        with sqlite3.connect(recorder.db_path) as conn:
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value, metadata) "
-                "VALUES ('vend_failed', ?, 1.0, ?)",
-                (now - 15, '{"sku": "A"}'),
-            )
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value, metadata) "
-                "VALUES ('vend_failed', ?, 1.0, ?)",
-                (now - 12, '{"sku": "B"}'),
-            )
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value) "
-                "VALUES ('refund', ?, 100)",
-                (now - 10,),
-            )
-            conn.commit()
+        insert_events(
+            recorder.db_path,
+            [
+                ("vend_failed", now - 15, 1.0, '{"sku": "A"}'),
+                ("vend_failed", now - 12, 1.0, '{"sku": "B"}'),
+                ("refund", now - 10, 100),
+            ],
+        )
 
         window = (now - 3600, now + 1)
         rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ, sku="A")
@@ -759,28 +636,21 @@ class TestRetentionNoneVersusZero:
     ):
         # 100 days before fixed_now (2026-10-13 12:00 -05:00) is
         # 2026-07-05 12:00 -05:00 -- well past the 90-day cutoff.
-        old_ts = _dt(2026, 7, 5, 12).timestamp()
+        old_ts = fixed_dt(2026, 7, 5, 12).timestamp()
         recorder.record_sale("OLD", "Old Item", 1, 900, {"cash": 900}, ts=old_ts)
 
         # Seed REAL vend_failed/refund/heartbeat rows in the same old
         # bucket, directly into events (never pruned mid-test), so a None
         # result below proves the code withholds them by *date policy* --
         # not merely because no matching row happens to exist.
-        with sqlite3.connect(recorder.db_path) as conn:
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value, metadata) "
-                "VALUES ('vend_failed', ?, 1.0, ?)",
-                (old_ts + 60, '{"sku": "OLD"}'),
-            )
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value) VALUES ('refund', ?, 1.5)",
-                (old_ts + 60,),
-            )
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value) VALUES ('heartbeat', ?, 1.0)",
-                (old_ts + 60,),
-            )
-            conn.commit()
+        insert_events(
+            recorder.db_path,
+            [
+                ("vend_failed", old_ts + 60, 1.0, '{"sku": "OLD"}'),
+                ("refund", old_ts + 60, 1.5),
+                ("heartbeat", old_ts + 60, 1.0),
+            ],
+        )
 
         window = (old_ts - 2 * 86400, old_ts + 2 * 86400)
         rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ)
@@ -828,12 +698,12 @@ class TestRetentionStraddlingBucket:
         # exactly 2026-07-15 12:00 -05:00, inside the local day starting
         # 2026-07-15 00:00 -05:00 and ending 2026-07-16 00:00 -05:00.
         assert reports.RETENTION_DAYS == 90
-        cutoff_ts = _dt(2026, 7, 15, 12).timestamp()
-        bucket_start = _dt(2026, 7, 15)
-        bucket_end = _dt(2026, 7, 16)
+        cutoff_ts = fixed_dt(2026, 7, 15, 12).timestamp()
+        bucket_start = fixed_dt(2026, 7, 15)
+        bucket_end = fixed_dt(2026, 7, 16)
 
-        before_ts = _dt(2026, 7, 15, 6).timestamp()
-        after_ts = _dt(2026, 7, 15, 18).timestamp()
+        before_ts = fixed_dt(2026, 7, 15, 6).timestamp()
+        after_ts = fixed_dt(2026, 7, 15, 18).timestamp()
         assert (
             bucket_start.timestamp()
             < before_ts
@@ -843,28 +713,15 @@ class TestRetentionStraddlingBucket:
         )
 
         recorder.record_sale("STR", "Straddler", 1, 500, {"cash": 500}, ts=after_ts)
-        with sqlite3.connect(recorder.db_path) as conn:
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value, metadata) "
-                "VALUES ('vend_failed', ?, 1.0, ?)",
-                (before_ts, '{"sku": "STR"}'),
-            )
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value, metadata) "
-                "VALUES ('vend_failed', ?, 1.0, ?)",
-                (after_ts, '{"sku": "STR"}'),
-            )
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value) "
-                "VALUES ('refund', ?, 100)",
-                (before_ts,),
-            )
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value) "
-                "VALUES ('refund', ?, 200)",
-                (after_ts,),
-            )
-            conn.commit()
+        insert_events(
+            recorder.db_path,
+            [
+                ("vend_failed", before_ts, 1.0, '{"sku": "STR"}'),
+                ("vend_failed", after_ts, 1.0, '{"sku": "STR"}'),
+                ("refund", before_ts, 100),
+                ("refund", after_ts, 200),
+            ],
+        )
 
         window = (
             bucket_start.timestamp() - 2 * 86400,
@@ -942,10 +799,10 @@ class TestCollections:
         recorder.record_cash_collection("u1", "Alice")
         recorder.flush()
 
-        with sqlite3.connect(recorder.db_path) as conn:
-            first_stored = conn.execute(
-                "SELECT expected_cash_cents FROM cash_collections WHERE user_id='u1'"
-            ).fetchone()[0]
+        first_stored = db_rows(
+            recorder.db_path,
+            "SELECT expected_cash_cents FROM cash_collections WHERE user_id='u1'",
+        )[0][0]
 
         recorder.record_sale("B", "Beta", 2, 200, {"cash": 200})
         recorder.record_cash_collection("u2", "Bob")
@@ -998,11 +855,11 @@ class TestCollections:
         recorder.flush()
         monkeypatch.undo()
 
-        with sqlite3.connect(recorder.db_path) as conn:
-            id_rows = conn.execute(
-                "SELECT id, user_id, ts, expected_cash_cents FROM cash_collections "
-                "ORDER BY id ASC"
-            ).fetchall()
+        id_rows = db_rows(
+            recorder.db_path,
+            "SELECT id, user_id, ts, expected_cash_cents FROM cash_collections "
+            "ORDER BY id ASC",
+        )
         assert [r[1] for r in id_rows] == ["alice", "bob"], (
             "test setup requires alice=id1, bob=id2"
         )

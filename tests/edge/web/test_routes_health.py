@@ -13,6 +13,7 @@ global around each test.
 
 import re
 
+from tests.edge.fault_helpers import fault_codes
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.access.access import Role
 from ice_edge.config.config_store import add_product
@@ -93,11 +94,9 @@ class TestSubsystemsLevel:
             assert name in resp.text
         assert resp.text.count("Never seen") >= 3
 
-    def test_lists_every_expected_subsystem_when_monitor_wired_but_silent(self, client):
-        from ice_edge.monitoring.health_monitor import HealthMonitor
-
-        hm = HealthMonitor()
-        routes.set_health_monitor(hm)
+    def test_lists_every_expected_subsystem_when_monitor_wired_but_silent(
+        self, client, health_monitor
+    ):
         resp = client.get("/health/subsystems")
         for name in ("vending", "mdb", "ice_maker"):
             assert name in resp.text
@@ -499,13 +498,11 @@ class TestFaultsLevel:
         resp = client.get("/health/faults")
         assert "No active faults" in resp.text
 
-    def test_a_raised_fault_appears_with_age_and_gate(self, wired, client):
+    def test_a_raised_fault_appears_with_age_and_gate(
+        self, wired, client, health_monitor
+    ):
         _cfg, vmc, _inv, _store = wired
-        from ice_edge.monitoring.health_monitor import HealthMonitor
-
-        hm = HealthMonitor()
-        routes.set_health_monitor(hm)
-        context.machine_instance.set_health_monitor(hm)
+        context.machine_instance.set_health_monitor(health_monitor)
         vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
         resp = client.get("/health/faults")
         assert resp.status_code == 200
@@ -687,13 +684,13 @@ class TestFaultClearFlow:
         resp = client.post(f"/health/faults/{FaultCode.SVC_102.value}/clear")
 
         assert resp.status_code == 409
-        assert FaultCode.SVC_102.value in [f["code"] for f in vmc.active_faults()]
+        assert FaultCode.SVC_102.value in fault_codes(vmc)
         assert context.machine_instance.maintenance_hold is not None
         assert context.machine_instance.maintenance_hold.holder_session_id == "sess-1"
 
         # The real release path still works afterwards.
         assert context.machine_instance.lease.end_maintenance("sess-1") is True
-        assert FaultCode.SVC_102.value not in [f["code"] for f in vmc.active_faults()]
+        assert FaultCode.SVC_102.value not in fault_codes(vmc)
 
     def test_confirm_endpoint_requires_clear_faults(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired

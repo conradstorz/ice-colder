@@ -662,12 +662,10 @@ class TestFaultsUI:
     # Clear button — is a fresh row Task 6 already wrote, unrelated to this
     # touch-target fix.
 
-    def test_status_shows_fault_age_when_health_monitor_set(self, client):
-        from ice_edge.monitoring.health_monitor import HealthMonitor
-
-        hm = HealthMonitor()
-        routes.set_health_monitor(hm)
-        context.machine_instance.set_health_monitor(hm)
+    def test_status_shows_fault_age_when_health_monitor_set(
+        self, client, health_monitor
+    ):
+        context.machine_instance.set_health_monitor(health_monitor)
         self._add_product(client)
         self._lock(client)
         r = client.get("/status")

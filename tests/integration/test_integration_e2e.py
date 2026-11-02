@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import json
 import os
-import sqlite3
 import sys
 
 import pytest
@@ -26,6 +25,7 @@ from ice_common.config_model import ConfigModel, Product
 from ice_contracts.board.common import CommandAck
 from ice_edge.app.machine import Machine
 from ice_edge.sale.vmc import VMC
+from tests.edge.db_helpers import db_rows
 from tests.fakes import FakeTaskRunner
 from ice_edge.hal.command_dispatcher import CommandDispatcher
 from ice_edge.monitoring.health_monitor import HealthMonitor
@@ -1016,11 +1016,7 @@ async def _im600xl_harness(sim_id: str, tmp_path, *, recorder=None):
 
 def _sales(recorder: EventRecorder) -> list[tuple[str, int]]:
     recorder.flush()
-    conn = sqlite3.connect(recorder.db_path)
-    try:
-        return conn.execute("SELECT sku, price_cents FROM sales ORDER BY id").fetchall()
-    finally:
-        conn.close()
+    return db_rows(recorder.db_path, "SELECT sku, price_cents FROM sales ORDER BY id")
 
 
 async def _im600xl_sale(h: _E2E, button: str, amount_cents: int, slot: int) -> str:

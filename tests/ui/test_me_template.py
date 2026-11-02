@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from ice_ui.levels import LEVEL_ME
 from ice_ui.templating import templates
 from ice_ui.views.identity import MachineLabel
+from tests.dom_utils import bar
 
 
 def _render(user, **extra):
@@ -18,13 +19,6 @@ def _render(user, **extra):
     }
     ctx.update(extra)
     return templates.get_template("me.html").render(**ctx)
-
-
-def _bar(html):
-    """Return the top bar markup only (from id="bar" to its closing tag)."""
-    start = html.index('id="bar"')
-    end = html.index("</header>", start)
-    return html[start:end]
 
 
 def test_edge_shape():
@@ -93,7 +87,7 @@ def test_empty_permissions():
 
 def test_bar_chip_and_crumb():
     user = SimpleNamespace(name="Pat", role_label="owner", email=None)
-    bar = _bar(_render(user))
-    assert 'href="/me"' in bar
-    assert 'aria-label="Signed in as Pat"' in bar
-    assert 'aria-current="page">You</span>' in bar
+    top = bar(_render(user))
+    assert 'href="/me"' in top
+    assert 'aria-label="Signed in as Pat"' in top
+    assert 'aria-current="page">You</span>' in top

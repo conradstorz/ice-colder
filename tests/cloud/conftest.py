@@ -123,6 +123,27 @@ def cloud(cloud_app):
         yield c
 
 
+@pytest.fixture
+def make_cloud(tmp_path):
+    """Factory for a hand-configured cloud client.
+
+    ``make_cloud(settings=None, *, follow_redirects=True, **create_kw)`` returns
+    an unentered ``TestClient`` over ``create_app(settings, **create_kw)``; use
+    ``with make_cloud(...) as c:`` to run the app's lifespan, as ``TestClient``
+    does. ``settings`` defaults to ``make_settings(tmp_path / "cloud")``, and
+    ``create_kw`` takes create_app's own keywords (``now``, ``provider``,
+    ``mailer``, ``start_sweep``).
+    """
+
+    def make(settings=None, *, follow_redirects=True, **create_kw):
+        if settings is None:
+            settings = make_settings(tmp_path / "cloud")
+        app = create_app(settings, **create_kw)
+        return TestClient(app, follow_redirects=follow_redirects)
+
+    return make
+
+
 class Signer:
     """A machine identity for tests: a fresh Ed25519 key signing requests."""
 

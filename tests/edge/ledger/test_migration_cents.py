@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from tests.edge.db_helpers import db_rows
 from ice_edge.ledger import event_recorder as event_recorder_module
 from ice_edge.ledger.event_recorder import MIGRATIONS, EventRecorder
 
@@ -137,16 +138,12 @@ def test_fresh_database_has_cents_schema(tmp_path):
 
 
 def _sales(db):
-    conn = sqlite3.connect(db)
-    try:
-        return {
-            sku: (price, json.loads(methods))
-            for sku, price, methods in conn.execute(
-                "SELECT sku, price_cents, methods FROM sales"
-            )
-        }
-    finally:
-        conn.close()
+    return {
+        sku: (price, json.loads(methods))
+        for sku, price, methods in db_rows(
+            db, "SELECT sku, price_cents, methods FROM sales"
+        )
+    }
 
 
 def test_cents_journal_row_replays_unchanged(tmp_path, journal_path):

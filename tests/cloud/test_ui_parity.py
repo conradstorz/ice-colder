@@ -15,9 +15,7 @@ import time as real_time
 from datetime import timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
-from ice_cloud.app import create_app
 from ice_cloud.auth import IdentityClaims
 from tests.cloud.conftest import make_settings
 from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
@@ -107,17 +105,19 @@ async def edge_and_report(wired, login_as, frozen, narrowed_owner, tmp_path):
     return login_as(Role.owner), report
 
 
-def _cloud_client(tmp_path, report, now):
+def _cloud_client(make_cloud, tmp_path, report, now):
     clock = {"now": now}
     provider = FakeProvider(
         IdentityClaims(
             sub="s", email="owner@example.com", email_verified=True, name="O"
         )
     )
-    app = create_app(
-        make_settings(tmp_path / "cloud"), now=lambda: clock["now"], provider=provider
+    client = make_cloud(
+        make_settings(tmp_path / "cloud"),
+        now=lambda: clock["now"],
+        provider=provider,
+        follow_redirects=False,
     )
-    client = TestClient(app, follow_redirects=False)
     signer = Signer()
     owner = login(client, "owner@example.com")
     push(client, signer, report)
@@ -143,17 +143,19 @@ def _assert_parity(edge, cloud, *, stale):
 
 
 @pytest.mark.parametrize("stale", [False, True], ids=["online", "stale"])
-async def test_cloud_renders_what_the_machine_renders(edge_and_report, tmp_path, stale):
+async def test_cloud_renders_what_the_machine_renders(
+    edge_and_report, tmp_path, stale, make_cloud
+):
     edge, report = edge_and_report
     now = NOW + timedelta(hours=1) if stale else NOW
-    with _cloud_client(tmp_path, report, now) as cloud:
+    with _cloud_client(make_cloud, tmp_path, report, now) as cloud:
         _assert_parity(edge, cloud, stale=stale)
 
 
-async def test_parity_pages_are_not_vacuous(edge_and_report, tmp_path):
+async def test_parity_pages_are_not_vacuous(edge_and_report, tmp_path, make_cloud):
     """Guard the comparison itself: the pages carry the data under test."""
     edge, report = edge_and_report
-    with _cloud_client(tmp_path, report, NOW) as cloud:
+    with _cloud_client(make_cloud, tmp_path, report, NOW) as cloud:
         faults = main_html(cloud.get("/health/faults").text)
         assert "ICE-301" in faults and "412" not in faults and "6m" in faults
         status = cloud.get("/status").text
@@ -166,7 +168,9 @@ async def test_parity_pages_are_not_vacuous(edge_and_report, tmp_path):
 
 
 @pytest.mark.parametrize("stale", [False, True], ids=["online", "stale"])
-async def test_parity_when_the_machine_has_no_vmc(edge_and_report, tmp_path, stale):
+async def test_parity_when_the_machine_has_no_vmc(
+    edge_and_report, tmp_path, stale, make_cloud
+):
     """vmc_missing end to end: /status serves VMC_MISSING_HTML, the pill is
     neutral, /health shows '0 active faults' and '—' for availability, KPI
     cards are placeholders -- identically on the edge and in the cloud."""
@@ -200,7 +204,7 @@ async def test_parity_when_the_machine_has_no_vmc(edge_and_report, tmp_path, sta
         }
     )
     now = NOW + timedelta(hours=1) if stale else NOW
-    with _cloud_client(tmp_path, report, now) as cloud:
+    with _cloud_client(make_cloud, tmp_path, report, now) as cloud:
         _assert_parity(edge, cloud, stale=stale)
         assert "VMC not initialized" in cloud.get("/status").text
         assert "0 active faults" in main_html(cloud.get("/health").text)

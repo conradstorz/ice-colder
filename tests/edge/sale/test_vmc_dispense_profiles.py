@@ -25,6 +25,7 @@ from ice_edge.sale.vmc import VMC
 from ice_edge.faults.availability import Availability
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.vend.dispensers import DispenserProfiles
+from tests.edge.fault_helpers import fault_codes
 from tests.dispenser_fixtures import profiles_for, render_profiles_toml
 from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles
 from tests.fakes import FakeEventRecorder
@@ -136,7 +137,7 @@ def test_cfg102_follows_file_error(tmp_path):
 
     machine.set_dispenser_profiles(profiles)
 
-    codes = {f["code"] for f in vmc.active_faults()}
+    codes = fault_codes(vmc)
     assert "CFG-102" in codes
 
     missing_path.write_text(render_profiles_toml([ICE_1, WATER_1]), encoding="utf-8")
@@ -145,7 +146,7 @@ def test_cfg102_follows_file_error(tmp_path):
 
     machine.gate.reconcile()
 
-    codes = {f["code"] for f in vmc.active_faults()}
+    codes = fault_codes(vmc)
     assert "CFG-102" not in codes
 
 
@@ -606,7 +607,7 @@ async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
     assert vmc.state == "idle"
     assert len(rec.sales) == 1
     assert rec.sales[0][0] == "ICE-1"
-    assert "ICE-402" in {f["code"] for f in vmc.active_faults()}
+    assert "ICE-402" in fault_codes(vmc)
     assert avail.payment_enabled is False
 
 
@@ -635,7 +636,7 @@ async def test_door_open_on_water_fill_fails_vend_with_error_mapping(tmp_path):
     assert vmc.credit_escrow_cents == price
     assert len(rec.sales) == 0
     assert any(e[0] == "vend_failed" and e[2]["code"] == "ICE-302" for e in rec.events)
-    assert "ICE-402" not in {f["code"] for f in vmc.active_faults()}
+    assert "ICE-402" not in fault_codes(vmc)
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,7 @@ import asyncio
 import pytest
 from loguru import logger
 
+from tests.edge.fault_helpers import fault_codes
 from tests.fakes import FakeMqtt, FakeTaskRunner
 from tests.edge.sale.test_vmc_flows import (
     payouts,
@@ -37,10 +38,6 @@ def loud_log():
         yield records
     finally:
         logger.remove(handle)
-
-
-def _active_fault_codes(vmc) -> list[str]:
-    return [f["code"] for f in vmc.active_faults()]
 
 
 async def test_standby_from_interacting_with_user_refunds_and_idles():
@@ -70,7 +67,7 @@ async def test_standby_from_interacting_with_user_refunds_and_idles():
     assert hold.standby is True
     assert hold.holder_user_id == "user-1"
     assert hold.holder_session_id == "sess-1"
-    assert "SVC-102" in _active_fault_codes(vmc)
+    assert "SVC-102" in fault_codes(vmc)
     machine.cancel_pending_tasks()
 
 
@@ -207,7 +204,7 @@ async def test_standby_lease_never_released_by_idle_timer():
     machine.lease.idle_expired()
 
     assert machine.maintenance_hold is not None
-    assert "SVC-102" in _active_fault_codes(vmc)
+    assert "SVC-102" in fault_codes(vmc)
     machine.cancel_pending_tasks()
 
 
@@ -233,7 +230,7 @@ async def test_sweep_releases_lease_once_holder_session_is_gone(loud_log):
     runner.fire("standby_sweep")  # second sweep: session gone
 
     assert machine.maintenance_hold is None
-    assert "SVC-102" not in _active_fault_codes(vmc)
+    assert "SVC-102" not in fault_codes(vmc)
     assert any("session_ended" in msg for msg in loud_log)
     machine.cancel_pending_tasks()
 
@@ -261,7 +258,7 @@ async def test_sweep_defers_release_while_a_run_is_in_flight(loud_log):
     # attribute it to "session_ended" (the sweep's own reason), not the
     # generic "admin" run_finished falls back to.
     assert machine.maintenance_hold is None
-    assert "SVC-102" not in _active_fault_codes(vmc)
+    assert "SVC-102" not in fault_codes(vmc)
     assert any(
         "released (session_ended)" in msg or "cleared (session_ended)" in msg
         for msg in loud_log
@@ -301,7 +298,7 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
     # The run's own `finally` performs the deferred release once
     # runs_in_flight settles back to zero, attributed to "idle_timeout".
     assert machine.maintenance_hold is None
-    assert "SVC-102" not in _active_fault_codes(vmc)
+    assert "SVC-102" not in fault_codes(vmc)
     assert any(
         "released (idle_timeout)" in msg or "cleared (idle_timeout)" in msg
         for msg in loud_log

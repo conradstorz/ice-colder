@@ -139,23 +139,24 @@ def test_setup_code_without_expiry_shows_claim_open(cloud, signer):
     assert "claim open" in cloud.get("/admin/machines").text
 
 
-def _smtp_app(settings, clock, provider, mailer):
+def _smtp_client(make_cloud, settings, clock, provider, mailer):
     from dataclasses import replace
 
-    from ice_cloud.app import create_app
-
     configured = replace(settings, smtp_host="smtp.example.com", smtp_from="a@x.org")
-    return create_app(configured, now=clock, provider=provider, mailer=mailer)
+    return make_cloud(
+        configured, now=clock, provider=provider, mailer=mailer, follow_redirects=False
+    )
 
 
-def test_admin_shows_smtp_status_both_states(cloud, settings, clock, provider, mailer):
+def test_admin_shows_smtp_status_both_states(
+    cloud, settings, clock, provider, mailer, make_cloud
+):
     _admin(cloud)
     assert (
         "Email: not configured — emails are only logged"
         in cloud.get("/admin/accounts").text
     )
-    app = _smtp_app(settings, clock, provider, mailer)
-    with TestClient(app, follow_redirects=False) as c:
+    with _smtp_client(make_cloud, settings, clock, provider, mailer) as c:
         login(c, "admin@example.com")
         assert "Email: configured (smtp.example.com)" in c.get("/admin/accounts").text
 

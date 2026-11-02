@@ -29,6 +29,7 @@ from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.ledger.event_recorder import EventRecorder, SaleRecordingFailed
 from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
+from tests.edge.fault_helpers import fault_codes
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, settle
 from tests.payment_state_helpers import set_coin_status
@@ -434,7 +435,7 @@ async def test_dispense_complete_sale_record_failure_raises_data_101_but_complet
     assert vmc.state == "idle"  # the vend still completed
     assert vmc.selected_product is None
     assert vmc.pending_sale_shares is None  # cleared even on the failure path
-    assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
+    assert "DATA-101" in fault_codes(vmc)
 
 
 async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
@@ -489,7 +490,7 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     assert vmc.state == "idle"  # the vend still completed regardless
     assert vmc.selected_product is None
 
-    faults = {f["code"] for f in vmc.active_faults()}
+    faults = fault_codes(vmc)
     assert "PAY-104" in faults
     assert "DATA-101" not in faults  # not treated as the ordinary path
 
@@ -698,7 +699,7 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
     machine2.attach_to_loop(asyncio.get_running_loop())
     machine2.set_session_store(SessionStore(store_path))  # loads open snap -> PAY-104
 
-    assert "PAY-104" in {f["code"] for f in vmc2.active_faults()}
+    assert "PAY-104" in fault_codes(vmc2)
     reloaded = SessionStore(store_path).load()
     assert reloaded.pending_sale_shares == {"cash_bill": 200, "card": 50}
     assert reloaded.selected_sku == "ICE-1"
@@ -1408,7 +1409,7 @@ class TestRefunds:
 
         assert payouts(machine) == []
         assert vmc.credit_escrow_cents == 0
-        assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
+        assert "PAY-103" in fault_codes(vmc)
 
     async def test_mixed_credit_pays_out_only_the_cash_part(self):
         machine = make_machine(products=two_products())
@@ -1421,7 +1422,7 @@ class TestRefunds:
 
         (payout,) = payouts(machine)
         assert payout.cents == 100
-        assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
+        assert "PAY-103" in fault_codes(vmc)
 
     async def test_on_error_pays_out_via_cash_payout(self, caplog):
         machine = make_machine(products=two_products())
@@ -1604,14 +1605,14 @@ async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment()
     assert avail.payment_enabled is True
 
     monitor.mark_offline("vending")
-    codes = {f["code"] for f in vmc.active_faults()}
+    codes = fault_codes(vmc)
     assert "COM-101" in codes
     assert avail.payment_enabled is True
     assert avail.sale_available("ice")[0] is False
     assert "vending_alive" in avail.sale_available("ice")[1]
 
     monitor.record_heartbeat("vending", {"uptime_seconds": 5})
-    assert "COM-101" not in {f["code"] for f in vmc.active_faults()}
+    assert "COM-101" not in fault_codes(vmc)
     assert avail.sale_available("ice")[0] is True
 
 
@@ -1623,7 +1624,7 @@ async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
     monitor.mark_offline("ice_maker")
-    assert "COM-102" in {f["code"] for f in vmc.active_faults()}
+    assert "COM-102" in fault_codes(vmc)
     assert avail.sale_available("ice")[0] is False
     assert avail.payment_enabled is True
 
@@ -1632,7 +1633,7 @@ async def test_mdb_loss_is_pay_101_and_blocks_sales_not_payment():
     vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
     monitor.mark_offline("mdb")
-    assert "PAY-101" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-101" in fault_codes(vmc)
     assert avail.payment_enabled is True
     assert "payment_alive" in avail.sale_available("ice")[1]
 
@@ -1641,10 +1642,10 @@ async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
     machine.on_mqtt_connection(False)
-    assert "COM-103" in {f["code"] for f in vmc.active_faults()}
+    assert "COM-103" in fault_codes(vmc)
     before = len(await _enables(machine))
     machine.on_mqtt_connection(True)
-    assert "COM-103" not in {f["code"] for f in vmc.active_faults()}
+    assert "COM-103" not in fault_codes(vmc)
     assert len(await _enables(machine)) > before
 
 
@@ -1745,7 +1746,7 @@ async def test_pay_104_on_boot_leaves_payment_enabled(tmp_path):
     store.save(SessionSnapshot(state="interacting_with_user", credit_escrow_cents=125))
     machine.set_session_store(store)
 
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
     assert avail.payment_enabled is True
     assert avail.payment_blocking_reasons() == []
     assert store.load() is not None  # evidence kept until an admin clears it
@@ -1917,7 +1918,7 @@ async def test_boot_with_escrow_raises_pay_104_without_blocking(tmp_path):
     machine.set_event_recorder(rec)
     store.save(SessionSnapshot(state="interacting_with_user", credit_escrow_cents=125))
     machine.set_session_store(store)
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
     assert avail.payment_enabled is True
     rows = {r["name"]: r for r in avail.table()}
     assert rows["transaction_certain"]["state"] == "fail"
@@ -1938,13 +1939,13 @@ async def test_boot_mid_dispense_raises_pay_104(tmp_path):
             dispense_slot=0,
         ),
     )
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
 
 
 async def test_boot_with_corrupt_file_raises_pay_104(tmp_path):
     (tmp_path / "session.json").write_text("garbage", encoding="utf-8")
     vmc, avail, _, machine = _boot_with(tmp_path, None)
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
 
 
 async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
@@ -1967,7 +1968,7 @@ async def test_clear_pay_104_fails_closed_when_evidence_file_persists(tmp_path):
     )
     store.clear = lambda: False
     assert vmc.clear_fault("PAY-104", by="admin") is False
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
     assert avail.payment_enabled is True
     rows = {r["name"]: r for r in avail.table()}
     assert rows["transaction_certain"]["state"] == "fail"
@@ -2295,11 +2296,11 @@ class TestMaintenanceLease:
 
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         assert machine.maintenance_hold is None
 
     async def test_generic_clear_fault_cannot_clear_svc_102_while_lease_held(self):
@@ -2318,19 +2319,19 @@ class TestMaintenanceLease:
 
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         cleared = vmc.clear_fault("SVC-102", by="admin")
 
         assert cleared is False
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
         assert machine.maintenance_hold is not None
         assert machine.maintenance_hold.holder_session_id == "sess-1"
 
         # The real release path still works once the lease itself is ended.
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
 
     async def test_payment_disabled_while_held_and_restored_after_release(self):
         vmc, monitor, avail, published, machine = _wired_vmc()
@@ -2416,7 +2417,7 @@ class TestMaintenanceLease:
         machine.lease.run_finished()
 
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
 
     async def test_idle_timer_never_releases_with_run_in_flight(self):
         # Deterministic like the take-over tests below: backdate
@@ -2440,7 +2441,7 @@ class TestMaintenanceLease:
         # The timer fired, but a run is in flight: it must defer, not release.
         assert machine.maintenance_hold is not None
         assert machine.maintenance_hold.release_requested is True
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         machine.lease.run_finished()
 
@@ -2461,7 +2462,7 @@ class TestMaintenanceLease:
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         machine.maintenance_hold.last_activity_at -= (
             machine.lease.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
@@ -2471,7 +2472,7 @@ class TestMaintenanceLease:
         await asyncio.sleep(0)  # let the fire-and-forget publish task run
 
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         assert avail.payment_enabled is True
         enable_cmds = accepts(machine)
         assert enable_cmds, "expected a set_policy command to have been published"
@@ -2557,7 +2558,7 @@ class TestMaintenanceLease:
         # held and payment must still be disabled.
         assert machine.maintenance_hold is not None
         assert machine.maintenance_hold.runs_in_flight == 1
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
         assert avail.payment_enabled is False
 
         gate2.set()
@@ -2565,7 +2566,7 @@ class TestMaintenanceLease:
         await drain_pending(runner)  # let the release's fire-and-forget publish run
 
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         assert avail.payment_enabled is True
         enable_true = [a for a in accepts(machine) if a is True]
         assert len(enable_true) == 1, (
@@ -3177,7 +3178,7 @@ class TestRunTestSale:
         vmc2 = machine2.vmc
         machine2.set_session_store(SessionStore(store_path))
 
-        assert "PAY-104" not in {f["code"] for f in vmc2.active_faults()}
+        assert "PAY-104" not in fault_codes(vmc2)
         assert machine2.pending_sale_for_recovery() is None
         machine2.cancel_pending_tasks()
 
@@ -3227,7 +3228,7 @@ class TestRunTestSale:
 
         # Positive control: the fault really is active before asserting
         # what the accessor does about it.
-        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert "PAY-104" in fault_codes(vmc)
         assert machine.pending_sale_for_recovery() is None
 
     async def test_crashed_production_sale_is_still_offered_for_recovery_with_fifo_shares(
@@ -3273,7 +3274,7 @@ class TestRunTestSale:
         vmc2 = machine2.vmc
         machine2.set_session_store(SessionStore(store_path))
 
-        assert "PAY-104" in {f["code"] for f in vmc2.active_faults()}
+        assert "PAY-104" in fault_codes(vmc2)
         pending = machine2.pending_sale_for_recovery()
         assert pending is not None
         assert pending["sku"] == "ICE-1"
@@ -3697,7 +3698,7 @@ class TestConcurrentTestSaleGuard:
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         task1 = asyncio.get_running_loop().create_task(
             machine.test_sales.run_test_sale("ICE-1")
@@ -3739,7 +3740,7 @@ class TestConcurrentTestSaleGuard:
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         await asyncio.sleep(0)  # let the release's fire-and-forget publish run
         assert avail.payment_enabled is True
 
@@ -3786,7 +3787,7 @@ class TestConcurrentTestSaleGuard:
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         await asyncio.sleep(0)
         assert avail.payment_enabled is True
 
@@ -3831,7 +3832,7 @@ class TestConcurrentTestSaleGuard:
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         await asyncio.sleep(0)
         assert avail.payment_enabled is True
 

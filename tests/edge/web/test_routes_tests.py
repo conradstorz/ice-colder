@@ -22,6 +22,7 @@ from ice_edge.access.access import ROLE_PERMISSIONS, Role
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
+from tests.edge.fault_helpers import fault_codes
 from tests.dispenser_fixtures import profiles_for
 from tests.async_helpers import wait_until
 from tests.fakes import FakeMqtt
@@ -46,13 +47,10 @@ from ice_edge.web.routes.tests_level import testable_commands as compute_testabl
 
 
 @pytest.fixture
-def wire_subsystem():
+def wire_subsystem(health_monitor):
     """Wire a fresh HealthMonitor into routes for one test, with a helper
     to record one subsystem's heartbeat + capabilities in one call."""
-    from ice_edge.monitoring.health_monitor import HealthMonitor
-
-    hm = HealthMonitor()
-    routes.set_health_monitor(hm)
+    hm = health_monitor
 
     def _wire(name, commands, *, alive=True, contract_version="0.6.0"):
         if alive:
@@ -1699,7 +1697,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         request_id = mqtt.published[0][1].request_id
         assert context.machine_instance.maintenance_hold is not None
         assert context.machine_instance.maintenance_hold.runs_in_flight == 1
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         # The subsystem ACCEPTS the command (phase="accepted" -- the
         # fix). Under the pre-fix design this single ack was already
@@ -1724,7 +1722,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         assert not task.done()
         assert context.machine_instance.maintenance_hold is not None
         assert context.machine_instance.maintenance_hold.runs_in_flight == 1
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         # A tech tapping "End Test Mode" mid-actuation is accepted but
         # DEFERRED -- exactly what VMC.end_maintenance already
@@ -1739,7 +1737,7 @@ class TestActuatorLeaseHeldForRealLifetime:
             context.machine_instance.maintenance_hold is not None
         )  # ...but not released yet
         assert context.machine_instance.maintenance_hold.release_requested is True
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         # NOW the motor actually finishes: the terminal
         # hardware/dispenser report, carrying the same request_id.
@@ -1758,7 +1756,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         # Completion is what frees the run, and — since a release was
         # already requested — releases the lease and clears SVC-102.
         assert context.machine_instance.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
 
     async def test_ack_timeout_still_fires_independently_of_completion_timeout(
         self, wired, tmp_path

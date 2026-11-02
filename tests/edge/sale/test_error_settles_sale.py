@@ -9,6 +9,7 @@ from ice_common.config_model import Product
 from ice_edge.ledger.event_recorder import SaleRecordingFailed
 from ice_edge.ledger.session_store import SessionStore
 from ice_edge.monitoring.inventory_manager import InventoryManager
+from tests.edge.fault_helpers import fault_codes
 from tests.edge.sale.test_vmc_flows import (
     payouts,
     make_machine,
@@ -207,7 +208,7 @@ async def test_error_during_failed_write_keeps_snapshot_for_pay104_recovery(tmp_
     await asyncio.wait_for(report, timeout=5)
     await machine.drain_persistence()
 
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
     snap = SessionStore(store_path).load()
     assert snap is not None
     assert snap.is_open() is True
