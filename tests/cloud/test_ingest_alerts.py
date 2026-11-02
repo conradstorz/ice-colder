@@ -17,6 +17,7 @@ from tests.cloud.conftest import (
     signed,
 )
 from tests.cloud.reports import make_report
+from tests.cloud.sql_helpers import cloud_db, sql_exec
 
 
 def _claimed(cloud, signer, email="owner@example.com"):
@@ -296,3 +297,29 @@ def test_lower_seq_report_is_ignored_for_alerts(cloud, signer, clock):
     assert r.status_code == 200
     state = repo.alert_state(signer.fingerprint)
     assert state.last_report_at == first and state.faults == ()
+
+
+def test_dollar_keyed_stored_faults_read_as_empty_and_ingest_recovers(
+    cloud, signer, mailer
+):
+    _claimed(cloud, signer)
+    push(cloud, signer, make_report())
+    legacy = (
+        '[{"key": "ICE-10LB", "sku": "ICE-10LB", "product": "Bag of Ice",'
+        ' "code": "ICE-301", "severity": "lockout", "scope": "product",'
+        ' "description": "Ice bin low", "since_seconds": 1.0, "gate": "fulfillment",'
+        ' "pending_sale": {"sku": "ICE-10LB", "price": 5.0,'
+        ' "methods": {"cash": 5.0}}}]'
+    )
+    sql_exec(
+        cloud_db(cloud),
+        "UPDATE machine_alert_state SET faults_json = ? WHERE fingerprint = ?",
+        (legacy, signer.fingerprint),
+    )
+    repo = cloud.app.state.repo
+    assert repo.alert_state(signer.fingerprint).faults == ()
+    assert [s.fingerprint for _, s in repo.claimed_machines_with_state()] == [
+        signer.fingerprint
+    ]
+    push(cloud, signer, make_report(seq=2))
+    assert len(repo.alert_state(signer.fingerprint).faults) == 1

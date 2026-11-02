@@ -17,6 +17,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from loguru import logger
+from pydantic import ValidationError
+
 from ice_contracts.cloud.report import FaultView
 
 from ice_cloud.store.repository import (
@@ -235,11 +238,22 @@ def _delivery(row: sqlite3.Row) -> Delivery:
 
 
 def _alert_state(row: sqlite3.Row) -> AlertState:
+    try:
+        faults = tuple(
+            FaultView.model_validate(f) for f in json.loads(row["faults_json"])
+        )
+    except ValidationError:
+        # A row written by an older cloud (e.g. dollar-keyed pending_sale) must
+        # not break ingest or the fleet-wide offline sweep: treat as no faults;
+        # the next ingest re-raises any active ones once and rewrites the row.
+        logger.warning(
+            "unreadable stored alert faults for {}; treating as empty",
+            row["fingerprint"],
+        )
+        faults = ()
     return AlertState(
         fingerprint=row["fingerprint"],
-        faults=tuple(
-            FaultView.model_validate(f) for f in json.loads(row["faults_json"])
-        ),
+        faults=faults,
         last_report_at=_dt(row["last_report_at"]),
         report_interval_seconds=row["report_interval_seconds"],
         offline_since=_dt(row["offline_since"]),
