@@ -471,9 +471,13 @@ class TestTableOverflowContainer:
             "reports_method.html",
             "reports_collections.html",
         ]
+        partial = (root / "partials" / "report_email_form.html").read_text(
+            encoding="utf-8"
+        )
+        assert 'hx-post="/reports/email" hx-swap="outerHTML show:none"' in partial
         for name in names:
             src = (root / name).read_text(encoding="utf-8")
-            assert 'hx-post="/reports/email" hx-swap="outerHTML show:none"' in src, name
+            assert 'partials/report_email_form.html"' in src, name
 
     def test_regression_container_and_table_separated_would_fail(self):
         """Proof the strengthened assertion above actually discriminates:

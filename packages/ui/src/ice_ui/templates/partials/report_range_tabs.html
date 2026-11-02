@@ -1,0 +1,16 @@
+{# Range tabs for the /reports/* pages (design §3). Included with
+   {% with %} so the caller sets:
+     base_url - the page path without a query, e.g. "/reports/period"
+     range    - the active range key; its tab is underlined
+   Each tab links to base_url?range=<key>. #}
+<div class="flex flex-wrap border-b border-gray-200 px-1 pt-1">
+  {% for r, label in [("7d", "7 Days"), ("30d", "30 Days"), ("90d", "90 Days"), ("12m", "12 Months"), ("all", "All Time")] %}
+  <a
+    href="{{ base_url }}?range={{ r }}"
+    class="px-4 py-3 text-sm font-medium -mb-px transition-colors
+           {% if r == range %}border-b-2 border-blue-600 text-blue-600
+           {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
+    {{ label }}
+  </a>
+  {% endfor %}
+</div>
