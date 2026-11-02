@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
-from ice_edge.web.routes.settings.common import save_or_rerender
+from ice_edge.web.routes.settings.common import save_or_rerender, split_lines
 from ice_ui.levels import (
     LEVEL_SETTINGS_WEB,
 )
@@ -61,10 +61,5 @@ async def update_web(
     host: str | None = Form(None),
     port: str | None = Form(None),
 ):
-    proxies = [
-        line.strip()
-        for line in trusted_proxies.replace(",", "\n").splitlines()
-        if line.strip()
-    ]
-    context.config.web.trusted_proxies = proxies
+    context.config.web.trusted_proxies = split_lines(trusted_proxies)
     return save_or_rerender("web", lambda error: _render_web_form(request, error=error))
