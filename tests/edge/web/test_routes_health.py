@@ -72,6 +72,17 @@ class TestHealthLanding:
         resp = client.get("/health")
         assert resp.status_code == 200
 
+    def test_vmc_row_shows_build_identity_and_machine_id(self, client):
+        from ice_common.build_info import BUILD_INFO
+        from ice_edge.monitoring.health_monitor import HealthMonitor
+
+        routes.set_health_monitor(HealthMonitor(machine_id="vmc-test"))
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert BUILD_INFO.commit_short in resp.text
+        assert BUILD_INFO.source in resp.text
+        assert "vmc-test" in resp.text
+
 
 class TestSubsystemsLevel:
     def test_lists_every_expected_subsystem_with_no_heartbeats(self, client):
@@ -94,6 +105,16 @@ class TestSubsystemsLevel:
     def test_links_to_the_subsystem_level(self, client):
         resp = client.get("/health/subsystems")
         assert 'href="/health/subsystems/vending"' in resp.text
+
+    def test_heartbeat_only_row_shows_dashes(self, client):
+        from ice_edge.monitoring.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_heartbeat("vending", {"subsystem": "vending", "uptime_seconds": 90})
+        routes.set_health_monitor(hm)
+        resp = client.get("/health/subsystems")
+        assert "1m" in resp.text  # uptime humanized
+        assert "—" in resp.text  # firmware/contract/hardware unknown
 
 
 class TestSubsystemDetailLevel:
