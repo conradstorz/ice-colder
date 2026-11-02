@@ -1,0 +1,33 @@
+{# Product fields shared by product_form.html and product_catalog.html.
+   Import with context: the maxlength values are the max_sku_length and
+   max_product_name_length globals injected by template_context. #}
+{% from "partials/form_macros.html" import field, select %}
+
+{% macro sku_field(value) %}
+{{ field("sku", "SKU", value=value, mono=True, maxlength=max_sku_length) }}
+{% endmacro %}
+
+{% macro name_field(value) %}
+{{ field("name", "Name", value=value, maxlength=max_product_name_length) }}
+{% endmacro %}
+
+{% macro price_field(value) %}
+{{ field("price", "Price (USD)", type="number", value=value, step="0.01", min="0", inputmode="decimal") }}
+{% endmacro %}
+
+{% macro kind_field(selected) %}
+{{ select("kind", "Kind", [("ice", "Ice"), ("water", "Water"), ("other", "Other")], selected) }}
+{% endmacro %}
+
+{% macro button_field(value) %}
+{% set hint %}The channel id of the board's button that sells this product, for example <span class="font-mono">button_ice</span>, <span class="font-mono">button_water_1gal</span> or <span class="font-mono">button_water_5gal</span>. Leave empty for none. A misspelled id leaves the product unreachable by button.{% endset %}
+{{ field("button", "Customer Button", value=value, mono=True, hint=hint, placeholder="None", aria_describedby="button-hint", autocapitalize="none", spellcheck="false") }}
+{% endmacro %}
+
+{% macro track_inventory_checkbox(tracked) %}
+<label class="touch-target text-sm text-gray-700">
+  <input type="checkbox" id="track_inventory" name="track_inventory" {{ "checked" if tracked }}
+         class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+  Track inventory
+</label>
+{% endmacro %}

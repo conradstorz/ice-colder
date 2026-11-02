@@ -10,78 +10,26 @@
 #}
 {% extends "base.html" %}
 {% block title %}{{ "Copy Product" if mode == "copy" else "Add Product" }} · Vending Machine{% endblock %}
+{% from "partials/form_macros.html" import field, form_actions, form_error %}
+{% from "partials/product_fields.html" import sku_field, name_field, price_field, kind_field, button_field, track_inventory_checkbox with context %}
 {% block body %}
 <form hx-post="/products/new" class="max-w-md space-y-4">
   <h1 class="text-hero font-semibold text-gray-900">{{ "Copy Product" if mode == "copy" else "Add Product" }}</h1>
 
-  {% if error %}
-  <p role="alert" class="text-sm text-red-600">{{ error }}</p>
-  {% endif %}
+  {{ form_error(error) }}
 
   <input type="hidden" name="mode" value="{{ mode }}">
   <input type="hidden" name="source_sku" value="{{ source_sku }}">
 
-  <div>
-    <label for="sku" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">SKU</label>
-    <input type="text" id="sku" name="sku" value="{{ sku }}" maxlength="64"
-           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500">
-  </div>
+  {{ sku_field(sku) }}
+  {{ name_field(name) }}
+  {{ price_field(price) }}
+  {{ kind_field(kind) }}
+  {{ field("slot", "Dispenser Slot", type="number", value=slot if slot is not none else '', min="0", step="1", inputmode="numeric", placeholder="Auto-assign") }}
+  {{ button_field(button_value) }}
+  {{ field("inventory_count", "Inventory Count", type="number", value=inventory_count, min="0", step="1", inputmode="numeric") }}
+  {{ track_inventory_checkbox(tracked) }}
 
-  <div>
-    <label for="name" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Name</label>
-    <input type="text" id="name" name="name" value="{{ name }}" maxlength="120"
-           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-  </div>
-
-  <div>
-    <label for="price" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Price (USD)</label>
-    <input type="number" id="price" name="price" value="{{ price }}" step="0.01" min="0" inputmode="decimal"
-           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-  </div>
-
-  <div>
-    <label for="kind" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Kind</label>
-    <select id="kind" name="kind"
-            class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-      <option value="ice" {{ "selected" if kind == "ice" }}>Ice</option>
-      <option value="water" {{ "selected" if kind == "water" }}>Water</option>
-      <option value="other" {{ "selected" if kind == "other" }}>Other</option>
-    </select>
-  </div>
-
-  <div>
-    <label for="slot" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Dispenser Slot</label>
-    <input type="number" id="slot" name="slot" value="{{ slot if slot is not none else '' }}" min="0" step="1"
-           inputmode="numeric" placeholder="Auto-assign"
-           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-  </div>
-
-  <div>
-    <label for="button" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Customer Button</label>
-    <input type="text" id="button" name="button" value="{{ button_value }}" placeholder="None" aria-describedby="button-hint" autocapitalize="none" spellcheck="false"
-           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500">
-    <p id="button-hint" class="mt-1 text-xs text-gray-500">The channel id of the board's button that sells this product, for example <span class="font-mono">button_ice</span>, <span class="font-mono">button_water_1gal</span> or <span class="font-mono">button_water_5gal</span>. Leave empty for none. A misspelled id leaves the product unreachable by button.</p>
-  </div>
-
-  <div>
-    <label for="inventory_count" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Inventory Count</label>
-    <input type="number" id="inventory_count" name="inventory_count" value="{{ inventory_count }}" min="0" step="1" inputmode="numeric"
-           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-  </div>
-
-  <label class="touch-target text-sm text-gray-700">
-          <input type="checkbox" id="track_inventory" name="track_inventory" {{ "checked" if tracked }}
-           class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          Track inventory
-        </label>
-
-  <div class="flex gap-touch pt-2">
-    <button type="submit"
-            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">
-      {{ "Copy Product" if mode == "copy" else "Add Product" }}
-    </button>
-    <a href="{{ '/products/' ~ source_sku if mode == 'copy' and source_sku else '/products' }}"
-       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
-  </div>
+  {{ form_actions('/products/' ~ source_sku if mode == 'copy' and source_sku else '/products', label="Copy Product" if mode == "copy" else "Add Product") }}
 </form>
 {% endblock %}
