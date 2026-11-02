@@ -110,7 +110,6 @@ class Env:
             deposit=lambda *a: None,
             persist_session=self._noop,
             on_lever=lambda: None,
-            message=lambda m: None,
             journal=lambda *a: None,
             record_event=lambda *a: None,
             on_paid=lambda item, cents: self.paid.append((item, cents)),

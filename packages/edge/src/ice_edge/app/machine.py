@@ -206,10 +206,7 @@ class Machine:
             on_persist_failed=self._raise_session_unsaved,
             on_persist_ok=self._clear_session_unsaved,
         )
-        self._journal = SaleJournal(
-            recorder=lambda: self._event_recorder,
-            message=self._outputs.message,
-        )
+        self._journal = SaleJournal(recorder=lambda: self._event_recorder)
         self._faults = FaultService(
             registry=self._registry,
             outputs=self._outputs,
@@ -383,7 +380,6 @@ class Machine:
             deposit=deposit,
             persist_session=self._persist_session,
             on_lever=lambda: self._vmc.on_payment_lever(),
-            message=self._outputs.message,
             journal=self._journal.payment_event,
             record_event=record_event,
             on_paid=lambda item, paid: self._vmc.on_payout_paid(item, paid),

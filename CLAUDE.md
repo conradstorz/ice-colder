@@ -34,7 +34,7 @@ packages/
       sale/            sale state machine (§2.2): vmc, sale_context, session_timer, outputs,
                        sale_journal, payout_desk, test_sale, maintenance_lease, fsm_control
       vend/            vend verification (§2.4): dispense_cycle, dispenser_gate, dispensers, dispensers_doc
-      payment/         payments (§3): ports (Payments, PendingPayout), payment_gateway_manager,
+      payment/         payments (§3): ports (Payments, PendingPayout),
                        mdb/ (MdbGateway; intake, state, policy, payout, reconcile)
       reporting/       reports (§7): reports, report_scheduler
       faults/          fault & availability engine (§2.5): fault_registry, fault_service, availability

@@ -1,5 +1,5 @@
 """Outbound side effects: MQTT publishes, session persistence, the
-customer display, and the dashboard's UI-refresh/message/QR callbacks --
+customer display --
 the FSM's only outbound channel.
 
 Extracted from ``ice_edge.sale.vmc.VMC`` as the first piece carved off in the
@@ -85,10 +85,6 @@ class StatusOutputs:
         self._session_store = None
         self._display = None
 
-        self.update_callback = None
-        self.message_callback = None
-        self.qrcode_callback = None
-
     # --- sinks ---
 
     def attach_mqtt(self, client: "MQTTClient") -> None:
@@ -125,17 +121,6 @@ class StatusOutputs:
     @property
     def display_controller(self):
         return self._display
-
-    # --- callbacks ---
-
-    def set_update_callback(self, callback) -> None:
-        self.update_callback = callback
-
-    def set_message_callback(self, callback) -> None:
-        self.message_callback = callback
-
-    def set_qrcode_callback(self, callback) -> None:
-        self.qrcode_callback = callback
 
     # --- uptime ---
 
@@ -252,35 +237,6 @@ class StatusOutputs:
         """Update the customer-facing display for the given FSM state."""
         if self._display:
             self._display.update_for_state(state)
-
-    @logger.catch()
-    def message(self, text: str) -> None:
-        """Send a message to the customer via the registered callback --
-        mirrors ``VMC.send_customer_message`` exactly, including its log
-        level and wording. ``@logger.catch()`` restores the original's
-        swallow semantics: an exception raised by the registered callback
-        is logged and does not propagate out of this call."""
-        logger.debug(f"Sending customer message: '{text}'")
-        if self.message_callback:
-            self.message_callback(text)
-
-    @logger.catch()
-    def refresh(self) -> None:
-        """Tell the dashboard's registered callback to refresh, passing
-        the live FSM state, selected product, and credit escrow --
-        mirrors ``VMC._refresh_ui`` exactly, including its three-argument
-        call. ``@logger.catch()`` restores the original's swallow
-        semantics: an exception raised by the registered callback is
-        logged and does not propagate out of this call."""
-        if self.update_callback:
-            self.update_callback(
-                self._fsm_state(), self._selected_product(), self._credit_escrow_cents()
-            )
-
-    def show_qr(self, image) -> None:
-        """Hand a QR code image to the registered callback."""
-        if self.qrcode_callback:
-            self.qrcode_callback(image)
 
     # --- MQTT publishes ---
 

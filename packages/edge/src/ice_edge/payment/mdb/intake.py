@@ -24,7 +24,6 @@ from ice_contracts.board.payment import (
     PayoutResult,
 )
 from ice_contracts.board.vending_machine import FaultCode
-from ice_contracts.money import format_cents
 from ice_edge.ledger.payment_cursor import CursorState, PaymentCursorStore
 
 if TYPE_CHECKING:
@@ -47,7 +46,6 @@ class EventIntake:
         on_lever: Callable[[], None],
         on_payout_result: Callable[[str, PayoutResult], None],
         on_device_status: Callable[[DeviceStatusEvent], None],
-        message: Callable[[str], None],
         journal: Callable[[str, dict], None],
         record_event: Callable[[str, int, dict | None], None],
         faults: FaultService,
@@ -60,7 +58,6 @@ class EventIntake:
         self._on_lever = on_lever
         self._on_payout_result = on_payout_result
         self._on_device_status = on_device_status
-        self._message = message
         self._journal = journal
         self._record_event = record_event
         self._faults = faults
@@ -189,9 +186,7 @@ class EventIntake:
                 {"method": method, "event_id": header.event_id},
             )
             return True
-        if kind == "bill_escrowed":
-            self._safe(self._message, f"Bill held: {format_cents(body.cents)}")
-        elif kind == "bill_returned":
+        if kind == "bill_returned":
             self._safe(
                 self._journal,
                 "bill_returned",

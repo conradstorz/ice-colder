@@ -1,6 +1,6 @@
 """The sale FSM's domain-event writer: the transaction/vending bound-sink log
-lines and their paired plain-logger lines, the event-recorder rows and the
-customer messages that accompany them, one method per sale event. Incidental
+lines and their paired plain-logger lines and the event-recorder rows,
+one method per sale event. Incidental
 debug tracing and the MQTT dispenser-event line stay at the call site.
 The strings, sinks and levels here are the log contract; do not reword them.
 Nothing in this module reads FSM state: callers pass in every value.
@@ -20,17 +20,15 @@ STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
 
 class SaleJournal:
-    """Every domain-event log line, event-recorder row and adjacent customer
-    message the sale FSM emits, one method per event. `recorder` is read at each call."""
+    """Every domain-event log line and event-recorder row the sale FSM
+    emits, one method per event. `recorder` is read at each call."""
 
     def __init__(
         self,
         *,
         recorder: Callable[[], object | None],
-        message: Callable[[str], None],
     ) -> None:
         self._recorder = recorder
-        self._message = message
         self._txn = logger.bind(transaction=True)
         self._vend = logger.bind(vending=True)
 
@@ -100,18 +98,10 @@ class SaleJournal:
         self._txn.info(
             f"LOCKED OUT: '{product.name}' ({code.value}), customer rejected"
         )
-        self._message(
-            f"{product.name} is unavailable ({code.value}). "
-            "Please choose another product."
-        )
 
     def unavailable(self, product: Product, reason: str) -> None:
         self._txn.info(
             f"UNAVAILABLE: '{product.name}' blocked by {reason}, customer rejected"
-        )
-        self._message(
-            f"{product.name} is unavailable right now ({reason}). "
-            "Please try again later."
         )
 
     def product_selected(self, product: Product) -> None:
@@ -124,7 +114,6 @@ class SaleJournal:
     def sold_out(self, product: Product) -> None:
         logger.error(f"{product.name} is sold out.")
         self._txn.info(f"SOLD OUT: '{product.name}', customer rejected")
-        self._message(f"{product.name} is sold out. Please select another product.")
 
     # -- payment processing ------------------------------------------------
 
@@ -137,7 +126,6 @@ class SaleJournal:
             f"PAYMENT SUFFICIENT: {format_cents(escrow)} >= {format_cents(price)} "
             f"for '{product.name}', charging {format_cents(price)}"
         )
-        self._message("Sufficient funds received. Processing your payment...")
 
     def payment_insufficient(
         self,
@@ -152,7 +140,6 @@ class SaleJournal:
             f"PAYMENT INSUFFICIENT: {format_cents(escrow)} < {format_cents(price)} "
             f"for '{product.name}', need {format_cents(required)} more"
         )
-        self._message(text)
 
     def catalog_lost_selection(self) -> None:
         logger.error(
@@ -227,10 +214,6 @@ class SaleJournal:
                 value=price,
                 metadata={"code": code.value, "sku": sku, "outcome": outcome},
             )
-        self._message(
-            f"Sorry, {name} could not be dispensed ({code.value}). "
-            f"Your {format_cents(price)} credit has been kept."
-        )
 
     def shares_missing(self, price: int) -> None:
         logger.warning(
@@ -273,29 +256,6 @@ class SaleJournal:
             "settling as dispensed without a transition"
         )
 
-    def error_message(self, had_credit: bool) -> None:
-        self._message(
-            "An error has occurred. A refund of your credit has been requested. "
-            "Please contact support if it does not arrive."
-            if had_credit
-            else "An error has occurred. Please contact support."
-        )
-
-    def interaction_started(self) -> None:
-        self._message("Interaction started. Please insert funds or select a product.")
-
-    def dispensing_started(self) -> None:
-        self._message("Processing your payment and dispensing your product...")
-
-    def transaction_complete(self) -> None:
-        self._message("Transaction complete. Thank you for your purchase!")
-
-    def product_removed(self) -> None:
-        self._message(
-            "Sorry, the selected product is no longer available. "
-            "Please make a new selection."
-        )
-
     def test_credit_cleared_on_error(self, amount: int) -> None:
         logger.debug(
             f"test credit cleared on error, never refunded ({format_cents(amount)})"
@@ -312,9 +272,6 @@ class SaleJournal:
             f"REFUND REQUESTED: {format_cents(amount)} via {method} "
             f"reason={reason} request_id={request_id}"
         )
-        self._message(
-            f"Refund of {format_cents(amount)} requested via {method}. Please wait..."
-        )
 
     def refund_confirmed(
         self, request_id: str, reason, amount_returned_cents: int, method
@@ -327,9 +284,6 @@ class SaleJournal:
             "refund",
             value=amount_returned_cents,
             metadata={"request_id": request_id, "reason": reason},
-        )
-        self._message(
-            f"Refund of {format_cents(amount_returned_cents)} issued via {method}."
         )
 
     # -- session / lifecycle -----------------------------------------------

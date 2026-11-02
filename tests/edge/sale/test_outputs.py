@@ -23,7 +23,6 @@ from ice_contracts.board.mqtt_messages import (
     VMCAlert,
     VMCStatus,
 )
-from ice_edge.payment.payment_gateway_manager import PaymentGatewayManager
 from ice_edge.ledger.session_store import SessionSnapshot
 from tests.fakes import (
     FakeAvailability,
@@ -419,85 +418,6 @@ def test_display_controller_property_returns_what_was_attached():
     assert outputs.display_controller is display
 
 
-# --- message / refresh / show_qr callbacks ---
-
-
-def test_message_calls_callback_only_when_set():
-    outputs, _runner = make_outputs()
-    outputs.message("hello")  # no callback -> must not raise
-
-    received: list[str] = []
-    outputs.set_message_callback(received.append)
-    outputs.message("hello again")
-
-    assert received == ["hello again"]
-
-
-def test_refresh_calls_callback_only_when_set():
-    outputs, _runner = make_outputs()
-    outputs.refresh()  # no callback -> must not raise
-
-    calls = []
-    outputs.set_update_callback(lambda *args: calls.append(args))
-    outputs.refresh()
-
-    assert len(calls) == 1
-
-
-def test_refresh_passes_state_product_and_escrow():
-    """Mirrors ``StatusOutputs.refresh``'s own call:
-    ``self.update_callback(self.state, self.selected_product,
-    self.credit_escrow_cents)`` -- same three positional args, same order."""
-    product = Product(name="Ice Bag")
-    outputs, _runner = make_outputs(
-        fsm_state=lambda: "interacting_with_user",
-        selected_product=lambda: product,
-        credit_escrow_cents=lambda: 175,
-    )
-    calls = []
-    outputs.set_update_callback(lambda *args: calls.append(args))
-
-    outputs.refresh()
-
-    assert calls == [("interacting_with_user", product, 175)]
-
-
-def test_message_swallows_a_raising_callback():
-    """``@logger.catch()`` on ``message`` restores the original
-    ``VMC._display_message``'s swallow semantics: a raising callback is
-    logged, not propagated."""
-    outputs, _runner = make_outputs()
-    outputs.set_message_callback(
-        lambda text: (_ for _ in ()).throw(RuntimeError("boom"))
-    )
-
-    outputs.message("hello")  # must not raise
-
-
-def test_refresh_swallows_a_raising_callback():
-    """``@logger.catch()`` on ``refresh`` restores the original
-    ``StatusOutputs.refresh``'s swallow semantics: a raising callback is
-    logged, not propagated."""
-    outputs, _runner = make_outputs()
-    outputs.set_update_callback(
-        lambda *args: (_ for _ in ()).throw(RuntimeError("boom"))
-    )
-
-    outputs.refresh()  # must not raise
-
-
-def test_show_qr_calls_callback_only_when_set():
-    outputs, _runner = make_outputs()
-    outputs.show_qr(object())  # no callback -> must not raise
-
-    received = []
-    outputs.set_qrcode_callback(received.append)
-    image = object()
-    outputs.show_qr(image)
-
-    assert received == [image]
-
-
 # --- publish_payment_enable / publish_refund / publish_alert ---
 
 
@@ -530,33 +450,3 @@ async def test_publish_alert_publishes_on_the_right_topic():
     topic, payload, _retain = mqtt.published[0]
     assert topic == "alerts"
     assert payload is alert
-
-
-# --- PaymentGatewayManager.next_payment_prompt ---
-
-
-def test_next_payment_prompt_returns_none_with_no_gateways():
-    manager = PaymentGatewayManager()
-    manager.gateways = {}
-
-    assert manager.next_payment_prompt(250) is None
-
-
-def test_next_payment_prompt_cycles_through_gateways():
-    manager = PaymentGatewayManager()
-    names = list(manager.gateways.keys())
-    assert len(names) >= 2  # stripe/paypal/square -- cycling is meaningful
-
-    seen = [manager.next_payment_prompt(250)[0] for _ in names]
-
-    assert seen == names
-    # Cycled all the way back around to the first gateway.
-    assert manager.next_payment_prompt(250)[0] == names[0]
-
-
-def test_next_payment_prompt_returns_a_qr_image():
-    manager = PaymentGatewayManager()
-    name, qr_image = manager.next_payment_prompt(250)
-
-    assert name in manager.gateways
-    assert qr_image is not None

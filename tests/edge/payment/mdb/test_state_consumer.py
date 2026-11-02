@@ -62,11 +62,9 @@ def doc(
 
 @pytest.fixture
 def rig():
-    faults, policy, avail, msgs = FakeFaults(), FakePolicy(), Availability(), []
-    c = StateConsumer(
-        faults=faults, availability=lambda: avail, policy=policy, message=msgs.append
-    )
-    return c, faults, policy, avail, msgs
+    faults, policy, avail = FakeFaults(), FakePolicy(), Availability()
+    c = StateConsumer(faults=faults, availability=lambda: avail, policy=policy)
+    return c, faults, policy, avail
 
 
 def rows(avail):
@@ -78,7 +76,7 @@ def st(avail, name):
 
 
 async def test_no_state_yet_rows_unknown(rig):
-    _, _, _, avail, _ = rig
+    _, _, _, avail = rig
     for n in ("payment_coin_ready", "payment_bill_ready", "cash_accepting"):
         assert st(avail, n) == PermissiveState.UNKNOWN.value
         assert rows(avail)[n]["detail"] == "no report yet"
@@ -86,7 +84,7 @@ async def test_no_state_yet_rows_unknown(rig):
 
 @pytest.mark.parametrize("status", ["offline", "error", "tilt", "jammed"])
 async def test_bad_status_fails_device_row_and_raises_fault(rig, status):
-    c, faults, _, avail, _ = rig
+    c, faults, _, avail = rig
     await c.handle("payment/state", doc(coin=status))
     assert st(avail, "payment_coin_ready") == "fail"
     assert st(avail, "payment_bill_ready") == "pass"
@@ -96,13 +94,13 @@ async def test_bad_status_fails_device_row_and_raises_fault(rig, status):
 
 @pytest.mark.parametrize("status", ["ready", "disabled", "busy", "full", "empty"])
 async def test_ok_statuses_pass_device_row(rig, status):
-    c, _, _, avail, _ = rig
+    c, _, _, avail = rig
     await c.handle("payment/state", doc(bill=status))
     assert st(avail, "payment_bill_ready") == "pass"
 
 
 async def test_full_empty_alert_only_and_leave_fault_untouched(rig):
-    c, faults, _, avail, _ = rig
+    c, faults, _, avail = rig
     await c.handle("payment/state", doc(coin="jammed"))
     await c.handle("payment/state", doc(coin="full"))
     assert rows(avail)["payment_coin_ready"]["detail"] == "full"
@@ -110,7 +108,7 @@ async def test_full_empty_alert_only_and_leave_fault_untouched(rig):
 
 
 async def test_gates(rig):
-    _, _, _, avail, _ = rig
+    _, _, _, avail = rig
     r = rows(avail)
     assert r["payment_coin_ready"]["gate"] == "alert"
     assert r["payment_bill_ready"]["gate"] == "alert"
@@ -119,39 +117,39 @@ async def test_gates(rig):
 
 
 async def test_one_jammed_device_keeps_cash_accepting(rig):
-    c, _, _, avail, _ = rig
+    c, _, _, avail = rig
     await c.handle("payment/state", doc(coin="jammed"))
     assert st(avail, "cash_accepting") == "pass"
 
 
 async def test_both_unusable_fails_cash_accepting(rig):
-    c, _, _, avail, _ = rig
+    c, _, _, avail = rig
     await c.handle("payment/state", doc(coin="jammed", bill="offline"))
     assert st(avail, "cash_accepting") == "fail"
 
 
 async def test_no_present_cash_device_fails(rig):
-    c, _, _, avail, _ = rig
+    c, _, _, avail = rig
     await c.handle("payment/state", doc(coin_present=False, bill_present=False))
     assert st(avail, "cash_accepting") == "fail"
 
 
 @pytest.mark.parametrize("reason", ["edge_silent", "device_fault"])
 async def test_inhibit_reasons_fail_cash_accepting(rig, reason):
-    c, _, _, avail, _ = rig
+    c, _, _, avail = rig
     await c.handle("payment/state", doc(reason=reason))
     assert st(avail, "cash_accepting") == "fail"
 
 
 @pytest.mark.parametrize("reason", ["policy", "no_policy"])
 async def test_policy_reasons_do_not_fail_cash_accepting(rig, reason):
-    c, _, _, avail, _ = rig
+    c, _, _, avail = rig
     await c.handle("payment/state", doc(reason=reason))
     assert st(avail, "cash_accepting") == "pass"
 
 
 async def test_cash_accepting_blocks_sale_not_payment(rig):
-    c, _, _, avail, _ = rig
+    c, _, _, avail = rig
     avail.set_payment_state(None)
     await c.handle("payment/state", doc(coin="error", bill="error"))
     assert "cash_accepting" in avail.sale_available("ice")[1]
@@ -159,7 +157,7 @@ async def test_cash_accepting_blocks_sale_not_payment(rig):
 
 
 async def test_faults_clear_from_state_and_skip_inactive(rig):
-    c, faults, _, _, _ = rig
+    c, faults, _, _ = rig
     await c.handle("payment/state", doc(bill="tilt"))
     await c.handle("payment/state", doc(bill="tilt"))
     assert faults.calls == [("raise", FaultCode.PAY_107)]
@@ -169,7 +167,7 @@ async def test_faults_clear_from_state_and_skip_inactive(rig):
 
 
 async def test_device_status_event_raises_and_clears(rig):
-    c, faults, _, _, _ = rig
+    c, faults, _, _ = rig
     c.on_device_status(
         DeviceStatusEvent(kind="device_status", device="coin", status="jammed")
     )
@@ -184,19 +182,8 @@ async def test_device_status_event_raises_and_clears(rig):
     assert faults.calls == [("raise", FaultCode.PAY_106), ("clear", "PAY-106", "auto")]
 
 
-async def test_exact_change_message_once_per_flip(rig):
-    c, _, _, _, msgs = rig
-    await c.handle("payment/state", doc(exact=False))
-    await c.handle("payment/state", doc(exact=True))
-    await c.handle("payment/state", doc(exact=True))
-    assert msgs == ["Exact change only"]
-    await c.handle("payment/state", doc(exact=False))
-    await c.handle("payment/state", doc(exact=True))
-    assert msgs == ["Exact change only"] * 2
-
-
 async def test_policy_and_subscribers_called_and_state_stored(rig):
-    c, _, policy, _, _ = rig
+    c, _, policy, _ = rig
     seen = []
     c.subscribe_state(seen.append)
     await c.handle("payment/state", doc())
@@ -206,22 +193,16 @@ async def test_policy_and_subscribers_called_and_state_stored(rig):
 
 
 async def test_invalid_document_dropped(rig):
-    c, faults, policy, avail, msgs = rig
+    c, faults, policy, avail = rig
     await c.handle("payment/state", {"boot_id": "x"})
     assert c.state is None and policy.states == [] and not faults.calls
     assert st(avail, "cash_accepting") == "unknown"
 
 
 async def test_absent_device_clears_active_fault(rig):
-    c, faults, _, _, _ = rig
+    c, faults, _, _ = rig
     await c.handle("payment/state", doc(coin="jammed"))
     assert FaultCode.PAY_106 in faults.active
     await c.handle("payment/state", doc(coin="offline", coin_present=False))
     assert FaultCode.PAY_106 not in faults.active
     assert faults.calls[-1] == ("clear", "PAY-106", "auto")
-
-
-async def test_exact_change_on_first_state_fires(rig):
-    c, _, _, _, msgs = rig
-    await c.handle("payment/state", doc(exact=True))
-    assert msgs == ["Exact change only"]

@@ -14,6 +14,7 @@ import asyncio
 import logging
 
 import pytest
+from loguru import logger
 
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from ice_contracts.board.common import ChannelDescriptor, CommandAck
@@ -153,12 +154,18 @@ def test_select_product_refuses_cfg101_locked(tmp_path):
     machine.set_dispenser_profiles(profiles)
     assert vmc.faults.lockouts["X"] is FaultCode.CFG_101
 
-    messages = []
-    vmc.outputs.set_message_callback(messages.append)
-    vmc.select_product(vmc.products[2])  # "X"
+    lines: list[str] = []
+    sink = logger.add(
+        lambda m: lines.append(m.record["message"]),
+        filter=lambda r: bool(r["extra"].get("transaction")),
+    )
+    try:
+        vmc.select_product(vmc.products[2])  # "X"
+    finally:
+        logger.remove(sink)
 
     assert vmc.selected_product is None
-    assert "CFG-101" in messages[-1]
+    assert "CFG-101" in lines[-1]
 
 
 async def test_capabilities_hook_reruns_cross_checks(tmp_path):
