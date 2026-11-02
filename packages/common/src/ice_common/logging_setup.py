@@ -12,6 +12,12 @@ from ice_common.paths import LOG_DIR, LOG_FILE
 LOG_LEVEL_ENV = "ICE_COLDER_LOG_LEVEL"
 DEFAULT_FILE_LEVEL = "INFO"
 MAX_LOG_BYTES = 50 * 1024 * 1024
+# (file name, the ``extra`` flag that routes a record into it), all midnight-rotated.
+FILTERED_SINKS = (
+    ("transactions.log", "transaction"),
+    ("ice_maker.log", "ice_maker"),
+    ("vending.log", "vending"),
+)
 
 
 class _MidnightOrSizeRotation:
@@ -72,29 +78,15 @@ def setup_logging() -> None:
         serialize=False,
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
     )
-    logger.add(
-        str(LOG_DIR / "transactions.log"),
-        filter=lambda record: record["extra"].get("transaction", False),
-        rotation="00:00",
-        retention="300 days",
-        compression="zip",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
-    )
-    logger.add(
-        str(LOG_DIR / "ice_maker.log"),
-        filter=lambda record: record["extra"].get("ice_maker", False),
-        rotation="00:00",
-        retention="300 days",
-        compression="zip",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
-    )
-    logger.add(
-        str(LOG_DIR / "vending.log"),
-        filter=lambda record: record["extra"].get("vending", False),
-        rotation="00:00",
-        retention="300 days",
-        compression="zip",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
-    )
+    for name, filter_key in FILTERED_SINKS:
+        logger.add(
+            str(LOG_DIR / name),
+            # default arg binds this iteration's key (no late-binding closure)
+            filter=lambda record, key=filter_key: record["extra"].get(key, False),
+            rotation="00:00",
+            retention="300 days",
+            compression="zip",
+            format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
+        )
     if level_warning:
         logger.warning(level_warning)

@@ -10,6 +10,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from ice_common.config_model import ConfigModel
+from ice_common.paths import config_path
 from ice_edge.access.access import AccessStore
 from ice_edge.config.config_store import save_config
 from ice_edge.config.env_overrides import (  # noqa: F401
@@ -17,15 +18,6 @@ from ice_edge.config.env_overrides import (  # noqa: F401
     apply_env_overrides,
     mqtt_env_overrides,
 )
-
-
-def _config_path() -> str:
-    """Resolve the active config path from ``ICE_COLDER_CONFIG`` (read at call
-    time so tests can monkeypatch env and cwd independently), defaulting to
-    ``config.json`` in the current working directory — unchanged behavior for
-    local runs and tests.
-    """
-    return os.environ.get("ICE_COLDER_CONFIG", "config.json")
 
 
 def _create_default_config(path: str) -> ConfigModel:
@@ -47,7 +39,7 @@ def load_config() -> ConfigModel:
     Pydantic fills in defaults for missing fields; the user's existing file
     is never overwritten.
     """
-    path = _config_path()
+    path = str(config_path())
     logger.info(f"Loading configuration from '{path}'")
 
     if os.path.isdir(path):

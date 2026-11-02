@@ -13,6 +13,17 @@ from loguru import logger
 LOG_DIR = Path("LOGS")
 LOG_FILE = LOG_DIR / "vmc.log"
 DATA_DIR = Path("data")
+CONFIG_ENV = "ICE_COLDER_CONFIG"
+
+
+def config_path(default: str | Path = "config.json") -> Path:
+    """Return the active config.json path.
+
+    ``ICE_COLDER_CONFIG`` is read at call time (never import time) and wins
+    when set and non-empty; otherwise ``default`` is used. Callers that must
+    honour a module-level fallback (``config_store.CONFIG_PATH``) pass it here.
+    """
+    return Path(os.environ.get(CONFIG_ENV) or default)
 
 
 def fsync_dir(directory: Path) -> None:

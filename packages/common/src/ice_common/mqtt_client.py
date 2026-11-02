@@ -41,6 +41,22 @@ MessageHandler = Callable[[str, dict], Awaitable[None]]
 ConnectionCallback = Callable[[bool], None]
 
 
+def topic_matches(pattern: str, topic: str) -> bool:
+    """Simple MQTT topic matching supporting + (single level) and # (multi level)."""
+    pattern_parts = pattern.split("/")
+    topic_parts = topic.split("/")
+
+    for i, pat in enumerate(pattern_parts):
+        if pat == "#":
+            return True
+        if i >= len(topic_parts):
+            return False
+        if pat != "+" and pat != topic_parts[i]:
+            return False
+
+    return len(pattern_parts) == len(topic_parts)
+
+
 class MQTTClient:
     """
     Async MQTT client that runs as a long-lived asyncio task.
@@ -140,26 +156,24 @@ class MQTTClient:
             try:
                 await self._connect_and_listen()
                 _in_retry_loop = False
-            except aiomqtt.MqttError as e:
-                self._connected = False
-                self._subscribed = False
-                if self._connection_callback:
-                    self._connection_callback(False)
-                if not _in_retry_loop:
-                    logger.error(f"MQTT: Connection lost: {e}")
-                    _in_retry_loop = True
-                else:
-                    logger.debug(f"MQTT: Reconnect failed: {e}")
             except Exception as e:
+                # aiomqtt.MqttError (broker/connection failures) and anything
+                # else share one reset-and-log path; the first failure logs at
+                # error with the cause's type, retries log at debug.
+                kind = (
+                    "Connection lost"
+                    if isinstance(e, aiomqtt.MqttError)
+                    else "Unexpected error"
+                )
                 self._connected = False
                 self._subscribed = False
                 if self._connection_callback:
                     self._connection_callback(False)
                 if not _in_retry_loop:
-                    logger.error(f"MQTT: Unexpected error: {e}")
+                    logger.error(f"MQTT: {kind} ({type(e).__name__}): {e}")
                     _in_retry_loop = True
                 else:
-                    logger.debug(f"MQTT: Reconnect failed: {e}")
+                    logger.debug(f"MQTT: Reconnect failed ({type(e).__name__}): {e}")
 
             if _in_retry_loop:
                 logger.debug(
@@ -270,18 +284,5 @@ class MQTTClient:
 
     @staticmethod
     def topic_matches(pattern: str, topic: str) -> bool:
-        """
-        Simple MQTT topic matching supporting + (single level) and # (multi level).
-        """
-        pattern_parts = pattern.split("/")
-        topic_parts = topic.split("/")
-
-        for i, pat in enumerate(pattern_parts):
-            if pat == "#":
-                return True
-            if i >= len(topic_parts):
-                return False
-            if pat != "+" and pat != topic_parts[i]:
-                return False
-
-        return len(pattern_parts) == len(topic_parts)
+        """Delegate to the module-level :func:`topic_matches`."""
+        return topic_matches(pattern, topic)

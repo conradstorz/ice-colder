@@ -45,6 +45,7 @@ from ice_cloud.settings import CloudSettings
 from ice_cloud.store.repository import Account, EmailConflict, Machine
 from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
 from ice_contracts.cloud import signing
+from ice_ui.htmx import require_htmx  # noqa: F401  (re-exported for routes)
 from ice_ui.levels import Level
 
 __all__ = [
@@ -153,12 +154,6 @@ def safe_next(value: str | None) -> str | None:
     if "\\" in value or any(ord(c) < 32 for c in value):
         return None
     return value
-
-
-def require_htmx(request: Request) -> None:
-    """CSRF guard: a cross-site form cannot add the ``HX-Request`` header."""
-    if request.headers.get("HX-Request") != "true":
-        raise HTTPException(status_code=403, detail="HTMX request required")
 
 
 def is_admin(settings: CloudSettings, account: Account) -> bool:

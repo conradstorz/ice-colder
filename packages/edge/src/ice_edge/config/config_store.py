@@ -11,7 +11,6 @@ not stored in config.json.
 """
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +18,7 @@ from loguru import logger
 from pydantic import SecretStr
 
 from ice_common.config_model import ConfigModel, Product
-from ice_common.paths import atomic_write
+from ice_common.paths import atomic_write, config_path
 
 CONFIG_PATH = Path("config.json")
 
@@ -35,15 +34,12 @@ def _clean_kind(kind: str) -> str:
 def _config_path() -> Path:
     """Resolve the active config path.
 
-    ``ICE_COLDER_CONFIG`` (read at call time, not import time) takes priority
-    so Docker deployments can point at a writable, bind-mounted location
-    (e.g. ``/app/data/config.json``); otherwise falls back to ``CONFIG_PATH``
-    (also honored so tests can monkeypatch it directly).
+    ``ICE_COLDER_CONFIG`` (via ``ice_common.paths.config_path``, read at call
+    time) takes priority so Docker deployments can point at a writable,
+    bind-mounted location (e.g. ``/app/data/config.json``); otherwise falls
+    back to ``CONFIG_PATH``, which tests monkeypatch directly.
     """
-    env_path = os.environ.get("ICE_COLDER_CONFIG")
-    if env_path:
-        return Path(env_path)
-    return CONFIG_PATH
+    return config_path(CONFIG_PATH)
 
 
 def _config_json(config: ConfigModel) -> str:

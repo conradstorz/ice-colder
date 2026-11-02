@@ -273,7 +273,6 @@ def test_delete_product_leaves_other_slots_unchanged(tmp_path, monkeypatch):
 
 def test_save_config_fsyncs_before_replace(tmp_path, monkeypatch):
     import os
-    import ice_edge.config.config_store as cs
 
     calls: list[str] = []
     real_fsync = os.fsync
@@ -287,8 +286,8 @@ def test_save_config_fsyncs_before_replace(tmp_path, monkeypatch):
         calls.append("replace")
         return real_replace(src, dst)
 
-    monkeypatch.setattr(cs.os, "fsync", fake_fsync)
-    monkeypatch.setattr(cs.os, "replace", fake_replace)
+    monkeypatch.setattr(os, "fsync", fake_fsync)
+    monkeypatch.setattr(os, "replace", fake_replace)
 
     save_config(ConfigModel(), tmp_path / "config.json")
 
