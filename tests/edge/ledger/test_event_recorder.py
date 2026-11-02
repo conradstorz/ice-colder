@@ -1017,16 +1017,16 @@ class TestReplaySalesJournal:
                 "sku": "A",
                 "name": "Alpha",
                 "slot": 1,
-                "price": 1.0,
-                "methods": {"cash": 1.0},
+                "price_cents": 100,
+                "methods": {"cash": 100},
             },
             {
                 "ts": 2.0,
                 "sku": "B",
                 "name": "Beta",
                 "slot": 2,
-                "price": 2.0,
-                "methods": {"card": 2.0},
+                "price_cents": 200,
+                "methods": {"card": 200},
             },
         ]
         journal_path.write_text(
@@ -1056,8 +1056,8 @@ class TestReplaySalesJournal:
             "sku": "A",
             "name": "Alpha",
             "slot": 1,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         # second line is a truncated write: no closing brace/quote, no newline
         content = json.dumps(good) + '\n{"ts": 2.0, "sku": "B", "name": "Bet'
@@ -1368,8 +1368,8 @@ class TestSalesJournalIdempotency:
             "sku": "DUPTEST",
             "name": "Dup",
             "slot": 1,
-            "price": 1.25,
-            "methods": {"cash": 1.25},
+            "price_cents": 125,
+            "methods": {"cash": 125},
         }
         journal_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
 
@@ -1400,16 +1400,16 @@ class TestSalesJournalIdempotency:
                 "sku": "SAME",
                 "name": "Thing",
                 "slot": 1,
-                "price": 1.0,
-                "methods": {"cash": 1.0},
+                "price_cents": 100,
+                "methods": {"cash": 100},
             },
             {
                 "ts": 20.0,
                 "sku": "SAME",
                 "name": "Thing",
                 "slot": 1,
-                "price": 1.0,
-                "methods": {"cash": 1.0},
+                "price_cents": 100,
+                "methods": {"cash": 100},
             },
         ]
         journal_path.write_text(
@@ -1439,8 +1439,8 @@ class TestSalesJournalRejectedRows:
             "sku": "GOOD1",
             "name": "One",
             "slot": 1,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         # sku=None violates the NOT NULL column -- well-formed JSON, but
         # uninsertable.
@@ -1449,16 +1449,16 @@ class TestSalesJournalRejectedRows:
             "sku": None,
             "name": "Bad",
             "slot": 2,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         good_after = {
             "ts": 3.0,
             "sku": "GOOD2",
             "name": "Two",
             "slot": 3,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         journal_path.write_text(
             "\n".join(json.dumps(e) for e in (good_before, bad, good_after)) + "\n",
@@ -1577,24 +1577,24 @@ class TestSalesJournalRejectedWriteFailure:
             "sku": "GOOD1",
             "name": "One",
             "slot": 1,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         bad = {  # sku=None violates NOT NULL -- well-formed JSON, uninsertable
             "ts": 2.0,
             "sku": None,
             "name": "Bad",
             "slot": 2,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         good_after = {
             "ts": 3.0,
             "sku": "GOOD2",
             "name": "Two",
             "slot": 3,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         journal_path.write_text(
             "\n".join(json.dumps(e) for e in (good_before, bad, good_after)) + "\n",
@@ -1656,16 +1656,16 @@ class TestJournalCountVsDrainSignal:
             "sku": "DUP",
             "name": "Dup",
             "slot": 1,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         bad = {  # uninsertable, and its rejected-evidence write will fail too
             "ts": 600.0,
             "sku": None,
             "name": "StuckBad",
             "slot": 2,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         journal_path.write_text(
             "\n".join(json.dumps(e) for e in (duplicate_of_committed, bad)) + "\n",
@@ -1710,8 +1710,8 @@ class TestJournalCountVsDrainSignal:
             "sku": "X",
             "name": "Thing",
             "slot": 1,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         journal_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
         first = rec.replay_sales_journal()
@@ -1744,8 +1744,8 @@ class TestReplayDuplicateSkipIsLogged:
             "sku": "DUPLOG",
             "name": "Thing",
             "slot": 1,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         journal_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
         rec.replay_sales_journal()
@@ -1790,8 +1790,8 @@ class TestAtomicJournalRewrite:
             "sku": None,
             "name": "Bad",
             "slot": 2,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         original_content = json.dumps(bad) + "\n"
         journal_path.write_text(original_content, encoding="utf-8")
@@ -1839,8 +1839,8 @@ class TestAtomicJournalRewrite:
             "sku": "GOOD1",
             "name": "One",
             "slot": 1,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         original_content = json.dumps(good) + "\n"
         journal_path.write_text(original_content, encoding="utf-8")
@@ -1876,8 +1876,8 @@ class TestAtomicJournalRewrite:
             "sku": "GOOD1",
             "name": "One",
             "slot": 1,
-            "price": 1.0,
-            "methods": {"cash": 1.0},
+            "price_cents": 100,
+            "methods": {"cash": 100},
         }
         journal_path.write_text(json.dumps(good) + "\n", encoding="utf-8")
 

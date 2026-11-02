@@ -1,5 +1,5 @@
 """events.db migration 2 (money in integer cents) and the sales journal's
-``"units"`` marker with legacy replay."""
+``"units"`` marker (written, no longer read)."""
 
 import json
 import sqlite3
@@ -149,26 +149,6 @@ def _sales(db):
         conn.close()
 
 
-def test_legacy_journal_row_replays_as_dollars(tmp_path, journal_path):
-    rec = EventRecorder(db_path=str(tmp_path / "events.db"))
-    journal_path.write_text(
-        json.dumps(
-            {
-                "ts": 1.0,
-                "sku": "A",
-                "name": "Alpha",
-                "slot": 1,
-                "price": 2.5,
-                "methods": {"cash": 2.5},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    assert rec.replay_sales_journal() == 1
-    assert _sales(rec.db_path) == {"A": (250, {"cash": 250})}
-
-
 def test_cents_journal_row_replays_unchanged(tmp_path, journal_path):
     rec = EventRecorder(db_path=str(tmp_path / "events.db"))
     journal_path.write_text(
@@ -188,35 +168,6 @@ def test_cents_journal_row_replays_unchanged(tmp_path, journal_path):
     )
     assert rec.replay_sales_journal() == 1
     assert _sales(rec.db_path) == {"A": (250, {"cash": 250})}
-
-
-def test_mixed_journal_replays_both(tmp_path, journal_path):
-    rec = EventRecorder(db_path=str(tmp_path / "events.db"))
-    legacy = {
-        "ts": 1.0,
-        "sku": "OLD",
-        "name": "Old",
-        "slot": 1,
-        "price": 1.25,
-        "methods": {"cash": 0.25, "card": 1.0},
-    }
-    new = {
-        "ts": 2.0,
-        "sku": "NEW",
-        "name": "New",
-        "slot": 2,
-        "units": "cents",
-        "price_cents": 300,
-        "methods": {"card": 300},
-    }
-    journal_path.write_text(
-        json.dumps(legacy) + "\n" + json.dumps(new) + "\n", encoding="utf-8"
-    )
-    assert rec.replay_sales_journal() == 2
-    assert _sales(rec.db_path) == {
-        "OLD": (125, {"cash": 25, "card": 100}),
-        "NEW": (300, {"card": 300}),
-    }
 
 
 def test_failed_insert_journals_a_cents_row(tmp_path, journal_path, monkeypatch):

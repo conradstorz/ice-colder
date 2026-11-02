@@ -323,16 +323,6 @@ def test_recorded_sale_with_leftover_credit_stays_uncertain(tmp_path):
     assert recovery.pending_sale_for_recovery() is None
 
 
-def test_recorded_sale_with_pending_refund_stays_uncertain(tmp_path):
-    store = SessionStore(tmp_path / "session.json")
-    store.save(_open_snapshot_with(pending_refund_request_id="r-1"))
-
-    decision = make_recovery(store, sale_recorded=lambda *a: True).evaluate_at_boot()
-
-    assert decision.kind == "uncertain"
-    assert store.load() is not None
-
-
 def test_recorded_sale_with_zero_credit_is_closed(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(_open_snapshot_with(credit_escrow_cents=0))
@@ -369,7 +359,6 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
     store.save(
         _open_snapshot_with(
             credit_escrow_cents=250,
-            pending_refund_request_id="r-1",
             pending_payouts=[
                 {"request_id": "p1", "kind": "payout", "cents": 100, "reason": "change"}
             ],
@@ -384,7 +373,6 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
         sku="ICE-1",
         sale_recorded=True,
         credit_escrow_cents=250,
-        pending_refund_request_id="r-1",
         pending_payouts=[
             {"request_id": "p1", "kind": "payout", "cents": 100, "reason": "change"}
         ],
@@ -430,9 +418,10 @@ def test_match_window_is_passed_to_sale_recorded(tmp_path):
     assert seen == [777.0]
 
 
-def test_legacy_dollar_snapshot_still_raises_uncertain_at_boot(tmp_path):
-    """A pre-cents session.json (dollar floats, no `units`) with credit in
-    escrow still evaluates to `uncertain` (PAY-104) and keeps its file."""
+def test_unreadable_pre_cents_snapshot_still_raises_uncertain_at_boot(tmp_path):
+    """A pre-cents session.json (dollar keys) is no longer converted: it loads
+    as an unreadable snapshot, which still evaluates to `uncertain` (PAY-104)
+    and keeps its file."""
     import json
 
     path = tmp_path / "session.json"
@@ -454,7 +443,7 @@ def test_legacy_dollar_snapshot_still_raises_uncertain_at_boot(tmp_path):
     decision = make_recovery(store).evaluate_at_boot()
 
     assert decision.kind == "uncertain"
-    assert decision.snapshot.credit_escrow_cents == 250
+    assert decision.snapshot.error
     assert path.exists()
 
 

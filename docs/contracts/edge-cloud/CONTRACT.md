@@ -19,9 +19,9 @@ Every money field is whole cents (`ice_contracts.money.Cents`, a non-negative st
 | `KpiWindow.money_in` | `money_in_cents` |
 | `KpiAverage.money_in` | `money_in_cents` (float cents: an average, not quantized) |
 
-`contract` accepts `0.2.0`, `0.3.0`, `0.4.0` and `1.0.0`. Each of the four models has a before-validator that converts the old dollar key when the new one is absent (`dollars_to_cents`, half-even; `KpiAverage` multiplies by 100 as a float), so stored 0.x snapshots and alert rows still read. The edge always sends `"1.0.0"`.
+`contract` accepts only `1.0.0`. Since 2026-11-02 the cloud no longer converts dollar-keyed 0.x reports (they answer 422), and a stored 0.x snapshot reads as missing until the machine's next report. The edge always sends `"1.0.0"`.
 
-**Deploy order: cloud first.** A 0.4.0 cloud answers a 1.0.0 report with 422 and the uplink retries each interval until the cloud is upgraded. Uploaded UI bundles built before 1.0.0 read dollar names; the cloud portal detects such a bundle once, when it first resolves it (a template under `templates/` still reading `status.credit_escrow`, `.money_in` or `pending_sale.price`; the manifest's `ice_ui_version` was never bumped, so it cannot tell), and only then supplies `credit_escrow`, `money_in` and `pending_sale.price` dollar display aliases and converts `pending_sale.methods` to dollars in place. The installed UI and 1.0.0 bundles always read cents. The aliases go away once no 0.x edge reports.
+**Deploy order: cloud first.** A 0.4.0 cloud answers a 1.0.0 report with 422 and the uplink retries each interval until the cloud is upgraded.
 
 **Rollback and release timing.** Once the cloud has rewritten stored snapshots and `faults_json` in 1.0.0 shape, it cannot be rolled back to 0.4.0 without restoring its backup (`docs/backups.md`, "Cloud: `cloud.db`"). Merging to main publishes `latest` for both the edge and cloud images, and Watchtower may pull them in any order: an edge that upgrades first gets transient 422s, which it logs and retries each interval, with no sale impact.
 

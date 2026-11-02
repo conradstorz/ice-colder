@@ -143,8 +143,8 @@ def test_reconcile_replays_nonempty_journal_and_clears_data_101(tmp_path, monkey
                 "sku": "ICE-1",
                 "name": "Ice Bag",
                 "slot": 0,
-                "price": 2.50,
-                "methods": {"cash_bill": 2.50},
+                "price_cents": 250,
+                "methods": {"cash_bill": 250},
             }
         )
         + "\n",
@@ -181,7 +181,6 @@ def test_reconcile_replays_nonempty_journal_and_clears_data_101(tmp_path, monkey
     assert sku == "ICE-1"
     assert name == "Ice Bag"
     assert slot == 0
-    # the journal row is legacy (no "units"): dollars replay as cents
     assert price == 250
     assert json.loads(methods_json) == {"cash_bill": 250}
 
@@ -206,8 +205,8 @@ def test_reconcile_replay_returning_zero_does_not_wrongly_clear_data_101(
                 "sku": None,  # violates the NOT NULL column -> rejected, not inserted
                 "name": "Broken",
                 "slot": 0,
-                "price": 1.00,
-                "methods": {"cash": 1.00},
+                "price_cents": 100,
+                "methods": {"cash": 100},
             }
         )
         + "\n",
@@ -370,8 +369,8 @@ def test_reconcile_raises_data_101_when_replay_commits_but_journal_rewrite_fails
         "sku": "ICE-1",
         "name": "Ice Bag",
         "slot": 0,
-        "price": 2.50,
-        "methods": {"cash_bill": 2.50},
+        "price_cents": 250,
+        "methods": {"cash_bill": 250},
     }
     journal_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
@@ -393,7 +392,7 @@ def test_reconcile_raises_data_101_when_replay_commits_but_journal_rewrite_fails
                 payload["sku"],
                 payload["name"],
                 payload["slot"],
-                payload["price"],
+                payload["price_cents"],
                 payload["methods"],
                 ts=payload["ts"],
                 idempotent=True,

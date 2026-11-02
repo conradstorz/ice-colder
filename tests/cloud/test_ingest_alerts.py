@@ -127,14 +127,6 @@ def test_register_alerts_handled_requires_claim_and_smtp(
         assert r.json()["alerts_handled"] is (claimed and smtp)
 
 
-def test_0_2_0_report_still_processed(cloud, signer, mailer):
-    report = make_report()
-    assert report.contract == "0.2.0"
-    _claimed(cloud, signer)
-    push(cloud, signer, report)
-    assert len(mailer.sent) == 1
-
-
 def test_resale_hides_previous_owner_history(cloud, signer, mailer, clock):
     repo = cloud.app.state.repo
     first = _claimed(cloud, signer, "first@example.com")

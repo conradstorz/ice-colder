@@ -64,7 +64,6 @@ class RecoveryDetail:
     sku: str | None
     sale_recorded: bool
     credit_escrow_cents: int
-    pending_refund_request_id: str | None  # legacy snapshots only
     pending_payouts: list[dict]
     error: str | None
     is_test: bool
@@ -144,10 +143,9 @@ class SessionRecovery:
     def _nothing_left_over(snap: SessionSnapshot) -> bool:
         """True when the snapshot holds no money or state an operator must see:
         leftover credit (the price was already deducted from escrow), a
-        pending refund, or an unreadable-file error."""
+        pending payout, or an unreadable-file error."""
         return (
             snap.credit_escrow_cents <= 0
-            and snap.pending_refund_request_id is None
             and not snap.pending_payouts
             and not snap.error
         )
@@ -191,7 +189,6 @@ class SessionRecovery:
             sku=snap.selected_sku,
             sale_recorded=self._already_recorded(snap),
             credit_escrow_cents=snap.credit_escrow_cents,
-            pending_refund_request_id=snap.pending_refund_request_id,
             pending_payouts=[dict(p) for p in snap.pending_payouts],
             error=snap.error,
             is_test=snap.is_test,

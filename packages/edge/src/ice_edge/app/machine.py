@@ -795,10 +795,6 @@ class Machine:
             f"state={snap.state} escrow={format_cents(snap.credit_escrow_cents)} "
             f"sku={snap.selected_sku} payouts={len(snap.pending_payouts)}"
         )
-        if (
-            snap.pending_refund_request_id
-        ):  # legacy snapshot written before the MDB cutover
-            detail += f" refund={snap.pending_refund_request_id}"
         logger.error(f"Transaction uncertain after restart: {detail}")
         _txn_log.error(f"RESTART WITH OPEN SESSION: {detail}")
         if self._event_recorder:

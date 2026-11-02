@@ -34,28 +34,6 @@ MAX_CONCURRENT_EXTRACTIONS = 2
 
 _DIGEST_RE = re.compile(DIGEST_PATTERN)
 
-# Dollar-float keys the pre-1.0.0 templates read (`status.credit_escrow`,
-# `summary.money_in`, `f.pending_sale.price`). The bundle manifest records only
-# `ice_ui_version`, which the workspace never bumped, so it cannot tell the
-# eras apart; the templates themselves can. 1.0.0 templates read `*_cents`.
-_LEGACY_MONEY_RE = re.compile(
-    r"\.(?:credit_escrow|money_in)(?![\w])|pending_sale\.price(?![\w])"
-)
-
-
-def uses_legacy_money(templates_dir: Path) -> bool:
-    """Whether any template under *templates_dir* reads a dollar-float key."""
-    for path in sorted(templates_dir.rglob("*.html")):
-        if path.name.startswith("screen"):
-            continue  # the edge-only customer /screen page; the cloud never renders it
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        if _LEGACY_MONEY_RE.search(text):
-            return True
-    return False
-
 
 class _NoRequestTemplate(Template):
     """A template whose context never carries ``request``.
@@ -85,9 +63,6 @@ class ResolvedUi:
     mismatch: bool
     digest: str
     sandboxed: bool = False
-    # An uploaded pre-1.0.0 bundle whose templates read dollar floats; the
-    # portal then adds dollar display aliases beside the cents keys.
-    legacy_money: bool = False
 
 
 class UiRegistry:
@@ -104,7 +79,6 @@ class UiRegistry:
         self._lock = threading.Lock()
         self._extractions = threading.BoundedSemaphore(MAX_CONCURRENT_EXTRACTIONS)
         self._cache: dict[str, Jinja2Templates] = {}
-        self._legacy_money: dict[str, bool] = {}
         self.installed_digest: str = ui_digest()
         self._sweep_stale_temp_dirs()
 
@@ -182,11 +156,7 @@ class UiRegistry:
                     cached / "templates", [self._cloud_templates]
                 ),
             )
-            with self._lock:
-                if digest not in self._legacy_money:
-                    self._legacy_money[digest] = uses_legacy_money(cached / "templates")
-                legacy = self._legacy_money[digest]
-            return ResolvedUi(templates, cached / "static", False, digest, True, legacy)
+            return ResolvedUi(templates, cached / "static", False, digest, True)
         return self._installed(mismatch=True)
 
     def _installed_factory(self) -> Jinja2Templates:

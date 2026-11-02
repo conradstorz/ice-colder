@@ -54,7 +54,7 @@ from pydantic import (
 from loguru import logger
 
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
-from ice_contracts.money import MAX_PRICE_CENTS, Cents, PositiveCents, dollars_to_cents
+from ice_contracts.money import MAX_PRICE_CENTS, Cents, PositiveCents
 
 
 # 1) First, an enum of supported communication channels
@@ -146,28 +146,6 @@ class Product(BaseModel):
             "other (gated by every permissive)"
         ),
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_price(cls, data: Any) -> Any:
-        """Accept a legacy dollar `price` (float) and turn it into `price_cents`."""
-        if not isinstance(data, dict) or "price" not in data:
-            return data
-        data = dict(data)
-        legacy = data.pop("price")
-        sku = data.get("sku", "SAMPLE-SKU")
-        if "price_cents" in data:
-            logger.warning(
-                f"Product {sku!r} has both price and price_cents; "
-                "price_cents kept, legacy price ignored."
-            )
-            return data
-        data["price_cents"] = dollars_to_cents(legacy)  # ValueError -> validation error
-        logger.warning(
-            f"Product {sku!r}: legacy dollar price {legacy!r} converted to "
-            f"{data['price_cents']} cents; it will be saved as price_cents."
-        )
-        return data
 
     @field_validator("price_cents")
     @classmethod

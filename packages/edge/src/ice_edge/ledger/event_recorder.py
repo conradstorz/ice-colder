@@ -35,7 +35,6 @@ from ice_contracts.board.mqtt_messages import (
     SubsystemHeartbeat,
 )
 from ice_common.paths import DATA_DIR
-from ice_contracts.money import dollars_to_cents
 
 # Schema history. Append only -- never edit an entry once shipped. The applied
 # count lives in ``PRAGMA user_version`` (idiomatic SQLite, no extra table;
@@ -222,18 +221,10 @@ def _atomic_write_text(path: Path, content: str) -> None:
 def _journal_row_cents(row: dict) -> tuple[int, dict[str, int]]:
     """Return ``(price_cents, methods_cents)`` for one journal row.
 
-    A row carrying ``"units": "cents"`` is already integer cents. Any other
-    row is legacy (written before cents, in dollars) and is converted with
-    ``dollars_to_cents``. Raises on a malformed row, which the caller sets
-    aside as rejected evidence.
+    Raises on a malformed row, which the caller sets aside as rejected
+    evidence.
     """
-    if row.get("units") == "cents":
-        return int(row["price_cents"]), {
-            str(k): int(v) for k, v in row["methods"].items()
-        }
-    return dollars_to_cents(row["price"]), {
-        str(k): dollars_to_cents(v) for k, v in row["methods"].items()
-    }
+    return int(row["price_cents"]), {str(k): int(v) for k, v in row["methods"].items()}
 
 
 def _append_journal_line(payload: dict) -> None:
