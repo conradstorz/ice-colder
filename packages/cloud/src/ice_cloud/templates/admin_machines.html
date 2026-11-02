@@ -9,8 +9,8 @@
 <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-3">
   {% include "partials/admin_unclaimed_count.html" %}
   <span class="ml-auto">
-    {% with label="Purge all unclaimed", tone="danger", confirm_label="Confirm purge", post_url="/admin/purge-unclaimed", confirm_url="/admin/purge-unclaimed/confirm", target="#unclaimed-purge", confirming=false %}
-    {% include "partials/admin_unbind.html" %}
+    {% with label=purge.label, tone=purge.tone, confirm_label=purge.confirm_label, post_url=purge.post_url, confirm_url=purge.confirm_url, target=purge.target, confirming=purge.confirming %}
+    {% include "partials/confirm_button.html" %}
     {% endwith %}
   </span>
 </div>
@@ -54,8 +54,8 @@
         <td class="p-3"><a href="/admin/alerts?machine={{ m.short }}" class="text-gray-700">{{ m.alerts_24h }}</a></td>
         <td class="p-3">
           {% if m.owner_id %}
-          {% with label="Unbind", tone="danger", confirm_label="Confirm unbind", post_url="/admin/machines/" ~ m.short ~ "/unbind", confirm_url="/admin/machines/" ~ m.short ~ "/unbind/confirm", target="#unbind-" ~ m.short, confirming=false %}
-          {% include "partials/admin_unbind.html" %}
+          {% with label=unbind[m.short].label, tone=unbind[m.short].tone, confirm_label=unbind[m.short].confirm_label, post_url=unbind[m.short].post_url, confirm_url=unbind[m.short].confirm_url, target=unbind[m.short].target, confirming=unbind[m.short].confirming %}
+          {% include "partials/confirm_button.html" %}
           {% endwith %}
           {% endif %}
         </td>

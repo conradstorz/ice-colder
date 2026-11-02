@@ -182,7 +182,7 @@ async def revoke_confirm(
     short = short_fingerprint(machine.fingerprint)
     return ui.templates.TemplateResponse(
         request,
-        "partials/people_revoke.html",
+        "partials/confirm_button.html",
         {"request": request, **_revoke_ctx(short, account_id, confirming != "false")},
     )
 
