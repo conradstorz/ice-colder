@@ -555,16 +555,23 @@ def collections(recorder, limit: int = 50) -> list[dict]:
     return result
 
 
+def _last_collection_ts(conn: sqlite3.Connection) -> str | None:
+    """`ts` of the newest collection (`id DESC` breaks a tied `ts`), or
+    None when there is none. `EventRecorder._insert_cash_collection` keeps
+    an identical query (the ledger layer cannot import reporting)."""
+    row = conn.execute(
+        "SELECT ts FROM cash_collections ORDER BY ts DESC, id DESC LIMIT 1"
+    ).fetchone()
+    return row[0] if row else None
+
+
 def cash_since_last_collection(recorder) -> int:
     """Cash-class sales since the newest collection (all time before the
     first): the figure the next collection will record as `expected_cash`.
     Synchronous; call through `asyncio.to_thread`."""
     recorder.flush()
     with contextlib.closing(sqlite3.connect(recorder.db_path)) as conn:
-        last = conn.execute(
-            "SELECT ts FROM cash_collections ORDER BY ts DESC, id DESC LIMIT 1"
-        ).fetchone()
-        return _cash_since(conn, last[0] if last else None)
+        return _cash_since(conn, _last_collection_ts(conn))
 
 
 def summary(recorder, window: tuple[float, float]) -> dict:
@@ -602,11 +609,7 @@ def summary(recorder, window: tuple[float, float]) -> dict:
             )
         )
 
-        last_collection = conn.execute(
-            "SELECT ts FROM cash_collections ORDER BY ts DESC LIMIT 1"
-        ).fetchone()
-        since_ts = last_collection[0] if last_collection else None
-        cash_since_last_collection = _cash_since(conn, since_ts)
+        cash_since_last_collection = _cash_since(conn, _last_collection_ts(conn))
 
     return {
         "revenue_cents": int(revenue),

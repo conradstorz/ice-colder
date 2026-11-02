@@ -1177,6 +1177,9 @@ class EventRecorder:
         with everything already written, rather than racing a route or the
         caller's own read.
         """
+        # Identical to `ice_edge.reporting.reports._last_collection_ts`
+        # (ledger sits below reporting in the layer contract, so it cannot
+        # import it; keep the two queries in step).
         # `id DESC` breaks a tied `ts` deterministically (see
         # `ice_edge/reporting/reports.py`'s `collections()` docstring for the
         # identical hazard). Benign either way here: two rows can only tie
