@@ -15,7 +15,6 @@ from ice_cloud.store import Delivery, Machine, Repository, StoredEvent
 from ice_cloud.store.repository import Recipient
 
 COOLDOWN_SECONDS = 600
-MAX_ATTEMPTS = 5
 _ERROR_LIMIT = 500
 
 
