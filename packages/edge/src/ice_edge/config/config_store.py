@@ -78,6 +78,18 @@ def _lowest_free_slot(products) -> int:
 _UNSET: Any = object()
 
 
+def _slot_problem(
+    config: ConfigModel, slot: int, ignore_sku: str | None = None
+) -> str | None:
+    """Why *slot* cannot be assigned, or None. *ignore_sku* is the product
+    being edited, whose own current slot does not count as taken."""
+    if slot < 0:
+        return f"slot {slot} is invalid (must be >= 0)"
+    if any(p.slot == slot for p in config.products if p.sku != ignore_sku):
+        return f"slot {slot} is already in use"
+    return None
+
+
 def add_product(
     config: ConfigModel,
     sku: str,
@@ -91,17 +103,10 @@ def add_product(
         logger.warning(f"Cannot add product: SKU '{sku}' already exists")
         return False
 
-    if slot is not None and slot < 0:
-        logger.warning(
-            f"Cannot add product SKU={sku}: slot {slot} is invalid (must be >= 0)"
-        )
-        return False
-
-    used_slots = {p.slot for p in config.products}
     if slot is None:
         slot = _lowest_free_slot(config.products)
-    elif slot in used_slots:
-        logger.warning(f"Cannot add product SKU={sku}: slot {slot} is already in use")
+    elif problem := _slot_problem(config, slot):
+        logger.warning(f"Cannot add product SKU={sku}: {problem}")
         return False
 
     kind = _clean_kind(kind)
@@ -131,18 +136,9 @@ def update_product(
         kind = _clean_kind(kind)
     for p in config.products:
         if p.sku == sku:
-            if slot is not None and slot < 0:
-                logger.warning(
-                    f"Cannot update product SKU={sku}: slot {slot} is invalid (must be >= 0)"
-                )
-                return False
-
-            if slot is not None and slot != p.slot:
-                used_slots = {other.slot for other in config.products if other is not p}
-                if slot in used_slots:
-                    logger.warning(
-                        f"Cannot update product SKU={sku}: slot {slot} is already in use"
-                    )
+            if slot is not None and (slot < 0 or slot != p.slot):
+                if problem := _slot_problem(config, slot, ignore_sku=sku):
+                    logger.warning(f"Cannot update product SKU={sku}: {problem}")
                     return False
 
             changes = {}
