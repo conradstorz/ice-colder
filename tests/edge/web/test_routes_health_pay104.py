@@ -340,6 +340,38 @@ class TestRecordSale:
         client.post("/health/faults/PAY-104/record-sale")
         assert len(machine.gateway.pending_payouts()) == 1
 
+    def test_cash_sale_not_queued_keeps_pay104_and_retry_queues_it(
+        self, pay104, login_as, monkeypatch
+    ):
+        """If the cash_sale cannot be queued, clearing PAY-104 would release the
+        armed reconciliation with no cash_sale in flight, so the recorded sale's
+        price would be refunded as excess board escrow. PAY-104 and the
+        evidence stay; a retry (sale already recorded) queues it and clears."""
+        machine = pay104["machine"]
+        vmc = pay104["vmc"]
+        real = machine.gateway.cash_sale
+
+        def boom(cents, sale_id):
+            raise RuntimeError("mqtt down")
+
+        monkeypatch.setattr(machine.gateway, "cash_sale", boom)
+        client = login_as(Role.tech)
+        resp = client.post("/health/faults/PAY-104/record-sale")
+        assert resp.status_code == 500
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert pay104["session_path"].exists()
+        assert machine.pending_sale_for_recovery() is not None
+        assert machine.gateway.pending_payouts() == []
+        assert len(_sales_rows(pay104["db_path"])) == 1
+
+        monkeypatch.setattr(machine.gateway, "cash_sale", real)
+        resp = client.post("/health/faults/PAY-104/record-sale")
+        assert resp.status_code == 200
+        (queued,) = machine.gateway.pending_payouts()
+        assert (queued.kind, queued.cents) == ("cash_sale", 200)
+        assert "PAY-104" not in {f["code"] for f in vmc.active_faults()}
+        assert len(_sales_rows(pay104["db_path"])) == 1
+
     def test_discard_queues_nothing_for_the_sale(self, pay104, login_as):
         machine = pay104["machine"]
         client = login_as(Role.tech)
