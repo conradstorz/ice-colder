@@ -5,6 +5,7 @@ session from being saved, and clearing it must not delete the live file. An
 uncertain boot snapshot is evidence and stays frozen until resolved."""
 
 import json
+import types
 
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
@@ -103,10 +104,22 @@ def _boot_with_recorder(tmp_path, path):
     return machine, cfg, avail, dispatcher
 
 
-async def test_boot_queues_the_cash_sale_of_an_already_recorded_sale(tmp_path):
+async def test_boot_queues_the_cash_sale_of_an_already_recorded_sale(
+    tmp_path, monkeypatch
+):
     from ice_edge.payment.mdb.policy import build_policy
     from tests.edge.app.test_machine_payments import ack_policy, state_doc
 
+    # Fixed clocks: the retained 250 state is stamped before the cash_sale
+    # completes. Wall clocks made this a tie on Windows (coarse clock, state
+    # ignored as stale) but a later stamp on Linux (state trusted, so the
+    # reconciler paid the sale's own 250 back).
+    monkeypatch.setattr(
+        "ice_edge.payment.mdb.state.time", types.SimpleNamespace(time=lambda: 1000.0)
+    )
+    monkeypatch.setattr(
+        "ice_edge.payment.mdb.payout.time", types.SimpleNamespace(time=lambda: 2000.0)
+    )
     path = tmp_path / "session.json"
     _recorded_sale_snapshot(path)
     machine, cfg, avail, dispatcher = _boot_with_recorder(tmp_path, path)
