@@ -131,6 +131,14 @@ class SessionStore:
             raw_credits = raw.get("credits")
             # The "units" marker is still written but no longer interpreted.
             raw.pop("units", None)
+            # The previous release serialised the removed refund-id field as
+            # null on every save; a null carries no information and is
+            # dropped. A non-null id is a real legacy pending refund and is
+            # left in place so the unknown-key error below fails safe.
+            if "pending_refund_request_id" in raw and (
+                raw["pending_refund_request_id"] is None
+            ):
+                del raw["pending_refund_request_id"]
             if raw_credits is not None:
                 raw["credits"] = [Credit(**c) for c in raw_credits]
             # saved_at is money-load-bearing (PAY-104 recovery keys on the
