@@ -101,7 +101,7 @@ def _make_config() -> ConfigModel:
                 {
                     "sku": "ICE-SM",
                     "name": "Small Ice",
-                    "price": 2.00,
+                    "price_cents": 200,
                     "kind": "ice",
                     "slot": 0,
                     "button": "button_ice",
@@ -109,7 +109,7 @@ def _make_config() -> ConfigModel:
                 {
                     "sku": "ICE-LG",
                     "name": "Large Ice",
-                    "price": 3.50,
+                    "price_cents": 350,
                     "kind": "ice",
                     "slot": 1,
                     "button": "button_ice_lg",
@@ -117,7 +117,7 @@ def _make_config() -> ConfigModel:
                 {
                     "sku": "WATER",
                     "name": "Purified Water",
-                    "price": 1.50,
+                    "price_cents": 150,
                     "kind": "water",
                     "slot": 2,
                     "button": "button_water_1gal",
@@ -939,7 +939,7 @@ def _im600xl_config() -> ConfigModel:
                 {
                     "sku": "SAMPLE-ICE",
                     "name": "Bagged Ice",
-                    "price": 2.00,
+                    "price_cents": 200,
                     "kind": "ice",
                     "slot": 0,
                     "button": "button_ice",
@@ -947,7 +947,7 @@ def _im600xl_config() -> ConfigModel:
                 {
                     "sku": "SAMPLE-WATER-SM",
                     "name": "Water 1 gal",
-                    "price": 1.50,
+                    "price_cents": 150,
                     "kind": "water",
                     "slot": 1,
                     "button": "button_water_1gal",
@@ -955,7 +955,7 @@ def _im600xl_config() -> ConfigModel:
                 {
                     "sku": "SAMPLE-WATER-LG",
                     "name": "Water 5 gal",
-                    "price": 4.00,
+                    "price_cents": 400,
                     "kind": "water",
                     "slot": 2,
                     "button": "button_water_5gal",
