@@ -562,6 +562,29 @@ def test_repeated_loads_of_an_unreadable_file_keep_one_copy(tmp_path):
     assert len(list(tmp_path.glob("session.unreadable.*.json"))) == 1
 
 
+def test_truncated_preserved_copy_is_rewritten_with_full_bytes(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    original = path.read_bytes()
+    store = SessionStore(path)
+    store.load()
+    (kept,) = tmp_path.glob("session.unreadable.*.json")
+    kept.write_bytes(original[: len(original) // 2])  # simulated power loss
+
+    store.load()
+
+    assert kept.read_bytes() == original
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_preserved_copy_name_carries_16_hex_digest(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    SessionStore(path).load()
+    (kept,) = tmp_path.glob("session.unreadable.*.json")
+    assert len(kept.name.split(".")[2]) == 16
+
+
 def test_readable_file_leaves_no_preserved_copy(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(SessionSnapshot(state="idle", credit_escrow_cents=5))

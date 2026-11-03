@@ -189,12 +189,19 @@ class SessionStore:
         """
         try:
             data = self._path.read_bytes()
-            digest = hashlib.sha256(data).hexdigest()[:8]
+            digest = hashlib.sha256(data).hexdigest()[:16]
             dest = self._path.with_name(
                 f"{self._path.stem}.unreadable.{digest}{self._path.suffix}"
             )
-            if not dest.exists():
-                dest.write_bytes(data)
+            # An existing copy is trusted only if it is byte-identical: a
+            # crash mid-copy must not leave a truncated "preserved" file.
+            if not (dest.exists() and dest.read_bytes() == data):
+                tmp = dest.with_name(dest.name + ".tmp")
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, dest)
             return dest
         except OSError as oe:
             logger.error(f"SessionStore: could not keep a copy of {self._path}: {oe}")
