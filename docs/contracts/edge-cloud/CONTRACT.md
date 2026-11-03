@@ -21,9 +21,9 @@ Every money field is whole cents (`ice_contracts.money.Cents`, a non-negative st
 
 `contract` accepts only `1.0.0`. Since 2026-11-02 the cloud no longer converts dollar-keyed 0.x reports (they answer 422), and a stored 0.x snapshot reads as missing until the machine's next report. The edge always sends `"1.0.0"`.
 
-**Deploy order: cloud first.** A 0.4.0 cloud answers a 1.0.0 report with 422 and the uplink retries each interval until the cloud is upgraded.
+**Deploy order: edges first, cloud last.** The cloud currently live (the release before this one, contract 1.0.0 and backward-compatible with 0.x reports) stays up. Upgrade every edge and verify each reports contract 1.0.0; only then deploy this cloud, which accepts only `"1.0.0"` and answers a 0.x report with 422. An edge still on 0.x when this cloud goes live gets 422s, logs them and retries each interval until it is upgraded, with no sale impact.
 
-**Rollback and release timing.** Once the cloud has rewritten stored snapshots and `faults_json` in 1.0.0 shape, it cannot be rolled back to 0.4.0 without restoring its backup (`docs/backups.md`, "Cloud: `cloud.db`"). Merging to main publishes `latest` for both the edge and cloud images, and Watchtower may pull them in any order: an edge that upgrades first gets transient 422s, which it logs and retries each interval, with no sale impact.
+**Rollback and release timing.** Once this cloud has rewritten stored snapshots and `faults_json` in 1.0.0 shape, it cannot be rolled back to the previous cloud without restoring its backup (`docs/backups.md`, "Cloud: `cloud.db`"). Merging to main publishes `latest` for both the edge and cloud images, and Watchtower may pull them in any order, so hold the cloud image back (pin the tag) until every edge reports 1.0.0. An edge that upgrades while the old cloud is live is fine (the old cloud accepts 1.0.0); a cloud that upgrades first causes the transient 422s above.
 
 ## 0.4.0: machine common name (additive)
 
