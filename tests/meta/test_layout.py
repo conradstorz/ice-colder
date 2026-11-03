@@ -24,7 +24,6 @@ EDGE_LAYERS = [
     "hal",
     "config",
     "supervisor",
-    "cctv",
 ]
 
 LEGACY = [

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from ice_cloud.settings import CloudSettings
-from ice_cloud.store import Machine, Repository
+from ice_cloud.store import Machine, SqliteRepository
 
 
 def alerts_handled_for(
-    repo: Repository, settings: CloudSettings, machine: Machine
+    repo: SqliteRepository, settings: CloudSettings, machine: Machine
 ) -> bool:
     """True when the edge may defer its own alert emails to the cloud.
 

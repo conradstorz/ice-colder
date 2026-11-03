@@ -57,18 +57,6 @@ class Recorder:
         self._trace.append(("record", kind, value, metadata))
 
 
-class Messages(list):
-    """Customer messages; every append also lands on the shared trace."""
-
-    def __init__(self, trace: list):
-        super().__init__()
-        self._trace = trace
-
-    def append(self, text):
-        super().append(text)
-        self._trace.append(("message", text))
-
-
 @pytest.fixture
 def trace():
     """One list every sink appends to, in call order."""
@@ -85,9 +73,8 @@ def sink(trace):
 @pytest.fixture
 def harness(sink, trace):
     recorder = Recorder(trace)
-    messages = Messages(trace)
-    journal = SaleJournal(recorder=lambda: recorder, message=messages.append)
-    return journal, recorder, messages, sink
+    journal = SaleJournal(recorder=lambda: recorder)
+    return journal, recorder, sink
 
 
 PRODUCT = Product(name="Ice", sku="ICE", price_cents=250, slot=1)
@@ -95,18 +82,17 @@ P = STATE_CHANGE_PREFIX
 
 
 def test_payment_received_goes_to_logger_and_transaction_log(harness):
-    journal, _, messages, sink = harness
+    journal, _, sink = harness
     journal.payment_received(250, "card")
     assert sink.lines() == [("INFO", "MQTT payment received: $2.50 via card")]
     assert sink.lines(sink="transaction") == [
         ("INFO", "PAYMENT RECEIVED: $2.50 via card")
     ]
     assert sink.lines(sink="vending") == []
-    assert messages == []
 
 
 def test_product_selected_fans_out_to_all_three_sinks(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.product_selected(PRODUCT)
     assert sink.lines() == [("INFO", "Selected product: Ice at $2.50")]
     assert sink.lines(sink="transaction") == [
@@ -117,17 +103,16 @@ def test_product_selected_fans_out_to_all_three_sinks(harness):
     ]
 
 
-def test_locked_out_logs_then_messages(harness):
-    journal, _, messages, sink = harness
+def test_locked_out(harness):
+    journal, _, sink = harness
     journal.locked_out(PRODUCT, FaultCode.PAY_102)
     assert sink.lines(sink="transaction") == [
         ("INFO", "LOCKED OUT: 'Ice' (PAY-102), customer rejected")
     ]
-    assert messages == ["Ice is unavailable (PAY-102). Please choose another product."]
 
 
 def test_vend_failed_records_a_row_for_a_real_sale_only(harness):
-    journal, recorder, messages, sink = harness
+    journal, recorder, sink = harness
     journal.vend_failed("Ice", FaultCode.PAY_102, "jam", 250, "ICE", is_test=False)
     assert recorder.rows == [
         ("vend_failed", 250, {"code": "PAY-102", "sku": "ICE", "outcome": "jam"})
@@ -139,9 +124,6 @@ def test_vend_failed_records_a_row_for_a_real_sale_only(harness):
     assert sink.lines(sink="transaction") == [
         ("ERROR", "VEND FAILED: 'Ice' PAY-102 (jam); $2.50 returned to escrow")
     ]
-    assert messages == [
-        "Sorry, Ice could not be dispensed (PAY-102). Your $2.50 credit has been kept."
-    ]
     recorder.rows.clear()
     journal.vend_failed("Ice", FaultCode.PAY_102, "jam", 250, "ICE", is_test=True)
     assert recorder.rows == []
@@ -149,7 +131,7 @@ def test_vend_failed_records_a_row_for_a_real_sale_only(harness):
 
 def test_recorder_is_read_at_call_time_and_none_skips_the_row(sink):
     holder = {"r": None}
-    journal = SaleJournal(recorder=lambda: holder["r"], message=lambda _t: None)
+    journal = SaleJournal(recorder=lambda: holder["r"])
     journal.error_entered(None)  # no recorder yet: must not raise
     holder["r"] = Recorder()
     journal.error_entered(None)
@@ -157,7 +139,7 @@ def test_recorder_is_read_at_call_time_and_none_skips_the_row(sink):
 
 
 def test_session_timeout_wording_per_state(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.session_timeout(100, "idle")
     journal.session_timeout(100, "error")
     journal.session_timeout(100, "interacting_with_user")
@@ -180,7 +162,7 @@ def test_session_timeout_wording_per_state(harness):
 
 
 def test_button_press_three_sinks(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.button_press("button_ice")
     assert sink.lines() == [("INFO", "MQTT button press: button button_ice")]
     assert sink.lines(sink="transaction") == [
@@ -190,7 +172,7 @@ def test_button_press_three_sinks(harness):
 
 
 def test_deposit_logs(harness):
-    journal, _, messages, sink = harness
+    journal, _, sink = harness
     journal.deposit_ignored(-1)
     journal.deposit_during_maintenance(100)
     journal.deposit_while_payment_disabled(100, ["a", "b"])
@@ -204,11 +186,10 @@ def test_deposit_logs(harness):
         ("WARNING", "Credit $1.00 arrived while payment is disabled (a, b); escrowed"),
         ("INFO", "Deposited $1.00 via cash. New escrow: $3.50"),
     ]
-    assert messages == []
 
 
 def test_selection_refusals(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.selection_refused_not_ready()
     journal.selection_refused_unknown_button("button_x")
     assert sink.lines() == [
@@ -218,28 +199,24 @@ def test_selection_refusals(harness):
 
 
 def test_unavailable(harness):
-    journal, _, messages, sink = harness
+    journal, _, sink = harness
     journal.unavailable(PRODUCT, "no_water")
     assert sink.lines(sink="transaction") == [
         ("INFO", "UNAVAILABLE: 'Ice' blocked by no_water, customer rejected")
     ]
-    assert messages == [
-        "Ice is unavailable right now (no_water). Please try again later."
-    ]
 
 
 def test_sold_out(harness):
-    journal, _, messages, sink = harness
+    journal, _, sink = harness
     journal.sold_out(PRODUCT)
     assert sink.lines() == [("ERROR", "Ice is sold out.")]
     assert sink.lines(sink="transaction") == [
         ("INFO", "SOLD OUT: 'Ice', customer rejected")
     ]
-    assert messages == ["Ice is sold out. Please select another product."]
 
 
 def test_payment_sufficient(harness):
-    journal, _, messages, sink = harness
+    journal, _, sink = harness
     journal.payment_sufficient(300, 250, PRODUCT)
     assert sink.lines() == [
         ("INFO", f"{P} Escrow sufficient (3.00 >= 2.50). Processing payment.")
@@ -247,22 +224,20 @@ def test_payment_sufficient(harness):
     assert sink.lines(sink="transaction") == [
         ("INFO", "PAYMENT SUFFICIENT: $3.00 >= $2.50 for 'Ice', charging $2.50")
     ]
-    assert messages == ["Sufficient funds received. Processing your payment..."]
 
 
 def test_payment_insufficient(harness):
-    journal, _, messages, sink = harness
+    journal, _, sink = harness
     text = "Insufficient funds. Please insert an additional $1.50."
     journal.payment_insufficient(100, 250, PRODUCT, 150, text)
     assert sink.lines() == [("INFO", text)]
     assert sink.lines(sink="transaction") == [
         ("INFO", "PAYMENT INSUFFICIENT: $1.00 < $2.50 for 'Ice', need $1.50 more")
     ]
-    assert messages == [text]
 
 
 def test_catalog_lost_selection(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.catalog_lost_selection()
     assert sink.lines() == [
         ("ERROR", "Selected product no longer exists in the catalog; cancelling sale.")
@@ -270,7 +245,7 @@ def test_catalog_lost_selection(harness):
 
 
 def test_dispenser_logs(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.dispenser_step(1, "filling")
     journal.dispenser_outcome_ignored("jam", "idle", 1)
     journal.dispenser_outcome_without_cycle("jam", 1)
@@ -288,7 +263,7 @@ def test_dispenser_logs(harness):
 
 
 def test_dispense_success(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.dispense_success(1, "Ice")
     assert sink.lines(sink="transaction") == [
         ("INFO", "DISPENSE SUCCESS: slot 1, product 'Ice'")
@@ -300,7 +275,7 @@ def test_dispense_success(harness):
 
 
 def test_dispense_failed(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.dispense_failed(1, "Ice", "jam", FaultCode.PAY_102)
     text = "DISPENSE FAILED: slot 1, product 'Ice', outcome: jam, fault: PAY-102"
     assert sink.lines(sink="transaction") == [("ERROR", text)]
@@ -309,7 +284,7 @@ def test_dispense_failed(harness):
 
 
 def test_late_failure_and_settled(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.late_failure_ignored(FaultCode.PAY_102, "no_report")
     journal.failure_after_settled()
     assert sink.lines() == [
@@ -325,7 +300,7 @@ def test_late_failure_and_settled(harness):
 
 
 def test_shares_missing_and_test_credit_cleared_and_no_sellable(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.shares_missing(250)
     journal.test_credit_cleared(250, FaultCode.PAY_102, "jam")
     journal.no_sellable_products()
@@ -342,7 +317,7 @@ def test_shares_missing_and_test_credit_cleared_and_no_sellable(harness):
 
 
 def test_error_entered(harness):
-    journal, recorder, _, sink = harness
+    journal, recorder, sink = harness
     journal.error_entered("Ice")
     assert sink.lines() == [
         (
@@ -354,7 +329,7 @@ def test_error_entered(harness):
 
 
 def test_refund_requested(harness):
-    journal, _, messages, sink = harness
+    journal, _, sink = harness
     journal.refund_requested(200, "cash", "maintenance", "rid1")
     assert sink.lines() == [
         (
@@ -365,11 +340,10 @@ def test_refund_requested(harness):
     assert sink.lines(sink="transaction") == [
         ("INFO", "REFUND REQUESTED: $2.00 via cash reason=maintenance request_id=rid1")
     ]
-    assert messages == ["Refund of $2.00 requested via cash. Please wait..."]
 
 
 def test_refund_confirmed(harness):
-    journal, recorder, messages, sink = harness
+    journal, recorder, sink = harness
     journal.refund_confirmed("rid1", "maintenance", 200, "cash")
     assert sink.lines(sink="transaction") == [
         ("INFO", "REFUND CONFIRMED: $2.00 request_id=rid1")
@@ -377,11 +351,10 @@ def test_refund_confirmed(harness):
     assert recorder.rows == [
         ("refund", 200, {"request_id": "rid1", "reason": "maintenance"})
     ]
-    assert messages == ["Refund of $2.00 issued via cash."]
 
 
 def test_lifecycle_lines(harness):
-    journal, _, _, sink = harness
+    journal, _, sink = harness
     journal.sale_cancelled("Ice")
     journal.entering_interaction("Ice")
     journal.entering_dispensing("Ice")
@@ -409,12 +382,12 @@ def test_lifecycle_lines(harness):
 # -- cross-sink ordering ----------------------------------------------------
 # Each expectation is the order ice_edge/sale/vmc.py wrote these effects in before
 # the journal existed: plain logger, then transaction/vending sinks, then the
-# recorder row, then the customer message.
+# recorder row.
 
 
 @pytest.mark.parametrize("is_test", [False, True])
 def test_trace_vend_failed(harness, trace, is_test):
-    journal, _, _, _ = harness
+    journal, _, _ = harness
     journal.vend_failed("Ice", FaultCode.PAY_102, "jam", 250, "ICE", is_test=is_test)
     expected = [
         (
@@ -439,18 +412,11 @@ def test_trace_vend_failed(harness, trace, is_test):
                 {"code": "PAY-102", "sku": "ICE", "outcome": "jam"},
             )
         )
-    expected.append(
-        (
-            "message",
-            "Sorry, Ice could not be dispensed (PAY-102). "
-            "Your $2.50 credit has been kept.",
-        )
-    )
     assert trace == expected
 
 
 def test_trace_refund_requested(harness, trace):
-    journal, _, _, _ = harness
+    journal, _, _ = harness
     journal.refund_requested(100, "card", "customer", "req-1")
     assert trace == [
         (
@@ -465,12 +431,11 @@ def test_trace_refund_requested(harness, trace):
             "transaction",
             "REFUND REQUESTED: $1.00 via card reason=customer request_id=req-1",
         ),
-        ("message", "Refund of $1.00 requested via card. Please wait..."),
     ]
 
 
 def test_trace_refund_confirmed(harness, trace):
-    journal, _, _, _ = harness
+    journal, _, _ = harness
     journal.refund_confirmed("req-1", "customer", 100, "card")
     assert trace == [
         ("log", "INFO", "transaction", "REFUND CONFIRMED: $1.00 request_id=req-1"),
@@ -480,12 +445,11 @@ def test_trace_refund_confirmed(harness, trace):
             100,
             {"request_id": "req-1", "reason": "customer"},
         ),
-        ("message", "Refund of $1.00 issued via card."),
     ]
 
 
 def test_trace_locked_out(harness, trace):
-    journal, _, _, _ = harness
+    journal, _, _ = harness
     journal.locked_out(PRODUCT, FaultCode.PAY_102)
     assert trace == [
         (
@@ -494,15 +458,11 @@ def test_trace_locked_out(harness, trace):
             "transaction",
             "LOCKED OUT: 'Ice' (PAY-102), customer rejected",
         ),
-        (
-            "message",
-            "Ice is unavailable (PAY-102). Please choose another product.",
-        ),
     ]
 
 
 def test_trace_unavailable(harness, trace):
-    journal, _, _, _ = harness
+    journal, _, _ = harness
     journal.unavailable(PRODUCT, "no_water")
     assert trace == [
         (
@@ -511,25 +471,20 @@ def test_trace_unavailable(harness, trace):
             "transaction",
             "UNAVAILABLE: 'Ice' blocked by no_water, customer rejected",
         ),
-        (
-            "message",
-            "Ice is unavailable right now (no_water). Please try again later.",
-        ),
     ]
 
 
 def test_trace_sold_out(harness, trace):
-    journal, _, _, _ = harness
+    journal, _, _ = harness
     journal.sold_out(PRODUCT)
     assert trace == [
         ("log", "ERROR", "logger", "Ice is sold out."),
         ("log", "INFO", "transaction", "SOLD OUT: 'Ice', customer rejected"),
-        ("message", "Ice is sold out. Please select another product."),
     ]
 
 
 def test_trace_payment_sufficient(harness, trace):
-    journal, _, _, _ = harness
+    journal, _, _ = harness
     journal.payment_sufficient(300, 250, PRODUCT)
     assert trace == [
         (
@@ -544,12 +499,11 @@ def test_trace_payment_sufficient(harness, trace):
             "transaction",
             "PAYMENT SUFFICIENT: $3.00 >= $2.50 for 'Ice', charging $2.50",
         ),
-        ("message", "Sufficient funds received. Processing your payment..."),
     ]
 
 
 def test_trace_payment_insufficient(harness, trace):
-    journal, _, _, _ = harness
+    journal, _, _ = harness
     text = "Insufficient funds. Please insert an additional $1.50."
     journal.payment_insufficient(100, 250, PRODUCT, 150, text)
     assert trace == [
@@ -560,12 +514,11 @@ def test_trace_payment_insufficient(harness, trace):
             "transaction",
             "PAYMENT INSUFFICIENT: $1.00 < $2.50 for 'Ice', need $1.50 more",
         ),
-        ("message", text),
     ]
 
 
 def test_trace_error_entered(harness, trace):
-    journal, _, _, _ = harness
+    journal, _, _ = harness
     journal.error_entered("Ice")
     assert trace == [
         (

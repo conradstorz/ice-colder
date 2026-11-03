@@ -74,11 +74,10 @@ def test_old_file_with_no_credits_key_still_loads_with_defaults(tmp_path):
     path = tmp_path / "session.json"
     old_style = {
         "state": "interacting_with_user",
-        "credit_escrow": 1.25,
+        "credit_escrow_cents": 125,
         "selected_sku": "ICE-1",
         "dispense_slot": None,
         "dispense_started_at": None,
-        "pending_refund_request_id": None,
         "saved_at": 100.0,
         "error": None,
     }
@@ -101,13 +100,12 @@ def test_old_file_with_no_is_test_key_defaults_to_production(tmp_path):
     path = tmp_path / "session.json"
     old_style = {
         "state": "dispensing",
-        "credit_escrow": 0.0,
+        "credit_escrow_cents": 0,
         "selected_sku": "ICE-1",
         "dispense_slot": 2,
         "dispense_started_at": 123.0,
-        "pending_refund_request_id": None,
         "credits": [],
-        "pending_sale_shares": {"cash_bill": 2.50},
+        "pending_sale_shares": {"cash_bill": 250},
         "saved_at": 100.0,
         "error": None,
     }
@@ -128,11 +126,10 @@ def test_old_file_with_no_dispense_mechanism_key_still_loads(tmp_path):
     path = tmp_path / "session.json"
     old_style = {
         "state": "dispensing",
-        "credit_escrow": 0.0,
+        "credit_escrow_cents": 0,
         "selected_sku": "ICE-1",
         "dispense_slot": 2,
         "dispense_started_at": 123.0,
-        "pending_refund_request_id": None,
         "credits": [],
         "pending_sale_shares": {"cash_bill": 2.50},
         "is_test": False,
@@ -208,12 +205,6 @@ def test_is_open_rules():
         is True
     )
     assert SessionSnapshot(state="dispensing", credit_escrow_cents=0).is_open() is True
-    assert (
-        SessionSnapshot(
-            state="idle", credit_escrow_cents=0, pending_refund_request_id="abc"
-        ).is_open()
-        is True
-    )
 
 
 async def test_save_async_writes_in_order(tmp_path):
@@ -255,7 +246,8 @@ def test_missing_saved_at_is_reported_as_unreadable_not_defaulted_to_now(tmp_pat
     unparseable file, so credit_escrow from the file is NOT trusted either."""
     path = tmp_path / "session.json"
     path.write_text(
-        json.dumps({"state": "dispensing", "credit_escrow": 5.0}), encoding="utf-8"
+        json.dumps({"state": "dispensing", "credit_escrow_cents": 500}),
+        encoding="utf-8",
     )
 
     loaded = SessionStore(path).load()
@@ -272,7 +264,7 @@ def test_non_finite_saved_at_is_reported_as_unreadable(tmp_path):
     detected, not accepted as-is."""
     path = tmp_path / "session.json"
     path.write_text(
-        '{"state": "dispensing", "credit_escrow": 5.0, "saved_at": NaN}',
+        '{"state": "dispensing", "credit_escrow_cents": 500, "saved_at": NaN}',
         encoding="utf-8",
     )
 
@@ -287,7 +279,7 @@ def test_non_finite_saved_at_is_reported_as_unreadable(tmp_path):
 def test_negative_saved_at_is_reported_as_unreadable(tmp_path):
     path = tmp_path / "session.json"
     path.write_text(
-        '{"state": "dispensing", "credit_escrow": 5.0, "saved_at": -1.0}',
+        '{"state": "dispensing", "credit_escrow_cents": 500, "saved_at": -1.0}',
         encoding="utf-8",
     )
 
@@ -323,7 +315,9 @@ def test_future_saved_at_beyond_skew_loads_with_a_warning(tmp_path):
     path = tmp_path / "session.json"
     future = time.time() + SAVED_AT_FUTURE_SKEW_SECONDS + 3600.0
     path.write_text(
-        json.dumps({"state": "dispensing", "credit_escrow": 5.0, "saved_at": future}),
+        json.dumps(
+            {"state": "dispensing", "credit_escrow_cents": 500, "saved_at": future}
+        ),
         encoding="utf-8",
     )
     messages: list[str] = []
@@ -350,7 +344,7 @@ def test_saved_at_just_within_future_skew_is_accepted(tmp_path):
     within_skew = time.time() + (SAVED_AT_FUTURE_SKEW_SECONDS / 2)
     path.write_text(
         json.dumps(
-            {"state": "dispensing", "credit_escrow": 5.0, "saved_at": within_skew}
+            {"state": "dispensing", "credit_escrow_cents": 500, "saved_at": within_skew}
         ),
         encoding="utf-8",
     )
@@ -377,7 +371,7 @@ def test_zero_saved_at_is_reported_as_unreadable(tmp_path):
     negative value is -- not treated as a legitimate (if odd) timestamp."""
     path = tmp_path / "session.json"
     path.write_text(
-        '{"state": "dispensing", "credit_escrow": 5.0, "saved_at": 0.0}',
+        '{"state": "dispensing", "credit_escrow_cents": 500, "saved_at": 0.0}',
         encoding="utf-8",
     )
 
@@ -399,7 +393,6 @@ def test_save_writes_units_cents_marker(tmp_path):
 
     assert raw["units"] == "cents"
     assert raw["credit_escrow_cents"] == 125
-    assert "credit_escrow" not in raw
 
 
 def test_cents_file_is_not_reconverted_on_load(tmp_path):
@@ -414,32 +407,6 @@ def test_cents_file_is_not_reconverted_on_load(tmp_path):
     store.save(snap)
 
     assert store.load() == snap
-
-
-def test_legacy_dollar_file_converts_to_cents(tmp_path):
-    """A pre-cents session.json (no `units`) loads through dollars_to_cents:
-    credit_escrow 1.25 -> 125, credit amount 1.25 -> 125, share 2.5 -> 250."""
-    path = tmp_path / "session.json"
-    legacy = {
-        "state": "interacting_with_user",
-        "credit_escrow": 1.25,
-        "selected_sku": "ICE-1",
-        "dispense_slot": None,
-        "dispense_started_at": None,
-        "pending_refund_request_id": None,
-        "credits": [{"method": "cash_bill", "amount": 1.25, "ts": 10.0}],
-        "pending_sale_shares": {"cash": 2.5},
-        "saved_at": 100.0,
-        "error": None,
-    }
-    path.write_text(json.dumps(legacy), encoding="utf-8")
-
-    loaded = SessionStore(path).load()
-
-    assert loaded.error is None
-    assert loaded.credit_escrow_cents == 125
-    assert loaded.credits == [Credit(method="cash_bill", cents=125, ts=10.0)]
-    assert loaded.pending_sale_shares == {"cash": 250}
 
 
 def test_credit_event_id_round_trips_and_old_credit_loads_without_it(tmp_path):
@@ -479,18 +446,147 @@ def test_pending_payouts_keep_a_snapshot_open_and_round_trip(tmp_path):
     assert store.load().pending_payouts == [payout]
 
 
-def test_legacy_pending_refund_request_id_still_counts_as_open(tmp_path):
+def test_pre_cents_file_loads_as_an_open_error_snapshot(tmp_path):
+    """Legacy dollar / refund-id keys are no longer understood; the file must
+    fail safe as an unreadable (open, PAY-104) snapshot, never as 'closed'."""
     path = tmp_path / "session.json"
-    store = SessionStore(path)
-    store.save(
-        SessionSnapshot(
-            state="idle", credit_escrow_cents=0, pending_refund_request_id="r" * 8
-        )
+    path.write_text(
+        json.dumps(
+            {
+                "state": "idle",
+                "credit_escrow": 1.25,
+                "pending_refund_request_id": "r" * 8,
+                "saved_at": 100.0,
+            }
+        ),
+        encoding="utf-8",
     )
-    raw = json.loads(path.read_text())
-    del raw["pending_payouts"]  # a file written before the MDB cutover
-    path.write_text(json.dumps(raw))
+
+    loaded = SessionStore(path).load()
+
+    assert loaded.error
+    assert loaded.is_open()
+
+
+def _previous_release_file(**overrides):
+    """Shaped like the previous release's save(): asdict() plus units, with
+    pending_refund_request_id serialised as null."""
+    raw = {
+        "state": "dispensing",
+        "credit_escrow_cents": 125,
+        "selected_sku": "ICE-1",
+        "dispense_slot": 2,
+        "dispense_mechanism": None,
+        "dispense_started_at": 123.0,
+        "pending_refund_request_id": None,
+        "pending_payouts": [],
+        "credits": [
+            {"method": "cash_bill", "cents": 125, "ts": 1.0, "event_id": "evt-1"}
+        ],
+        "pending_sale_shares": {"cash": 250},
+        "is_test": False,
+        "saved_at": 100.0,
+        "error": None,
+        "units": "cents",
+    }
+    raw.update(overrides)
+    return raw
+
+
+def test_previous_release_file_with_null_refund_id_loads_readable(tmp_path):
+    path = tmp_path / "session.json"
+    path.write_text(json.dumps(_previous_release_file()), encoding="utf-8")
+
+    loaded = SessionStore(path).load()
+
+    assert loaded.error is None
+    assert loaded.pending_sale_shares == {"cash": 250}
+    assert loaded.credits == [Credit("cash_bill", 125, 1.0, event_id="evt-1")]
+
+
+def test_non_null_legacy_refund_id_still_fails_safe(tmp_path):
+    path = tmp_path / "session.json"
+    path.write_text(
+        json.dumps(_previous_release_file(pending_refund_request_id="r" * 8)),
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded.error
+    assert loaded.is_open()
+
+
+def _write_precents_with_pending_sale(path):
+    path.write_text(
+        json.dumps(
+            {
+                "state": "dispensing",
+                "credit_escrow": 0.0,
+                "selected_sku": "ICE-1",
+                "pending_sale_shares": {"cash": 2.5},
+                "saved_at": 100.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_unreadable_file_is_preserved_and_survives_clear(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    original = path.read_bytes()
+    store = SessionStore(path)
 
     loaded = store.load()
-    assert loaded.pending_payouts == [] and loaded.pending_refund_request_id
-    assert loaded.is_open()
+
+    assert loaded.error and "raw file kept at" in loaded.error
+    kept = [p for p in tmp_path.glob("session.unreadable.*.json")]
+    assert len(kept) == 1 and kept[0].read_bytes() == original
+    assert kept[0].name in loaded.error
+
+    assert store.clear() is True  # Discard / Clear (as Discard)
+    assert not path.exists()
+    assert kept[0].read_bytes() == original
+
+
+def test_repeated_loads_of_an_unreadable_file_keep_one_copy(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    store = SessionStore(path)
+
+    first = store.load()
+    second = store.load()
+
+    assert first.error == second.error
+    assert len(list(tmp_path.glob("session.unreadable.*.json"))) == 1
+
+
+def test_truncated_preserved_copy_is_rewritten_with_full_bytes(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    original = path.read_bytes()
+    store = SessionStore(path)
+    store.load()
+    (kept,) = tmp_path.glob("session.unreadable.*.json")
+    kept.write_bytes(original[: len(original) // 2])  # simulated power loss
+
+    store.load()
+
+    assert kept.read_bytes() == original
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_preserved_copy_name_carries_16_hex_digest(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    SessionStore(path).load()
+    (kept,) = tmp_path.glob("session.unreadable.*.json")
+    assert len(kept.name.split(".")[2]) == 16
+
+
+def test_readable_file_leaves_no_preserved_copy(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(SessionSnapshot(state="idle", credit_escrow_cents=5))
+    assert store.load().error is None
+    assert not list(tmp_path.glob("session.unreadable.*"))

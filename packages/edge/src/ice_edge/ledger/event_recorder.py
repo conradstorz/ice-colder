@@ -35,7 +35,6 @@ from ice_contracts.board.mqtt_messages import (
     SubsystemHeartbeat,
 )
 from ice_common.paths import DATA_DIR
-from ice_contracts.money import dollars_to_cents
 
 # Schema history. Append only -- never edit an entry once shipped. The applied
 # count lives in ``PRAGMA user_version`` (idiomatic SQLite, no extra table;
@@ -222,18 +221,10 @@ def _atomic_write_text(path: Path, content: str) -> None:
 def _journal_row_cents(row: dict) -> tuple[int, dict[str, int]]:
     """Return ``(price_cents, methods_cents)`` for one journal row.
 
-    A row carrying ``"units": "cents"`` is already integer cents. Any other
-    row is legacy (written before cents, in dollars) and is converted with
-    ``dollars_to_cents``. Raises on a malformed row, which the caller sets
-    aside as rejected evidence.
+    Raises on a malformed row, which the caller sets aside as rejected
+    evidence.
     """
-    if row.get("units") == "cents":
-        return int(row["price_cents"]), {
-            str(k): int(v) for k, v in row["methods"].items()
-        }
-    return dollars_to_cents(row["price"]), {
-        str(k): dollars_to_cents(v) for k, v in row["methods"].items()
-    }
+    return int(row["price_cents"]), {str(k): int(v) for k, v in row["methods"].items()}
 
 
 def _append_journal_line(payload: dict) -> None:
@@ -346,6 +337,7 @@ class EventRecorder:
         self._on_write_failed: Optional[Callable[[], None]] = None
         self._on_write_ok: Optional[Callable[[], None]] = None
         self._last_write_failed = False
+        self._precents_journal_rows = 0
         self._historical_avg_cache: dict[int, tuple[float, dict]] = {}
         # Corrupt-database recovery (§5): not a raise -- a flag + the backup
         # path a later task (main.py) inspects to raise the alert-class
@@ -448,6 +440,16 @@ class EventRecorder:
             target=self._writer_loop, name="event-recorder", daemon=True
         )
         self._writer.start()
+
+    @property
+    def precents_journal_rows(self) -> int:
+        """Pre-cents journal rows the last replay kept in the journal.
+
+        Such a row (dollar ``price``, no ``price_cents``) is deliberately not
+        converted (spec D1) and not set aside as rejected evidence: it stays
+        in the journal so DATA-101 stays raised until an operator handles it.
+        """
+        return self._precents_journal_rows
 
     @property
     def db_path(self) -> Path:
@@ -998,6 +1000,7 @@ class EventRecorder:
 
         count = 0
         remaining_lines: list[str] = []
+        self._precents_journal_rows = 0
         conn = sqlite3.connect(self._db_path, timeout=5.0)
         try:
             self._configure_sale_connection(conn)
@@ -1014,6 +1017,23 @@ class EventRecorder:
                         "EventRecorder: dropping corrupt/partial journal "
                         f"line: {line!r}"
                     )
+                    continue
+
+                if (
+                    isinstance(row, dict)
+                    and "price_cents" not in row
+                    and "price" in row
+                ):
+                    # A pre-cents row is not converted (spec D1). Setting it
+                    # aside would drain the journal and clear DATA-101 while
+                    # the sale is in no report; keep it so the fault stays.
+                    logger.error(
+                        "EventRecorder: pre-cents sales-journal row "
+                        f"(sku={row.get('sku')!r}, ts={row.get('ts')!r}) kept "
+                        "in the journal; it needs manual handling"
+                    )
+                    self._precents_journal_rows += 1
+                    remaining_lines.append(line)
                     continue
 
                 try:

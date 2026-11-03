@@ -77,7 +77,6 @@ class Rig:
         self.lever = 0
         self.payouts = []
         self.statuses = []
-        self.messages = []
         self.journal = []
         self.events = []
         self.deposits = []
@@ -90,7 +89,6 @@ class Rig:
             on_lever=lambda: setattr(self, "lever", self.lever + 1),
             on_payout_result=lambda r, b: self.payouts.append((r, b)),
             on_device_status=self.statuses.append,
-            message=self.messages.append,
             journal=lambda n, d: self.journal.append((n, d)),
             record_event=record,
             faults=self.faults,
@@ -274,9 +272,8 @@ async def test_corrupt_cursor_at_boot_raises_pay105(tmp_path):
     assert rig.faults.has(FaultCode.PAY_105)
 
 
-async def test_bill_escrowed_message(rig):
+async def test_bill_escrowed_is_acked_without_deposit(rig):
     await rig.send(1, {"kind": "bill_escrowed", "cents": 500})
-    assert rig.messages == ["Bill held: $5.00"]
     assert not rig.deposits and rig.acks
 
 

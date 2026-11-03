@@ -35,15 +35,10 @@ class StateConsumer:
         faults: FaultService,
         availability: Callable[[], Availability | None],
         policy: PolicySync,
-        message: Callable[[str], None],
-        exact_change_message: str = "Exact change only",
     ) -> None:
         self._faults = faults
         self._availability = availability
         self._policy = policy
-        self._message = message
-        self._exact_change_message = exact_change_message
-        self._exact_change = False
         self._subs: Subscribers[PaymentState] = Subscribers()
         self.state: PaymentState | None = None
         self.state_ts: float = 0.0
@@ -70,9 +65,6 @@ class StateConsumer:
                 self._apply_status(name, dev.status.value)
             else:
                 self._clear_if_active(name)
-        if state.exact_change and not self._exact_change:
-            self._message(self._exact_change_message)
-        self._exact_change = state.exact_change
         self._policy.on_state(state)
         self._subs.publish(state)
 

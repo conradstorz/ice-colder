@@ -46,7 +46,6 @@ class MdbGateway:
         deposit: Callable[[int, str, str], None],
         persist_session: Callable[[], Awaitable[None]],
         on_lever: Callable[[], None],
-        message: Callable[[str], None],
         journal: Callable[[str, dict], None],
         record_event: Callable[[str, int, dict | None], None],
         on_paid: Callable[[PendingPayout, int], None],
@@ -70,7 +69,6 @@ class MdbGateway:
             faults=faults,
             availability=availability,
             policy=self._policy,
-            message=message,
         )
         self._payouts = PayoutProtocol(
             dispatcher=_KeepaliveDispatcher(dispatcher, self._policy),
@@ -96,7 +94,6 @@ class MdbGateway:
             on_lever=on_lever,
             on_payout_result=self._complete_payout,
             on_device_status=self._state.on_device_status,
-            message=message,
             journal=journal,
             record_event=record_event,
             faults=faults,

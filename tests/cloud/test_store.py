@@ -65,20 +65,3 @@ def test_machines_sorted_by_label_with_fingerprint_and_corrupt_file_skipped(tmp_
 
 def test_check_fingerprint_returns_valid_value():
     assert check_fingerprint(FP) == FP
-
-
-def test_stored_0_4_0_snapshot_revalidates_on_read(tmp_path):
-    import json
-
-    from tests.cloud.reports import legacy_dollar_json
-
-    store = SnapshotStore(tmp_path)
-    report = make_report()
-    path = tmp_path / "machines" / f"{FP}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(legacy_dollar_json(report)))
-    got = store.latest(FP)
-    assert got is not None
-    assert got.kpi.summary.money_in_cents == 4200
-    assert got.kpi.average.money_in_cents == pytest.approx(3850)
-    assert got.health.status.credit_escrow_cents == 0

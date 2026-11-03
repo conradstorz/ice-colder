@@ -20,7 +20,7 @@ Moved out of the root `CLAUDE.md`: background and history, not working rules.
 | Edge §2.9 store-and-forward uplink | `ice_edge.uplink` |
 | Edge §2.10 supervisor | `ice_edge.supervisor` + `ice_common.task_supervisor` |
 | §3 Payments | `ice_edge.payment` (MDB arrives through `ice_edge.hal`) |
-| §4 CCTV | `ice_edge.cctv` (stub) |
+| §4 CCTV | not built (the `ice_edge.cctv` stub was removed 2026-11-02; the spec keeps the intent) |
 | §5 Roles/access | `ice_contracts.access` (model) + `ice_edge.access` (store) |
 | §7 Reporting / alerting | `ice_edge.reporting`, `ice_edge.notify` |
 | §7 "local and remote use the same UI" | `ice_ui` (both `ice_edge.web` and `ice_cloud.portal` render it) |
@@ -64,3 +64,7 @@ The v2 shell replaces all URLs from the old tabbed dashboard. Anyone holding a b
 | `GET /config/payments` | `GET`/`POST /settings/payments` |
 | `GET /config/comms` | `GET`/`POST /settings/comms` |
 | the old `/users/*` and `/devices/*` forms | the `/users` and `/devices` levels |
+
+### Legacy money compatibility removed (2026-11-02)
+
+The cloud stopped accepting 0.x reports (`MachineReport.contract` is `"1.0.0"` only; the schema is unchanged, so no version bump) and dropped the dollar template aliases for old uploaded UI bundles. The edge dropped its pre-cents readers: the dollar `session.json` and sales-journal conversion (the `"units": "cents"` marker is still written, no longer read), the dollar `price` upgrade of `config.json` products, and `SessionSnapshot.pending_refund_request_id` (never written since the MDB cutover). events.db migration 2 stays in `MIGRATIONS` because the list is append-only; a fresh database runs it as a no-op.

@@ -3,9 +3,8 @@ import shutil
 import pytest
 from jinja2.sandbox import SandboxedEnvironment
 
-from ice_cloud.ui_registry import UiRegistry, uses_legacy_money
+from ice_cloud.ui_registry import UiRegistry
 from tests.cloud.reports import make_report
-from ice_ui.templating import TEMPLATES_DIR
 from ice_ui.bundle import INSTALLED_ROOT, BundleError, build_bundle, ui_digest
 
 MARKER = "MARKER-FROM-MACHINE-UI"
@@ -279,7 +278,3 @@ def test_extractions_are_bounded_by_a_semaphore(tmp_path, cloud_templates, monke
     t1.join(10)
     t2.join(10)
     assert second_in.is_set()
-
-
-def test_installed_templates_are_not_legacy_money():
-    assert uses_legacy_money(TEMPLATES_DIR) is False

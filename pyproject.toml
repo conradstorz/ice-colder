@@ -66,7 +66,7 @@ layers = [
     "ice_edge.faults | ice_edge.notify",
     "ice_edge.monitoring | ice_edge.access",
     "ice_edge.ledger | ice_edge.customer_ui | ice_edge.hal | ice_edge.config",
-    "ice_edge.supervisor | ice_edge.cctv",
+    "ice_edge.supervisor",
 ]
 
 [[tool.importlinter.contracts]]
@@ -102,7 +102,6 @@ testpaths = ["tests"]
 # may be imported by the application.
 dev = [
     "import-linter>=2.6,<2.7",
-    "libcst>=1.8,<1.9",
     "pytest-asyncio>=1.3.0",
     "pyyaml>=6",
     "ruff>=0.11.2",

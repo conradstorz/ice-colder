@@ -51,17 +51,6 @@ async def test_deposit_funds_records_the_event_id_on_the_credit():
     assert [(c.cents, c.event_id) for c in vmc.escrow_credits] == [(100, "evt-1")]
 
 
-async def test_a_failing_customer_message_cannot_undo_or_repeat_a_credit():
-    machine, vmc, _ = build()
-
-    def boom(_text):
-        raise RuntimeError("display exploded")
-
-    vmc.outputs.set_message_callback(boom)
-    vmc.deposit_funds(100, "cash_coin", event_id="evt-1")  # must not raise
-    assert vmc.credit_escrow_cents == 100 and len(vmc.escrow_credits) == 1
-
-
 async def test_refund_pays_out_the_cash_credit_through_payments():
     machine, vmc, payments = build()
     vmc.deposit_funds(300, "cash_bill")

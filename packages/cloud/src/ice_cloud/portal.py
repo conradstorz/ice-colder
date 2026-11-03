@@ -214,40 +214,6 @@ def _fault_count(report: MachineReport) -> str:
     return fault_count_line(None if report.health.vmc_missing else len(report.faults))
 
 
-# Legacy display aliases for pre-1.0.0 uploaded UI bundles (`ResolvedUi.
-# legacy_money`), whose templates read dollar floats (`status.credit_escrow`,
-# `summary.money_in`, `f.pending_sale.price`, and `f.pending_sale.methods`
-# values). They sit beside the `_cents` keys the current templates read, which
-# stay in cents for the installed UI and 1.0.0 bundles; removed once no 0.x
-# edge reports. `methods` shares its key, so for a legacy bundle it is
-# converted in place.
-def _with_legacy(model, legacy, **aliases):
-    if model is None:
-        return None
-    data = model.model_dump()
-    if legacy:
-        for alias, cents_key in aliases.items():
-            value = data[cents_key]
-            data[alias] = None if value is None else value / 100
-    return data
-
-
-def _legacy_status(status, legacy):
-    return _with_legacy(status, legacy, credit_escrow="credit_escrow_cents")
-
-
-def _legacy_faults(faults, legacy):
-    out = []
-    for fault in faults:
-        data = fault.model_dump()
-        pending = data["pending_sale"]
-        if pending is not None and legacy:
-            pending["price"] = pending["price_cents"] / 100
-            pending["methods"] = {k: v / 100 for k, v in pending["methods"].items()}
-        out.append(data)
-    return out
-
-
 @router.get("/fleet", response_class=HTMLResponse)
 async def fleet(request: Request, account: Account = Depends(require_signed_in)):
     state = request.app.state
@@ -384,7 +350,7 @@ async def status_fragment(
             machine=machine,
             report=report,
             role=selected.role,
-            status=_legacy_status(h.status, ui.legacy_money),
+            status=h.status.model_dump() if h.status is not None else None,
             is_healthy=h.is_healthy,
             issues=h.issues,
             active_faults=h.active_faults,
@@ -439,11 +405,15 @@ async def kpi_fragment(request: Request, account: Account = Depends(require_sign
             machine=machine,
             report=report,
             role=selected.role,
-            summary=_with_legacy(
-                report.kpi.summary, ui.legacy_money, money_in="money_in_cents"
+            summary=(
+                report.kpi.summary.model_dump()
+                if report.kpi.summary is not None
+                else None
             ),
-            average=_with_legacy(
-                report.kpi.average, ui.legacy_money, money_in="money_in_cents"
+            average=(
+                report.kpi.average.model_dump()
+                if report.kpi.average is not None
+                else None
             ),
         ),
     )
@@ -509,7 +479,7 @@ async def faults_view(request: Request, account: Account = Depends(require_signe
             machine=machine,
             report=report,
             role=selected.role,
-            faults=_legacy_faults(report.faults, ui.legacy_money),
+            faults=[f.model_dump() for f in report.faults],
             can_clear=False,
             oob=False,
         ),

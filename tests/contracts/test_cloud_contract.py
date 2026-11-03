@@ -9,7 +9,6 @@ from pydantic import ValidationError
 from ice_contracts.cloud.report import (
     CLOUD_CONTRACT_VERSION,
     FaultView,
-    KpiAverage,
     KpiWindow,
     MachineReport,
     PendingSaleView,
@@ -23,13 +22,13 @@ CRLF, LF = bytes([13, 10]), bytes([10])
 # Literal copy of cloud spec section 6.6.
 SPEC_EXAMPLE = """
 {
-  "contract": "0.2.0", "machine_id": "m-0042", "sent_at": "2026-10-13T14:05:00Z",
+  "contract": "1.0.0", "machine_id": "m-0042", "sent_at": "2026-10-13T14:05:00Z",
   "boot_id": "6f1c2a7e-3d4b-4e0a-9b51-2c8f0d7a1e93", "seq": 118,
   "report_interval_seconds": 60, "edge_build": "6fa3512",
   "ui": {"digest": "3b9f0c2d8e41a7b65f90d3c1e28a4b7f6d05c9e1a3b2f48d7e6c5a0b9d1f2e3a", "ice_ui_version": "0.1.0"},
   "health": {
     "vmc_missing": false,
-    "status": {"state": "idle", "selected_product": null, "credit_escrow": 0.0,
+    "status": {"state": "idle", "selected_product": null, "credit_escrow_cents": 0,
                "last_payment_method": "cash"},
     "is_healthy": false,
     "issues": ["ICE-301 Ice bin low (Bag of Ice)", "2 errors in last 24h"],
@@ -40,9 +39,9 @@ SPEC_EXAMPLE = """
     "maintenance": null
   },
   "kpi": {
-    "summary": {"money_in": 42.0, "products_out": 14, "vends_failed": 1, "errors": 2,
+    "summary": {"money_in_cents": 4200, "products_out": 14, "vends_failed": 1, "errors": 2,
                 "uptime_pct": 99.3},
-    "average": {"money_in": 38.5, "products_out": 12.4, "errors": 0.6, "uptime_pct": 98.9}
+    "average": {"money_in_cents": 3850.0, "products_out": 12.4, "errors": 0.6, "uptime_pct": 98.9}
   },
   "faults": [{"key": "ICE-10LB", "sku": "ICE-10LB", "product": "Bag of Ice", "code": "ICE-301",
               "severity": "lockout", "scope": "product", "description": "Ice bin low",
@@ -65,8 +64,8 @@ def _full() -> MachineReport:
     data = _example()
     data["faults"][0]["pending_sale"] = {
         "sku": "ICE-10LB",
-        "price": 4.5,
-        "methods": {"cash": 4.5},
+        "price_cents": 450,
+        "methods": {"cash": 450},
     }
     return MachineReport.model_validate(data)
 
@@ -209,14 +208,13 @@ def test_edge_cloud_registered_and_bytes_match(tmp_path):
     assert set(norm(out)) == {f"{n}.schema.json" for n in models}
 
 
-def test_report_accepts_0_2_0_through_1_0_0():
+def test_report_accepts_only_1_0_0():
     data = _example()
-    for version in ("0.2.0", "0.3.0", "0.4.0", "1.0.0"):
+    assert MachineReport.model_validate(data).contract == "1.0.0"
+    for version in ("0.2.0", "0.3.0", "0.4.0", "1.1.0"):
         data["contract"] = version
-        assert MachineReport.model_validate(data).contract == version
-    data["contract"] = "1.1.0"
-    with pytest.raises(ValidationError):
-        MachineReport.model_validate(data)
+        with pytest.raises(ValidationError):
+            MachineReport.model_validate(data)
 
 
 def test_report_common_name_is_optional_and_capped():
@@ -278,52 +276,6 @@ def test_selected_product_is_capped_at_200():
         MachineReport.model_validate(data)
 
 
-def _cents_example() -> dict:
-    data = _example()
-    data["contract"] = "1.0.0"
-    data["health"]["status"].pop("credit_escrow")
-    data["health"]["status"]["credit_escrow_cents"] = 0
-    data["kpi"]["summary"].pop("money_in")
-    data["kpi"]["summary"]["money_in_cents"] = 4200
-    data["kpi"]["average"].pop("money_in")
-    data["kpi"]["average"]["money_in_cents"] = 3850.0
-    data["faults"][0]["pending_sale"] = {
-        "sku": "ICE-10LB",
-        "price_cents": 450,
-        "methods": {"cash": 450},
-    }
-    return data
-
-
-def test_0_4_0_dollar_report_equals_1_0_0_cents_report():
-    old = _example()
-    old["contract"] = "0.4.0"
-    old["faults"][0]["pending_sale"] = {
-        "sku": "ICE-10LB",
-        "price": 4.5,
-        "methods": {"cash": 4.5},
-    }
-    a = MachineReport.model_validate(old)
-    b = MachineReport.model_validate(_cents_example())
-    assert a.model_copy(update={"contract": "1.0.0"}) == b
-    assert b.kpi.summary.money_in_cents == 4200
-
-
-def test_kpi_average_converts_without_quantizing():
-    assert KpiAverage.model_validate(
-        {
-            "money_in": 1.235,
-            "products_out": None,
-            "errors": None,
-            "uptime_pct": None,
-        }
-    ).money_in_cents == pytest.approx(123.5)
-    none = KpiAverage.model_validate(
-        {"money_in": None, "products_out": None, "errors": None, "uptime_pct": None}
-    )
-    assert none.money_in_cents is None
-
-
 def test_both_old_and_new_keys_keep_new_and_reject_old():
     with pytest.raises(ValidationError):
         StatusView.model_validate(
@@ -358,31 +310,3 @@ def test_float_cents_are_rejected():
             )
     with pytest.raises(ValidationError):
         PendingSaleView(sku="x", price_cents=1, methods={"cash": 1.0})
-
-
-def test_legacy_alert_state_fault_row_reads_back():
-    # machine_alert_state.faults_json rows written by a 0.4.0 cloud.
-    row = json.loads(
-        '{"key": "PAY-104", "sku": null, "product": null, "code": "PAY-104",'
-        ' "severity": "critical", "scope": "machine", "description": "x",'
-        ' "since_seconds": null, "gate": "alert",'
-        ' "pending_sale": {"sku": "ICE", "price": 4.5, "methods": {"cash": 2.25, "card": 2.25}}}'
-    )
-    view = FaultView.model_validate(row)
-    assert view.pending_sale.price_cents == 450
-    assert view.pending_sale.methods == {"cash": 225, "card": 225}
-
-
-@pytest.mark.parametrize("bad", [{}, [], "4.2", True])
-def test_legacy_average_money_in_wrong_type_is_a_validation_error(bad):
-    from ice_contracts.cloud.report import KpiAverage
-
-    with pytest.raises(ValidationError):
-        KpiAverage.model_validate(
-            {
-                "money_in": bad,
-                "products_out": 1.0,
-                "errors": 0.0,
-                "uptime_pct": 99.0,
-            }
-        )

@@ -4,7 +4,6 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict
 from loguru import logger
-from ice_edge.payment.payment_gateway_manager import PaymentGatewayManager
 from ice_contracts.board.mqtt_messages import ButtonPress
 from ice_contracts.board.vending_machine import DispenserOutcome, FaultCode
 from ice_common.config_model import ConfigModel, Product
@@ -112,10 +111,6 @@ class VMC:
 
         self.state = VMC.states[0]
         logger.debug("FSM transitions set up successfully.")
-
-        self.payment_gateway_manager = PaymentGatewayManager(
-            config=self.config_model.payment.model_dump()
-        )
 
         logger.debug("VMC initialization complete.")
 
@@ -420,11 +415,6 @@ class VMC:
         """Return True if there is remaining credit in the escrow."""
         return self._escrow.has_credit
 
-    @logger.catch()
-    def send_customer_message(self, message):
-        """Send a message to the customer via the registered callback."""
-        self._outputs.message(message)
-
     # --- Observers ---
 
     def subscribe_state_change(self, cb: Callable[[str], None]) -> Callable[[], None]:
@@ -530,16 +520,12 @@ class VMC:
         self._journal.entering_interaction(self.selected_product)
         self._session_timer.arm()
         self._outputs.display("interacting_with_user")
-        self._outputs.refresh()
-        self._journal.interaction_started()
 
     @logger.catch()
     def on_dispense_product(self):
         self._journal.entering_dispensing(self.selected_product)
         self._session_timer.cancel()
         self._outputs.display("dispensing")
-        self._outputs.refresh()
-        self._journal.dispensing_started()
         # Dispatch uses the product's own `slot`, not its list index: deleting an
         # earlier product shifts indices but not the physical slot.
         if self._tasks.loop and self.selected_product:
@@ -556,18 +542,15 @@ class VMC:
         # Clear the selection: a stale selection would let a late duplicate dispenser fault
         # refund at the old product's price.
         self.selected_product = None
-        self._journal.transaction_complete()
         if had_change:
             self.request_refund(reason="change", sale_id=sale_id)
         self._outputs.display("idle")
-        self._outputs.refresh()
 
     @logger.catch()
     def on_reset(self):
         self._journal.resetting(self.selected_product)
         self._drop_sale()
         self._outputs.display("idle")
-        self._outputs.refresh()
 
     @logger.catch()
     def on_cancel_sale(self):
@@ -579,8 +562,6 @@ class VMC:
         self.request_refund(reason="cancel")
         self._drop_sale()
         self._outputs.display("idle")
-        self._outputs.refresh()
-        self._journal.product_removed()
 
     @logger.catch()
     def on_vend_failed(self, code: FaultCode, outcome: str):
@@ -641,11 +622,9 @@ class VMC:
             self._outputs.state_changed(self.state)
             self._outputs.display("idle")
         else:
-            self.send_customer_message("Please choose another product.")
             self._session_timer.arm()
             self._outputs.state_changed(self.state)
             self._outputs.display("interacting_with_user")
-        self._outputs.refresh()
 
     @logger.catch()
     def on_error(self):
@@ -675,11 +654,9 @@ class VMC:
             )
             if sale.is_test:  # never refund test money
                 self._journal.test_credit_cleared_on_error(self._escrow.take_all())
-        if had_credit := self.credit_escrow_cents > 0:
+        if self.credit_escrow_cents > 0:
             self.request_refund(reason="error")
         self._outputs.display("error")
-        self._outputs.refresh()
-        self._journal.error_message(had_credit)
         if sale is not None and not written and not sale.settled:
             self._notify_settled(sale, "error", None)
             self._sale = sale.with_(settled=True)
@@ -728,11 +705,6 @@ class VMC:
         # would otherwise never be refunded (see _expire_session's idle branch).
         self._session_timer.arm()
         self._outputs.state_changed(self.state)
-        self._outputs.refresh()
-        self.send_customer_message(
-            f"{format_cents(cents)} deposited. "
-            f"Current balance: {format_cents(self.credit_escrow_cents)}."
-        )
 
     @logger.catch()
     def request_refund(
@@ -749,10 +721,8 @@ class VMC:
         """
         logger.debug(f"Requesting refund, credit cents: {self.credit_escrow_cents}")
         if self.credit_escrow_cents <= 0:
-            self.send_customer_message("No funds to refund.")
             return
         self._desk.refund(reason, detail, sale_id, self.last_payment_method)
-        self._outputs.refresh()
 
     def on_payment_lever(self) -> None:
         """The customer pressed the coin-return lever: refund, unless a vend is running."""
@@ -847,20 +817,6 @@ class VMC:
         self._escrow.take_all()
         self._test_sale_in_progress = False
 
-    @logger.catch()
-    def initiate_virtual_payment(self, amount_cents: int):
-        """Show the next virtual-payment gateway's QR code to the customer."""
-        prompt = self.payment_gateway_manager.next_payment_prompt(amount_cents)
-        if prompt is None:
-            self.send_customer_message("Virtual payment is currently unavailable.")
-            return
-
-        current_gateway, qr_image = prompt
-        self._outputs.show_qr(qr_image)
-        self.send_customer_message(
-            f"Virtual Payment Option ({current_gateway}): Scan the QR code above."
-        )
-
     def _refusal(self, candidate: Product, *, stock: bool = False) -> str | None:
         return refusal(
             candidate,
@@ -890,9 +846,7 @@ class VMC:
             self.start_interaction()
             self._payment_retry.arm()
         elif self.state == "interacting_with_user":
-            self.initiate_virtual_payment(self.selected_product.price_cents)
             self._payment_retry.arm()
-        self._outputs.refresh()
 
     @logger.catch()
     def process_payment(self):
@@ -915,7 +869,6 @@ class VMC:
                 self._settle("vend_failed", code, self.cancel_sale)
             else:
                 self.selected_product = None
-                self._outputs.refresh()
             return
 
         price = self.selected_product.price_cents
@@ -931,7 +884,6 @@ class VMC:
             )
             self.dispense_product()
             self._outputs.persist("dispensing")
-            self._outputs.refresh()
             self.last_insufficient_message = ""
         else:
             required = price - escrow
@@ -969,7 +921,6 @@ class VMC:
             self._outputs.display("idle")
         else:
             self._outputs.state_changed(self.state)
-        self._outputs.refresh()
 
     @logger.catch()
     def _finish_dispensing(self):
@@ -988,8 +939,6 @@ class VMC:
             self.selected_product.name if self.selected_product else "Unknown"
         )
         self._journal.finished_dispensing(product_name)
-        self.send_customer_message("Product dispensed. Enjoy your purchase!")
         draw_stock(self._inventory(), self._tasks, self._journal, self.selected_product)
         self.complete_transaction()
         self._outputs.persist()
-        self._outputs.refresh()

@@ -379,22 +379,6 @@ class TestProductPriceCents:
             logger.remove(sink)
         return result, lines
 
-    def test_legacy_dollar_price_is_converted_with_one_warning(self):
-        p, lines = self._warnings(
-            lambda: Product.model_validate({"sku": "LEG-1", "price": 2.5})
-        )
-        assert p.price_cents == 250
-        assert len([line for line in lines if "LEG-1" in line]) == 1
-
-    def test_both_keys_keep_price_cents(self):
-        p, lines = self._warnings(
-            lambda: Product.model_validate(
-                {"sku": "B", "price": 9.0, "price_cents": 120}
-            )
-        )
-        assert p.price_cents == 120
-        assert lines
-
     def test_over_cap_is_kept_with_warning(self):
         p, lines = self._warnings(lambda: Product(sku="HI", price_cents=200_000))
         assert p.price_cents == 200_000
@@ -404,14 +388,6 @@ class TestProductPriceCents:
         dumped = Product(sku="D", price_cents=5).model_dump()
         assert "price" not in dumped
         assert dumped["price_cents"] == 5
-
-    def test_legacy_rounds_half_even_on_decimal_text(self):
-        assert Product.model_validate({"price": 2.675}).price_cents == 268
-
-    @pytest.mark.parametrize("bad", [-1.0, "abc"])
-    def test_unparsable_or_negative_legacy_price_refused(self, bad):
-        with pytest.raises(ValidationError):
-            Product.model_validate({"price": bad})
 
 
 def test_mdb_policy_defaults():
@@ -447,3 +423,20 @@ def test_mdb_policy_rejects_bad_values(bad):
 
     with pytest.raises(ValidationError):
         MdbPolicyConfig(**bad)
+
+
+def test_product_legacy_price_only_rejected():
+    with pytest.raises(ValidationError, match="legacy dollar 'price' key"):
+        Product.model_validate({"sku": "A", "name": "x", "price": 3.0, "slot": 1})
+
+
+def test_product_legacy_price_with_price_cents_rejected():
+    with pytest.raises(ValidationError, match="'A'"):
+        Product.model_validate(
+            {"sku": "A", "name": "x", "price": 3.0, "price_cents": 300, "slot": 1}
+        )
+
+
+def test_product_price_cents_only_accepted():
+    p = Product.model_validate({"sku": "A", "name": "x", "price_cents": 300, "slot": 1})
+    assert p.price_cents == 300

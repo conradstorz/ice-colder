@@ -529,18 +529,6 @@ async def test_event_ack_without_a_loop_creates_no_coroutine(tmp_path, recwarn):
     assert not [w for w in recwarn if "never awaited" in str(w.message)]
 
 
-async def test_legacy_refund_id_appears_in_the_pay104_detail(tmp_path, caplog):
-    path = tmp_path / "session.json"
-    SessionStore(path).save(
-        SessionSnapshot(
-            state="idle", credit_escrow_cents=0, pending_refund_request_id="legacy-7"
-        )
-    )
-    machine, *_ = build(tmp_path, store=SessionStore(path))
-    assert machine.faults.has(FaultCode.PAY_104)
-    assert "refund=legacy-7" in caplog.text
-
-
 # --- PAY-104 resolution re-queues what the crashed run left unconfirmed ---------------
 
 

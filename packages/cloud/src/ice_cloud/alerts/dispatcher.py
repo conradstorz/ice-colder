@@ -11,7 +11,7 @@ from loguru import logger
 
 from ice_cloud.alerts.mail import Mailer, render_email
 from ice_cloud.alerts.router import TECH_GATES, muted_ids, recipients_for
-from ice_cloud.store import Delivery, Machine, Repository, StoredEvent
+from ice_cloud.store import Delivery, Machine, SqliteRepository, StoredEvent
 from ice_cloud.store.repository import Recipient
 
 COOLDOWN_SECONDS = 600
@@ -36,7 +36,7 @@ class _MailEvent:
 class AlertDispatcher:
     def __init__(
         self,
-        repo: Repository,
+        repo: SqliteRepository,
         mailer: Mailer,
         *,
         now: Callable[[], datetime],

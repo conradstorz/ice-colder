@@ -9,6 +9,7 @@ event loop.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -21,7 +22,6 @@ from typing import Optional
 from loguru import logger
 
 from ice_common.paths import DATA_DIR
-from ice_contracts.money import dollars_to_cents
 
 SESSION_PATH = DATA_DIR / "session.json"
 
@@ -66,9 +66,6 @@ class SessionSnapshot:
     # all -- still loads via SessionSnapshot(**raw).
     dispense_mechanism: Optional[str] = None
     dispense_started_at: Optional[float] = None
-    # Legacy (pre-MDB-cutover) field: read so an old file still loads and
-    # still counts as open; never written with a value any more.
-    pending_refund_request_id: Optional[str] = None
     # Queued or in-flight ``payout`` / ``cash_sale`` commands (PendingPayout
     # as dicts): money owed to the customer that the board has not confirmed.
     pending_payouts: list[dict] = field(default_factory=list)
@@ -99,27 +96,8 @@ class SessionSnapshot:
             or self.credit_escrow_cents > 0
             or self.state == "dispensing"
             or bool(self.pending_sale_shares)
-            or self.pending_refund_request_id is not None
             or bool(self.pending_payouts)
         )
-
-
-def _convert_legacy_dollars(raw: dict) -> None:
-    """Rewrite a pre-cents snapshot dict in place: dollar floats to int cents."""
-    if "credit_escrow" in raw:
-        raw["credit_escrow_cents"] = dollars_to_cents(raw.pop("credit_escrow"))
-    if raw.get("credits") is not None:
-        raw["credits"] = [
-            {
-                "method": c["method"],
-                "cents": dollars_to_cents(c["amount"]),
-                "ts": c["ts"],
-            }
-            for c in raw["credits"]
-        ]
-    shares = raw.get("pending_sale_shares")
-    if shares is not None:
-        raw["pending_sale_shares"] = {k: dollars_to_cents(v) for k, v in shares.items()}
 
 
 class SessionStore:
@@ -152,11 +130,16 @@ class SessionStore:
             # SessionSnapshot(**raw) already handles via default_factory=list
             # — only rehydrate when the key is actually present.
             raw_credits = raw.get("credits")
-            if raw.pop("units", None) != "cents":
-                # A file written before money moved to integer cents carries
-                # dollar floats under the legacy keys; convert once on load.
-                _convert_legacy_dollars(raw)
-                raw_credits = raw.get("credits")
+            # The "units" marker is still written but no longer interpreted.
+            raw.pop("units", None)
+            # The previous release serialised the removed refund-id field as
+            # null on every save; a null carries no information and is
+            # dropped. A non-null id is a real legacy pending refund and is
+            # left in place so the unknown-key error below fails safe.
+            if "pending_refund_request_id" in raw and (
+                raw["pending_refund_request_id"] is None
+            ):
+                del raw["pending_refund_request_id"]
             if raw_credits is not None:
                 raw["credits"] = [Credit(**c) for c in raw_credits]
             # saved_at is money-load-bearing (PAY-104 recovery keys on the
@@ -189,7 +172,40 @@ class SessionStore:
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")
-            return SessionSnapshot(state="unknown", credit_escrow_cents=0, error=str(e))
+            detail = str(e)
+            kept = self._preserve_unreadable()
+            if kept is not None:
+                detail += f"; raw file kept at {kept}"
+            return SessionSnapshot(state="unknown", credit_escrow_cents=0, error=detail)
+
+    def _preserve_unreadable(self) -> Optional[Path]:
+        """Copy an unreadable snapshot beside the original, once per content.
+
+        An unreadable file may be the only record of a pending sale (for
+        example a pre-cents file, which is never converted). Clearing PAY-104
+        deletes ``session.json``; this copy is what survives for the owner.
+        The name carries a content hash so repeated loads do not pile up
+        copies and a different file never overwrites an earlier one.
+        """
+        try:
+            data = self._path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()[:16]
+            dest = self._path.with_name(
+                f"{self._path.stem}.unreadable.{digest}{self._path.suffix}"
+            )
+            # An existing copy is trusted only if it is byte-identical: a
+            # crash mid-copy must not leave a truncated "preserved" file.
+            if not (dest.exists() and dest.read_bytes() == data):
+                tmp = dest.with_name(dest.name + ".tmp")
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, dest)
+            return dest
+        except OSError as oe:
+            logger.error(f"SessionStore: could not keep a copy of {self._path}: {oe}")
+            return None
 
     def clear(self) -> bool:
         """Remove the evidence file. Returns True only if it is gone afterwards."""

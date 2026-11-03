@@ -19,7 +19,7 @@ def _bar(html: str) -> str:
 
 
 def _named_report(**kw):
-    return make_report(contract="0.4.0", common_name="Lobby Ice", **kw)
+    return make_report(common_name="Lobby Ice", **kw)
 
 
 def test_owner_sees_chip_and_me_page(cloud, signer):

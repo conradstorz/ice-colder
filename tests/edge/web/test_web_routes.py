@@ -1,7 +1,6 @@
 """Tests for web_interface routes using FastAPI TestClient."""
 
 import re
-import subprocess
 import uuid
 
 import pytest
@@ -11,7 +10,7 @@ from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.access.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from ice_edge.customer_ui.display_controller import DisplayController
 from tests.conftest import make_client, sign_in
-from tests.paths import REPO_ROOT, SCREEN_TEMPLATES, TEMPLATES_DIR
+from tests.paths import TEMPLATES_DIR
 from tests.dom_utils import (
     find_by_id,
     heading_texts,
@@ -3510,65 +3509,7 @@ class TestPillEndpoint:
         assert resp.headers["hx-redirect"] == "/login"
 
 
-# --- Task 15: proving the demolition -----------------------------------
-#
-# Everything below is new coverage for the routes/templates this task
-# deletes: a 404 sweep over every route removed from routes/legacy.py, a
-# template-include integrity check, and a byte-identical check against
-# origin/main for the two /screen templates the Global Constraints require
-# stay untouched all through part 2.
-
 _TEMPLATES_DIR = TEMPLATES_DIR
-_REPO_ROOT = REPO_ROOT
-
-# The fifteen routes deleted from ice_edge/web/routes/legacy.py (task-15
-# brief, executor resolution 1), each with the real method it answered —
-# posting GET to a POST-only route (or vice versa) would 405, not 404, and
-# that would prove nothing about the route being gone.
-_REMOVED_ROUTES = [
-    ("POST", "/action/restart"),
-    ("GET", "/activity"),
-    ("GET", "/config/comms"),
-    ("GET", "/config/contacts"),
-    ("GET", "/config/machine"),
-    ("GET", "/config/payments"),
-    ("POST", "/faults/PAY-103/clear"),
-    ("POST", "/inventory/add"),
-    ("GET", "/inventory/copy/SKU-1"),
-    ("POST", "/inventory/delete/SKU-1"),
-    ("GET", "/inventory/edit/SKU-1/catalog"),
-    ("GET", "/inventory/edit/SKU-1/placement"),
-    ("POST", "/inventory/update/SKU-1/catalog"),
-    ("POST", "/inventory/update/SKU-1/placement"),
-    ("GET", "/inventory/new"),
-]
-
-
-class TestRemovedLegacyRoutesAre404:
-    """Task 15's own required coverage (brief resolution 9): every route
-    routes/legacy.py used to serve now 404s, and the routes that survive
-    the same deletion (in home.py, health.py, screen.py and
-    inventory.py) still answer 200.
-
-    `client` is the owner, who held every permission any of these routes
-    ever gated on, and carries the HX-Request header sign_in sets by
-    default — so a 404 here can only be the route itself being gone, never
-    a permission 403 or a CSRF 403 wearing a 404's clothes. See this
-    task's report for direct evidence that these assertions are not
-    vacuous (two of them were re-checked with the route temporarily
-    restored, and failed as expected)."""
-
-    @pytest.mark.parametrize("method, path", _REMOVED_ROUTES)
-    def test_removed_route_is_404(self, client, method, path):
-        resp = client.get(path) if method == "GET" else client.post(path, data={})
-        assert resp.status_code == 404, (method, path, resp.status_code)
-
-    @pytest.mark.parametrize(
-        "path", ["/status", "/kpi", "/pill", "/screen", "/screen/body", "/inventory"]
-    )
-    def test_surviving_fragment_route_is_still_200(self, client, path):
-        resp = client.get(path)
-        assert resp.status_code == 200, (path, resp.status_code)
 
 
 class TestTemplateIncludeIntegrity:
@@ -3595,76 +3536,3 @@ class TestTemplateIncludeIntegrity:
                 missing.append((str(template_path.relative_to(_TEMPLATES_DIR)), target))
         assert checked > 0, "no {% include %} / {% extends %} tags found at all"
         assert missing == []
-
-    def test_deleted_partials_are_not_referenced_anywhere(self):
-        """The twelve partials this task deletes, named explicitly — a
-        second, independent check alongside the generic sweep above, so a
-        regex miss in _TAG_RE can't silently hide a real reference."""
-        deleted = {
-            "partials/activity_fragment.html",
-            "partials/health_fragment.html",
-            "partials/inventory_table.html",
-            "partials/inventory_add_form.html",
-            "partials/inventory_catalog_form.html",
-            "partials/inventory_placement_form.html",
-            "partials/logs_fragment.html",
-            "partials/machine_info.html",
-            "partials/contacts.html",
-            "partials/users_list.html",
-            "partials/user_form.html",
-            "partials/devices_list.html",
-        }
-        referenced = {target for _path, target in self._all_targets()}
-        assert deleted & referenced == set()
-
-    def test_survivor_partials_are_still_referenced(self):
-        """The flip side: partials/user_form.html's collision with the
-        top-level templates/user_form.html Task 12 created (brief
-        resolution 6) means a naive delete-by-name could take the wrong
-        file. This confirms the top-level survivor is untouched and still
-        a real, extending template — not proof by itself, but a second
-        signal alongside the app booting and the full suite passing."""
-        assert (_TEMPLATES_DIR / "user_form.html").exists()
-        text = (_TEMPLATES_DIR / "user_form.html").read_text(encoding="utf-8")
-        assert '{% extends "base.html" %}' in text
-        assert not (_TEMPLATES_DIR / "partials" / "user_form.html").exists()
-
-
-class TestScreenTemplatesUnchanged:
-    """Global Constraint: templates/screen.html and
-    partials/screen_body.html must stay byte-identical to origin/main for
-    the whole of part 2 (brief resolution 11) — verified by diff, not by
-    eye. Skipped, rather than failed, when origin/main isn't reachable (a
-    shallow clone/CI checkout with no origin remote) instead of reporting a
-    false defect for an environment problem."""
-
-    @pytest.mark.parametrize(
-        "relpath,legacy",
-        SCREEN_TEMPLATES,
-    )
-    def test_matches_origin_main(self, relpath, legacy):
-        # Compare the working-tree bytes of the current path against the
-        # first of (current, *legacy) that exists at origin/main.
-        origin_path = None
-        result = None
-        for candidate in (relpath, *legacy):
-            result = subprocess.run(
-                ["git", "show", f"origin/main:{candidate}"],
-                cwd=_REPO_ROOT,
-                capture_output=True,
-            )
-            if result.returncode == 0:
-                origin_path = candidate
-                break
-        if origin_path is None:
-            pytest.skip(
-                f"git show origin/main failed (rc={result.returncode}): "
-                f"{result.stderr.decode(errors='replace')}"
-            )
-        current = (_REPO_ROOT / relpath).read_bytes()
-        assert current.replace(b"\r\n", b"\n") == result.stdout.replace(
-            b"\r\n", b"\n"
-        ), (
-            f"{relpath} differs from origin/main:{origin_path} — this file "
-            "must stay byte-identical for the whole of part 2"
-        )

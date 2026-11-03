@@ -93,10 +93,15 @@ def reconcile_sales_journal_faults(machine: Machine, recorder: EventRecorder) ->
         if drained:
             machine.faults.clear_fault(FaultCode.DATA_101.value)
         else:
-            machine.faults.raise_fault(
-                FaultCode.DATA_101,
-                outcome="sales journal not fully drained after replay",
-            )
+            outcome = "sales journal not fully drained after replay"
+            precents = getattr(recorder, "precents_journal_rows", 0)
+            if precents:
+                outcome += (
+                    f"; {precents} pre-cents journal "
+                    "row(s) need manual handling (not converted; see "
+                    "sales-journal.jsonl)"
+                )
+            machine.faults.raise_fault(FaultCode.DATA_101, outcome=outcome)
             logger.error(
                 "Sales journal still has unresolved rows after replay; "
                 "DATA-101 remains set"

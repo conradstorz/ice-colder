@@ -8,8 +8,6 @@ dependencies = [
     "ice-common",
     "ice-ui",
     "loguru>=0.7.3",
-    "pillow>=11.1.0",
-    "qrcode>=8.1",
 ]
 
 [tool.uv.sources]

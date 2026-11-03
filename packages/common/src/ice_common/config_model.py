@@ -54,7 +54,7 @@ from pydantic import (
 from loguru import logger
 
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
-from ice_contracts.money import MAX_PRICE_CENTS, Cents, PositiveCents, dollars_to_cents
+from ice_contracts.money import MAX_PRICE_CENTS, Cents, PositiveCents
 
 
 # 1) First, an enum of supported communication channels
@@ -149,24 +149,15 @@ class Product(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_legacy_price(cls, data: Any) -> Any:
-        """Accept a legacy dollar `price` (float) and turn it into `price_cents`."""
-        if not isinstance(data, dict) or "price" not in data:
-            return data
-        data = dict(data)
-        legacy = data.pop("price")
-        sku = data.get("sku", "SAMPLE-SKU")
-        if "price_cents" in data:
-            logger.warning(
-                f"Product {sku!r} has both price and price_cents; "
-                "price_cents kept, legacy price ignored."
+    def _reject_legacy_price(cls, data: Any) -> Any:
+        # The dollar `price` upgrade was removed; refuse rather than silently
+        # fall back to the 100-cent default and sell at the wrong price.
+        if isinstance(data, dict) and "price" in data:
+            raise ValueError(
+                f"Product {data.get('sku', '?')!r}: the legacy dollar 'price' key "
+                "is no longer supported; remove it and set 'price_cents' in "
+                "integer cents"
             )
-            return data
-        data["price_cents"] = dollars_to_cents(legacy)  # ValueError -> validation error
-        logger.warning(
-            f"Product {sku!r}: legacy dollar price {legacy!r} converted to "
-            f"{data['price_cents']} cents; it will be saved as price_cents."
-        )
         return data
 
     @field_validator("price_cents")

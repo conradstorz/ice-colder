@@ -193,14 +193,12 @@ async def test_late_dispenser_fault_after_completed_sale_is_ignored():
     assert vmc.credit_escrow_cents == 0  # no bogus refund credited
 
 
-async def test_dispenser_jam_with_mismatched_slot_is_ignored():
+async def test_dispenser_jam_with_mismatched_slot_is_ignored(caplog):
     """A delayed 'jammed' report for a different slot than the active sale must
     not fault the machine or issue a refund for the wrong product."""
     machine = make_machine()
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    messages: list[str] = []
-    vmc.outputs.set_message_callback(messages.append)
     vmc.selected_product = vmc.products[0]
     vmc.set_state("dispensing")
     vmc.credit_escrow_cents = 0
@@ -212,7 +210,6 @@ async def test_dispenser_jam_with_mismatched_slot_is_ignored():
 
     assert vmc.state == "dispensing"  # unaffected — wrong slot
     assert vmc.credit_escrow_cents == 0  # no bogus refund
-    assert messages == []
 
 
 async def test_dispense_complete_with_mismatched_slot_is_ignored():
@@ -622,7 +619,9 @@ async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credi
     assert count == 0  # no sale row for a vend that never completed
 
 
-async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path):
+async def test_vend_failed_restores_shares_total_not_live_catalog_price(
+    tmp_path, caplog
+):
     """Same live-object hazard as the record_sale test above, on the other
     branch: `on_vend_failed` must restore exactly what `pending_sale_shares`
     says was deducted, not re-read `product.price` after an operator edited
@@ -637,8 +636,6 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     machine.set_event_recorder(real_recorder)
-    messages: list[str] = []
-    vmc.outputs.set_message_callback(messages.append)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
     vmc.deposit_funds(250, payment_method="cash_bill")
@@ -663,10 +660,10 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
     assert vmc.escrow_credits[0].method == "cash_bill"
     assert vmc.escrow_credits[0].cents == 250
 
-    # The customer message must also report what was actually taken, not
-    # the edited catalog price.
-    assert any("$2.50" in m for m in messages)
-    assert not any("$9.99" in m for m in messages)
+    # The journal must also report what was actually taken, not the edited
+    # catalog price.
+    assert any("$2.50 returned to escrow" in m for m in caplog.messages)
+    assert not any("$9.99" in m for m in caplog.messages)
 
     real_recorder.flush()
     with sqlite3.connect(str(tmp_path / "events.db")) as conn:
@@ -719,13 +716,11 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
     assert reloaded.dispense_slot == vmc.products[0].slot
 
 
-async def test_session_timeout_refunds_and_returns_to_idle():
+async def test_session_timeout_refunds_and_returns_to_idle(caplog):
     runner = FakeTaskRunner()
     machine = make_machine(tasks=runner)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    messages: list[str] = []
-    vmc.outputs.set_message_callback(messages.append)
     seed_credit(vmc, 300)
     vmc.start_interaction()
 
@@ -734,7 +729,7 @@ async def test_session_timeout_refunds_and_returns_to_idle():
 
     assert vmc.state == "idle"
     assert vmc.credit_escrow_cents == 0
-    assert any("Refund" in m for m in messages)
+    assert any("Refund" in m for m in caplog.messages)
 
 
 async def test_insufficient_funds_prompt_is_not_an_error_log():
@@ -761,12 +756,10 @@ async def test_insufficient_funds_prompt_is_not_an_error_log():
     assert "ERROR" not in prompts
 
 
-async def test_insufficient_funds_waits_without_charging():
+async def test_insufficient_funds_waits_without_charging(caplog):
     machine = make_machine(price=2.50)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    messages: list[str] = []
-    vmc.outputs.set_message_callback(messages.append)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     seed_credit(vmc, 100)
@@ -775,21 +768,19 @@ async def test_insufficient_funds_waits_without_charging():
 
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow_cents == 100
-    assert any("Insufficient funds" in m for m in messages)
+    assert any("Insufficient funds" in m for m in caplog.messages)
 
 
-async def test_sold_out_rejects_selection():
+async def test_sold_out_rejects_selection(caplog):
     machine = make_machine()
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     machine.set_inventory_manager(FakeSoldOutInventory())
-    messages: list[str] = []
-    vmc.outputs.set_message_callback(messages.append)
 
     vmc.select_product(vmc.products[0])
 
     assert vmc.state == "idle"
-    assert any("sold out" in m.lower() for m in messages)
+    assert any("sold out" in m.lower() for m in caplog.messages)
 
 
 async def test_sufficient_funds_charges_and_dispenses():
@@ -842,15 +833,13 @@ async def test_dispense_complete_with_no_remaining_credit_returns_to_idle():
     assert vmc.state == "idle"  # no credit left
 
 
-async def test_product_deleted_mid_session_cancels_sale_without_error():
+async def test_product_deleted_mid_session_cancels_sale_without_error(caplog):
     """Deleting the selected product mid-session should cancel the sale and return
     the VMC to idle — not park it in error, which would take the machine offline
     for every subsequent customer over a benign catalog edit."""
     machine = make_machine(price=2.50)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    messages: list[str] = []
-    vmc.outputs.set_message_callback(messages.append)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     seed_credit(vmc, 500)
@@ -861,7 +850,7 @@ async def test_product_deleted_mid_session_cancels_sale_without_error():
     assert vmc.state == "idle"
     assert vmc.credit_escrow_cents == 0  # refunded, same as on_reset/_expire_session
     assert vmc.selected_product is None
-    assert any("refund" in m.lower() for m in messages)
+    assert any("refund" in m.lower() for m in caplog.messages)
 
 
 async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
@@ -974,19 +963,17 @@ class TestFaultRegistry:
         assert vmc.clear_fault("PAY-103") is True
         assert vmc.active_faults() == []
 
-    async def test_select_locked_product_is_refused(self):
+    async def test_select_locked_product_is_refused(self, caplog):
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        messages: list[str] = []
-        vmc.outputs.set_message_callback(messages.append)
         vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1")
 
         vmc.select_product(vmc.products[0])
 
         assert vmc.state == "idle"
         assert vmc.selected_product is None
-        assert any("ICE-301" in m for m in messages)
+        assert any("ICE-301" in m for m in caplog.messages)
 
     async def test_sellable_products_excludes_locked(self):
         vmc = make_vmc(products=two_products())
@@ -1398,13 +1385,11 @@ def payouts(machine):
 
 
 class TestRefunds:
-    async def test_request_refund_queues_cash_payout_and_zeroes_escrow(self):
+    async def test_request_refund_queues_cash_payout_and_zeroes_escrow(self, caplog):
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
         vmc.deposit_funds(175, "cash_coin")
-        messages: list[str] = []
-        vmc.outputs.set_message_callback(messages.append)
 
         vmc.request_refund(reason="session_timeout")
         await asyncio.sleep(0)
@@ -1415,8 +1400,8 @@ class TestRefunds:
         assert vmc.credit_escrow_cents == 0
         # A refund isn't real until the board confirms it — don't tell the
         # customer it's "issued" before that happens.
-        assert "requested" in messages[-1]
-        assert "issued" not in messages[-1]
+        assert any("Refund of $1.75 requested" in m for m in caplog.messages)
+        assert not any("REFUND CONFIRMED" in m for m in caplog.messages)
 
     async def test_refund_clears_credit_list_as_well_as_total(self):
         machine = make_machine(products=two_products())
@@ -1431,15 +1416,13 @@ class TestRefunds:
         assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
 
-    async def test_payout_paid_records_refund(self):
+    async def test_payout_paid_records_refund(self, caplog):
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
         rec = FakeEventRecorder()
         machine.set_event_recorder(rec)
         vmc.deposit_funds(200, "cash_coin")
-        messages: list[str] = []
-        vmc.outputs.set_message_callback(messages.append)
         vmc.request_refund(reason="cancel")
         (payout,) = payouts(machine)
 
@@ -1451,8 +1434,7 @@ class TestRefunds:
             {"request_id": payout.request_id, "reason": "cancel"},
         ) in rec.events
         # Only now, after the board confirms, may the customer be told it's issued.
-        assert "issued" in messages[-1]
-        assert "$2.00" in messages[-1]
+        assert any(m.startswith("REFUND CONFIRMED: $2.00") for m in caplog.messages)
 
     async def test_non_cash_credit_is_not_refunded_and_raises_pay_103(self):
         machine = make_machine(products=two_products())
@@ -1479,12 +1461,10 @@ class TestRefunds:
         assert payout.cents == 100
         assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
 
-    async def test_on_error_pays_out_via_cash_payout(self):
+    async def test_on_error_pays_out_via_cash_payout(self, caplog):
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        messages: list[str] = []
-        vmc.outputs.set_message_callback(messages.append)
         vmc.set_state("interacting_with_user")
         vmc.deposit_funds(125, "cash_coin")
 
@@ -1497,8 +1477,8 @@ class TestRefunds:
         assert payout.cents == 125 and payout.reason == "error"
         # The refund is only requested here, not confirmed — the final
         # customer-facing message must not claim it has already happened.
-        assert "requested" in messages[-1]
-        assert "refunded" not in messages[-1]
+        assert any("Refund of $1.25 requested" in m for m in caplog.messages)
+        assert not any("REFUND CONFIRMED" in m for m in caplog.messages)
 
     async def test_on_error_mid_dispense_restores_consumed_shares_then_refunds_all(
         self,
@@ -1529,13 +1509,11 @@ class TestRefunds:
         assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
 
-    async def test_on_error_without_credit_says_contact_support_only(self):
+    async def test_on_error_without_credit_says_contact_support_only(self, caplog):
         runner = FakeTaskRunner()
         machine = make_machine(tasks=runner, products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        messages: list[str] = []
-        vmc.outputs.set_message_callback(messages.append)
         vmc.set_state("interacting_with_user")
         vmc.credit_escrow_cents = 0
 
@@ -1545,7 +1523,7 @@ class TestRefunds:
 
         assert vmc.state == "error"
         assert payouts(machine) == []
-        assert messages[-1] == "An error has occurred. Please contact support."
+        assert not any("Refund of" in m for m in caplog.messages)
 
     async def test_all_products_locked_refunds_and_idles(self):
         machine = make_machine()  # single product
@@ -1786,17 +1764,15 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     )
 
 
-async def test_select_product_refused_when_kind_unavailable_names_reason():
+async def test_select_product_refused_when_kind_unavailable_names_reason(caplog):
     vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
     set_coin_status(avail, "ready")
     monitor.mark_offline("ice_maker")
-    messages = []
-    vmc.outputs.set_message_callback(messages.append)
     vmc.select_product(vmc.products[0])  # ICE-1
     assert vmc.state == "idle"
     assert vmc.selected_product is None
-    assert "ice_maker_alive" in messages[-1]
+    assert any("ice_maker_alive" in m for m in caplog.messages)
 
 
 async def test_deposit_while_disabled_is_escrowed_and_logged():

@@ -80,9 +80,9 @@ def _make_config() -> ConfigModel:
         {
             "physical": {
                 "products": [
-                    {"sku": "Ten Pounds Ice", "name": "Bagged Ice", "price": 3.00},
-                    {"sku": "One Gallon Water", "name": "Small Water", "price": 0.50},
-                    {"sku": "Five Gallons Water", "name": "Large Water", "price": 2.00},
+                    {"sku": "Ten Pounds Ice", "name": "Bagged Ice", "price_cents": 300},
+                    {"sku": "One Gallon Water", "name": "Small Water", "price_cents": 50},
+                    {"sku": "Five Gallons Water", "name": "Large Water", "price_cents": 200},
                 ]
             }
         }
@@ -144,7 +144,7 @@ class TestInit:
 
     def test_single_product_config(self):
         config = ConfigModel.model_validate(
-            {"physical": {"products": [{"sku": "T-1", "name": "Test", "price": 1.0}]}}
+            {"physical": {"products": [{"sku": "T-1", "name": "Test", "price_cents": 100}]}}
         )
         VendingMachineSimulator(config=config)
 

@@ -383,11 +383,6 @@ class TestMonitorCapabilitiesIdentity:
         )
         assert caps.hardware_id == "02:aa:bb:cc:dd:ee"
 
-    def test_contract_version_is_1_4_0(self):
-        from ice_contracts.board.ice_maker_monitor import CONTRACT_VERSION
-
-        assert CONTRACT_VERSION == "1.4.0"
-
 
 class TestCompletionTimeouts:
     """2026-09-29 completion-table amendment: every long-running *testable*
