@@ -4,7 +4,7 @@ Dollars exist only at the human edge: dollar text is parsed with `Decimal`
 (never `float`) through `dollars_to_cents`, and shown through `format_cents`.
 """
 
-from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, DecimalException, InvalidOperation
 from typing import Annotated
 
 from pydantic import Field, StrictInt
@@ -31,7 +31,7 @@ def dollars_to_cents(x: float | int | str | Decimal) -> int:
         raise ValueError(f"negative dollar amount: {x!r}")
     try:
         return int((d * 100).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
-    except InvalidOperation:
+    except DecimalException:  # InvalidOperation, Overflow, ...
         raise ValueError(f"dollar amount out of range: {x!r}") from None
 
 

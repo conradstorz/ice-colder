@@ -382,6 +382,15 @@ class TestCreateCopyDelete:
         assert inv.get_count("NEW-1") == 7
         assert inv.is_tracked("NEW-1") is True
 
+    def test_create_astronomical_price_is_400_not_500(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        resp = client.post(
+            "/products/new",
+            data={"sku": "HUGE-1", "name": "X", "price": "1e1000000"},
+        )
+        assert resp.status_code == 400
+        assert not any(p.sku == "HUGE-1" for p in cfg.products)
+
     def test_create_negative_count_rejected(self, client, wired):
         cfg, _vmc, _inv, _store = wired
         resp = client.post(

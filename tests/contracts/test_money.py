@@ -27,7 +27,9 @@ def test_dollars_to_cents(value, expected):
     assert dollars_to_cents(value) == expected
 
 
-@pytest.mark.parametrize("bad", [-1, float("nan"), float("inf"), "abc"])
+@pytest.mark.parametrize(
+    "bad", [-1, float("nan"), float("inf"), "abc", "1e1000000", Decimal("1E+999999999")]
+)
 def test_dollars_to_cents_rejects(bad):
     with pytest.raises(ValueError):
         dollars_to_cents(bad)
