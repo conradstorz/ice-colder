@@ -230,7 +230,10 @@ class MdbSimulator(ESP32Simulator):
         bill_enabled = [
             b for b in (p.bill_enabled if p else []) if b in BILL_DENOMINATIONS
         ]
-        device_fault = not self._usable(Device.coin) and not self._usable(Device.bill)
+        # Replay-log pressure inhibits acceptance with `device_fault`, as the firmware does.
+        device_fault = self.log.pressure or (
+            not self._usable(Device.coin) and not self._usable(Device.bill)
+        )
         reason = self.policy.inhibited_reason(
             edge_silent=self.edge_silent, device_fault=device_fault
         )
@@ -323,6 +326,7 @@ class MdbSimulator(ESP32Simulator):
     async def insert_coin(self, client: aiomqtt.Client, cents: int) -> bool:
         if (
             self.edge_silent
+            or self.log.pressure
             or not self._usable(Device.coin)
             or not self.policy.accepts_coin(cents, self.cash)
         ):
@@ -338,6 +342,7 @@ class MdbSimulator(ESP32Simulator):
         p = self.policy.policy
         if (
             self.edge_silent
+            or self.log.pressure
             or not self._usable(Device.bill)
             or self.cash.bill_in_escrow_cents is not None
             or p is None

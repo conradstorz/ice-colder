@@ -1,7 +1,12 @@
 from datetime import datetime, timezone
 
 from ice_contracts.board.payment import PaymentEventEnvelope
-from ice_sims.mdb.event_log import MAX_UNACKED, EventLog
+from ice_sims.mdb.event_log import (
+    MAX_UNACKED,
+    PRESSURE_CLEAR,
+    PRESSURE_SET,
+    EventLog,
+)
 
 TS = datetime(2026, 10, 30, tzinfo=timezone.utc)
 BOOT = "bootaaaa0001"
@@ -38,13 +43,26 @@ def test_cumulative_ack():
     assert len(log.unacked()) == 2
 
 
-def test_bounded_log_drops_oldest_and_records():
+def test_unacked_events_are_never_evicted():
     log = EventLog(BOOT)
     emit(log, MAX_UNACKED + 3)
     un = log.unacked()
-    assert len(un) == MAX_UNACKED
-    assert un[0]["seq"] == 4
-    assert log.overflow_dropped == 3
+    assert len(un) == MAX_UNACKED + 3
+    assert un[0]["seq"] == 1
+
+
+def test_pressure_sets_at_192_and_clears_at_128_with_hysteresis():
+    log = EventLog(BOOT)
+    emit(log, PRESSURE_SET - 1)
+    assert log.pressure is False
+    emit(log)
+    assert log.pressure is True
+    log.ack(BOOT, PRESSURE_SET - PRESSURE_CLEAR - 1)  # 129 pending
+    assert log.pressure is True
+    log.ack(BOOT, PRESSURE_SET - PRESSURE_CLEAR)  # 128 pending
+    assert log.pressure is False
+    emit(log, PRESSURE_SET - PRESSURE_CLEAR - 1)  # 191 pending: below the set point
+    assert log.pressure is False
 
 
 def test_ordered_replay_across_reboot():

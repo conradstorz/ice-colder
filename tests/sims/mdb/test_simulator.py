@@ -129,6 +129,31 @@ async def test_events_validate_and_timestamps_match_the_golden_format(sim, clien
     assert env.seq == 1 and env.boot_id == sim.boot_id
 
 
+# --- replay-log backpressure (firmware: inhibit at 192 pending, resume at 128) ----
+
+
+async def test_log_pressure_inhibits_acceptance_and_keeps_credits_replayable(
+    sim, client
+):
+    await armed(sim, client)
+    accepted = 0
+    while await sim.insert_coin(client, 25):
+        accepted += 1
+        assert accepted <= 256, "acceptance never inhibited"
+    assert accepted == 192
+    state = sim.build_state()
+    assert state.accepting is False
+    assert state.inhibited_reason.value == "device_fault"
+    assert await sim.insert_bill(client, 500) is False
+    # every accepted credit is still replayable, oldest first
+    replay = sim.log.unacked()
+    assert [e["seq"] for e in replay] == list(range(1, 193))
+    # acking down to 128 pending resumes acceptance
+    sim.handle_event_ack({"boot_id": sim.boot_id, "seq": 64})
+    assert sim.build_state().accepting is True
+    assert await sim.insert_coin(client, 25) is True
+
+
 # --- rule 1: no policy, no money -----------------------------------------------
 
 
