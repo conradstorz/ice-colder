@@ -4,8 +4,6 @@
 import asyncio
 from unittest.mock import MagicMock, AsyncMock
 
-import pytest
-
 from ice_common.config_model import ConfigModel
 from ice_edge.app.machine import Machine
 from ice_edge.customer_ui.display_controller import DisplayController
@@ -57,7 +55,6 @@ class TestDisplayControllerMQTT:
         dc = DisplayController()
         dc.update_for_state("error")  # should not raise
 
-    @pytest.mark.asyncio
     async def test_publish_on_mode_change(self):
         dc = DisplayController()
         mock_client = MagicMock()
@@ -73,7 +70,6 @@ class TestDisplayControllerMQTT:
         call_args = mock_client.publish.call_args
         assert call_args[0][0] == "cmd/display"
 
-    @pytest.mark.asyncio
     async def test_no_publish_when_mode_unchanged(self):
         dc = DisplayController()
         mock_client = MagicMock()
@@ -86,7 +82,6 @@ class TestDisplayControllerMQTT:
 
         mock_client.publish.assert_not_awaited()
 
-    @pytest.mark.asyncio
     async def test_set_mode_always_publishes(self):
         dc = DisplayController()
         mock_client = MagicMock()
@@ -99,7 +94,6 @@ class TestDisplayControllerMQTT:
 
         mock_client.publish.assert_awaited_once()
 
-    @pytest.mark.asyncio
     async def test_ordinary_state_change_carries_no_message(self):
         dc = DisplayController()
         mock_client = MagicMock()
@@ -116,7 +110,6 @@ class TestDisplayControllerMQTT:
 
 
 class TestDisplayControllerSetupCode:
-    @pytest.mark.asyncio
     async def test_show_setup_code_publishes_maintenance_with_grouped_digits(self):
         dc = DisplayController()
         mock_client = MagicMock()
@@ -136,7 +129,6 @@ class TestDisplayControllerSetupCode:
         assert command.mode == DisplayMode.maintenance
         assert command.message == "Setup code: 1234 5678"
 
-    @pytest.mark.asyncio
     async def test_state_change_while_code_held_publishes_nothing(self):
         dc = DisplayController()
         mock_client = MagicMock()
@@ -155,7 +147,6 @@ class TestDisplayControllerSetupCode:
         assert dc.current_mode == DisplayMode.maintenance
         assert dc.setup_code == "12345678"
 
-    @pytest.mark.asyncio
     async def test_clear_setup_code_returns_to_last_recorded_state(self):
         dc = DisplayController()
         mock_client = MagicMock()
@@ -179,7 +170,6 @@ class TestDisplayControllerSetupCode:
         assert command.mode == DisplayMode.transaction
         assert command.message is None
 
-    @pytest.mark.asyncio
     async def test_clear_setup_code_with_none_held_is_noop(self):
         dc = DisplayController()
         mock_client = MagicMock()
@@ -227,7 +217,6 @@ class TestDisplayControllerReconnect:
     already set at that point, nothing triggers a second publish attempt
     once the connection is actually up. republish() is the fix's hook."""
 
-    @pytest.mark.asyncio
     async def test_setup_code_published_while_disconnected_is_dropped(self):
         dc = DisplayController()
         client = _FakeMQTTClient()  # starts disconnected, like a fresh MQTTClient
@@ -240,7 +229,6 @@ class TestDisplayControllerReconnect:
         assert client.published == []
         assert dc.setup_code == "12345678"  # held in memory regardless
 
-    @pytest.mark.asyncio
     async def test_republish_after_connect_delivers_the_held_setup_code(self):
         dc = DisplayController()
         client = _FakeMQTTClient()
@@ -261,7 +249,6 @@ class TestDisplayControllerReconnect:
         assert command.mode == DisplayMode.maintenance
         assert command.message == "Setup code: 1234 5678"
 
-    @pytest.mark.asyncio
     async def test_republish_with_no_setup_code_resends_current_mode(self):
         dc = DisplayController()
         client = _FakeMQTTClient()
@@ -280,7 +267,6 @@ class TestDisplayControllerReconnect:
         assert command.mode == DisplayMode.error
         assert command.message is None
 
-    @pytest.mark.asyncio
     async def test_republish_does_not_depend_on_setup_code_equality(self):
         """The bug: ensure_setup_mode()'s `setup_code != code` guard skips a
         republish once the in-memory value already matches, even though

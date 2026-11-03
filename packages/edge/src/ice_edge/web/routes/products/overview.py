@@ -72,7 +72,6 @@ async def product_detail(request: Request, sku: str):
             "icon": "products",
             "context": f"{format_cents(product.price_cents)} · {product.kind}",
             "enabled": Permission.edit_catalog in perms,
-            "coming_soon": False,
         },
         {
             "title": "Placement",
@@ -80,7 +79,6 @@ async def product_detail(request: Request, sku: str):
             "icon": "inventory",
             "context": f"Slot {product.slot} · {count} in stock",
             "enabled": Permission.edit_placement in perms,
-            "coming_soon": False,
         },
     ]
 

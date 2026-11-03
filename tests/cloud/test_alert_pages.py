@@ -6,6 +6,12 @@ from datetime import timedelta
 
 from ice_cloud.store.repository import AlertEventRow
 from tests.cloud.conftest import login, own_and_select, short
+from tests.cloud.sql_helpers import (
+    cloud_db,
+    grant_tech,
+    is_muted_sql,
+    record_alert_events,
+)
 from tests.cloud.reports import make_report
 
 HX = {"HX-Request": "true"}
@@ -33,8 +39,8 @@ def _setup(cloud, signer):
 
 def _tech(cloud, signer, owner, email="tech@example.com"):
     tech = login(cloud, email)
-    cloud.app.state.repo.grant_tech(
-        tech.id, signer.fingerprint, owner.id, cloud.app.state.now()
+    grant_tech(
+        cloud_db(cloud), tech.id, signer.fingerprint, owner.id, cloud.app.state.now()
     )
     return tech
 
@@ -43,11 +49,12 @@ def test_alerts_page_lists_newest_first_with_deliveries(cloud, signer):
     owner, sh = _setup(cloud, signer)
     repo = cloud.app.state.repo
     now = cloud.app.state.now()
-    stored = repo.record_alert_events(
+    stored = record_alert_events(
+        cloud_db(cloud),
         [
             _row(signer.fingerprint, now - timedelta(hours=2), 101),
             _row(signer.fingerprint, now - timedelta(hours=1), 102),
-        ]
+        ],
     )
     d_sent = repo.create_delivery(
         signer.fingerprint, owner.id, [stored[1].id], "pending", now
@@ -80,11 +87,12 @@ def test_alerts_page_404_for_non_member(cloud, signer):
 def test_alerts_page_limit_200(cloud, signer):
     _owner, sh = _setup(cloud, signer)
     now = cloud.app.state.now()
-    cloud.app.state.repo.record_alert_events(
+    record_alert_events(
+        cloud_db(cloud),
         [
             _row(signer.fingerprint, now - timedelta(minutes=300 - i), 1000 + i)
             for i in range(205)
-        ]
+        ],
     )
     text = cloud.get(f"/machines/{sh}/alerts").text
     assert text.count("Event number ") == 200
@@ -93,7 +101,7 @@ def test_alerts_page_limit_200(cloud, signer):
 
 
 def _muted(cloud, account, signer):
-    return cloud.app.state.repo.is_muted(account.id, signer.fingerprint)
+    return is_muted_sql(cloud_db(cloud), account.id, signer.fingerprint)
 
 
 def _mute(cloud, sh, account, value="1", headers=HX):
@@ -141,12 +149,13 @@ def test_mute_requires_htmx(cloud, signer):
 def test_fleet_shows_24h_count(cloud, signer):
     _owner, _sh = _setup(cloud, signer)
     now = cloud.app.state.now()
-    cloud.app.state.repo.record_alert_events(
+    record_alert_events(
+        cloud_db(cloud),
         [
             _row(signer.fingerprint, now - timedelta(hours=1), 1),
             _row(signer.fingerprint, now - timedelta(hours=2), 2),
             _row(signer.fingerprint, now - timedelta(hours=30), 3),
-        ]
+        ],
     )
     text = cloud.get("/fleet").text
     assert "2 alerts / 24 h" in text
@@ -182,7 +191,7 @@ def test_admin_mute_is_404(cloud, signer):
 def _seed_delivery_history(cloud, signer, owner, tech):
     repo = cloud.app.state.repo
     now = cloud.app.state.now()
-    (event,) = repo.record_alert_events([_row(signer.fingerprint, now, 7)])
+    (event,) = record_alert_events(cloud_db(cloud), [_row(signer.fingerprint, now, 7)])
     mine = repo.create_delivery(signer.fingerprint, tech.id, [event.id], "pending", now)
     repo.mark_delivery(mine.id, status="failed", now=now, error="tech-side boom")
     theirs = repo.create_delivery(
@@ -238,5 +247,5 @@ def test_tech_self_mute_from_the_alerts_page(cloud, signer):
 def test_alert_times_are_labelled_utc(cloud, signer):
     owner, sh = _setup(cloud, signer)
     now = cloud.app.state.now()
-    cloud.app.state.repo.record_alert_events([_row(signer.fingerprint, now, 9)])
+    record_alert_events(cloud_db(cloud), [_row(signer.fingerprint, now, 9)])
     assert f"{now:%Y-%m-%d %H:%M} UTC" in cloud.get(f"/machines/{sh}/alerts").text

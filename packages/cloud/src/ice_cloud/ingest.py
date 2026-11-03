@@ -106,7 +106,7 @@ def _log_cap_reached(state, unclaimed: int) -> None:
         )
 
 
-async def _admit_new(request: Request, fp: str) -> Response | None:
+async def _admit_new(request: Request) -> Response | None:
     """429 when this address or the fleet may not add another machine."""
     state = request.app.state
     wait = state.new_registrations.allow(
@@ -147,7 +147,7 @@ async def register(
         # New fingerprints are serialised so the meter and the cap are checked
         # and charged atomically; a burst cannot all pass the same count.
         async with state.register_lock:
-            refusal = await _admit_new(request, fp)
+            refusal = await _admit_new(request)
             if refusal is not None:
                 return refusal
             row = await _register(request, fp, body)

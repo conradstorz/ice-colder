@@ -10,12 +10,12 @@ import pytest
 
 from ice_cloud.alerts.mail import (
     LogOnlyMailer,
-    RecordingMailer,
     SmtpConfig,
     SmtpMailer,
     make_mailer,
     render_email,
 )
+from tests.cloud.alerts.helpers import RecordingMailer
 
 AT = datetime(2026, 10, 19, 14, 2, tzinfo=UTC)
 LAST = datetime(2026, 10, 19, 14, 0, tzinfo=UTC)

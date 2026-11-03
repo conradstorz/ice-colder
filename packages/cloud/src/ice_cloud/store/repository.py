@@ -135,8 +135,6 @@ class Repository(Protocol):
 
     def account(self, id: str) -> Account | None: ...
 
-    def account_by_email(self, email: str) -> Account | None: ...
-
     def set_suspended(self, id: str, suspended_at: datetime | None) -> None: ...
 
     def all_accounts(self) -> list[Account]: ...
@@ -181,10 +179,6 @@ class Repository(Protocol):
     def record_bundle_upload(
         self, fingerprint: str, digest: str, now: datetime
     ) -> None: ...
-
-    def consumed_claim_hashes(self, fingerprint: str) -> set[str]:
-        """Claim-code hashes a claim has spent; ``set_claim_code`` ignores them."""
-        ...
 
     def unbind_machine(self, fingerprint: str) -> None:
         """Admin reset: drops the owner, memberships and consumed hashes."""
@@ -237,12 +231,6 @@ class Repository(Protocol):
         grant time."""
         ...
 
-    def grant_tech(
-        self, account_id: str, fingerprint: str, granted_by: str, now: datetime
-    ) -> None:
-        """Grant tech access; raises ``LookupError`` if the account or machine is unknown."""
-        ...
-
     def revoke(self, account_id: str, fingerprint: str) -> None: ...
 
     # invitations
@@ -272,16 +260,8 @@ class Repository(Protocol):
     # alerts
     def alert_state(self, fingerprint: str) -> AlertState | None: ...
 
-    def put_alert_state(self, state: AlertState) -> None: ...
-
-    def delete_alert_state(self, fingerprint: str) -> None: ...
-
     def claimed_machines_with_state(self) -> list[tuple[Machine, AlertState]]:
         """Claimed machines (owner set) that have an alert state row."""
-        ...
-
-    def record_alert_events(self, events: list[AlertEventRow]) -> list[StoredEvent]:
-        """Insert events (any object with the row's fields) in order; return them with ids."""
         ...
 
     def record_alert_pass(
@@ -338,8 +318,6 @@ class Repository(Protocol):
         ...
 
     def set_muted(self, account_id: str, fingerprint: str, muted: bool) -> None: ...
-
-    def is_muted(self, account_id: str, fingerprint: str) -> bool: ...
 
     def create_delivery(
         self,

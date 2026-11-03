@@ -3,6 +3,7 @@ import re
 from fastapi.testclient import TestClient
 
 from tests.cloud.conftest import login, register, short
+from tests.cloud.sql_helpers import cloud_db, grant_tech
 from tests.cloud.reports import NOW  # noqa: F401
 
 HX = {"HX-Request": "true"}
@@ -80,7 +81,7 @@ def test_unbind_clears_owner_and_memberships(cloud, signer):
     tech = login(cloud, "tech@example.com")
     fp = register(cloud, signer)
     repo.claim_machine(fp, owner.id, cloud.app.state.now())
-    repo.grant_tech(tech.id, fp, owner.id, cloud.app.state.now())
+    grant_tech(cloud_db(cloud), tech.id, fp, owner.id, cloud.app.state.now())
     _admin(cloud)
     base = f"/admin/machines/{short(signer)}/unbind"
     assert cloud.post(base).status_code == 403  # no HX header
@@ -149,7 +150,10 @@ def _smtp_app(settings, clock, provider, mailer):
 
 def test_admin_shows_smtp_status_both_states(cloud, settings, clock, provider, mailer):
     _admin(cloud)
-    assert "Email: not configured — emails are only logged" in cloud.get("/admin/accounts").text
+    assert (
+        "Email: not configured — emails are only logged"
+        in cloud.get("/admin/accounts").text
+    )
     app = _smtp_app(settings, clock, provider, mailer)
     with TestClient(app, follow_redirects=False) as c:
         login(c, "admin@example.com")

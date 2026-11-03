@@ -5,7 +5,6 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from loguru import logger
 
 from tests.fakes import settle
@@ -76,7 +75,6 @@ class TestHealthMonitorRecording:
 
 
 class TestHealthMonitorChecks:
-    @pytest.mark.asyncio
     async def test_mqtt_disconnect_fires_alert(self):
         monitor = HealthMonitor()
         callback = AsyncMock()
@@ -88,7 +86,6 @@ class TestHealthMonitorChecks:
         assert alert.level == "warning"
         assert "MQTT" in alert.message
 
-    @pytest.mark.asyncio
     async def test_mqtt_connected_no_alert(self):
         monitor = HealthMonitor()
         monitor.update_mqtt_status(True)
@@ -99,7 +96,6 @@ class TestHealthMonitorChecks:
         # No subsystems registered, MQTT connected, VMC not in error
         callback.assert_not_awaited()
 
-    @pytest.mark.asyncio
     async def test_vmc_error_fires_alert(self):
         monitor = HealthMonitor()
         monitor.update_mqtt_status(True)
@@ -113,7 +109,6 @@ class TestHealthMonitorChecks:
         assert alert.level == "error"
         assert "error state" in alert.message
 
-    @pytest.mark.asyncio
     async def test_stale_subsystem_fires_alert(self, monkeypatch):
         monitor = HealthMonitor(subsystem_timeout=60.0)
         monitor.record_heartbeat("sensors")
@@ -131,7 +126,6 @@ class TestHealthMonitorChecks:
         alert = callback.call_args[0][0]
         assert "sensors" in alert.message
 
-    @pytest.mark.asyncio
     async def test_temperature_out_of_range_fires_alert(self):
         monitor = HealthMonitor(temp_min=-20.0, temp_max=40.0)
         monitor.update_mqtt_status(True)
@@ -145,7 +139,6 @@ class TestHealthMonitorChecks:
         assert alert.level == "critical"
         assert "60.0" in alert.message
 
-    @pytest.mark.asyncio
     async def test_alert_deduplication(self):
         """Same alert should only fire once until cleared."""
         monitor = HealthMonitor()
@@ -156,7 +149,6 @@ class TestHealthMonitorChecks:
         await monitor._check()  # should NOT fire again
         assert callback.await_count == 1
 
-    @pytest.mark.asyncio
     async def test_alert_clears_on_recovery(self):
         """Alert should re-fire after the condition clears and recurs."""
         monitor = HealthMonitor()
@@ -258,7 +250,6 @@ class TestChannelsAndOffline:
         assert summary["mdb"]["alive"] is False
         assert summary["mdb"]["stale"] is True
 
-    @pytest.mark.asyncio
     async def test_mark_offline_unknown_subsystem_fires_stale_alert(self):
         """Previously-untracked-but-now-offline subsystem must trigger the
         stale alert on the next health check round."""
@@ -372,7 +363,6 @@ class TestNotifier:
         notifier = Notifier(config)
         assert notifier._owner.name == config.machine_owner.name
 
-    @pytest.mark.asyncio
     async def test_send_logs_alert(self):
         config = _configured_email_config()
         notifier = Notifier(config)
@@ -385,7 +375,6 @@ class TestNotifier:
             await notifier.send(alert)
             mock_email.assert_awaited_once()
 
-    @pytest.mark.asyncio
     async def test_first_alert_is_not_suppressed_on_a_young_clock(self, monkeypatch):
         """loop.time() is monotonic-since-boot; a small value must not look 'recent'."""
         config = _configured_email_config()
@@ -398,7 +387,6 @@ class TestNotifier:
             await notifier.send(Alert(level="warning", source="t", message="m"))
             mock_email.assert_awaited_once()
 
-    @pytest.mark.asyncio
     async def test_send_skips_placeholder_email_gateway(self):
         """A blank/default config points at smtp.example.com; never try to send."""
         config = ConfigModel()
@@ -423,7 +411,6 @@ class TestNotifier:
         assert len(placeholder_warnings) == 1
         assert not any("Email send failed" in w for w in warnings)
 
-    @pytest.mark.asyncio
     async def test_send_skips_placeholder_owner_email(self):
         config = _configured_email_config()
         config.machine_owner.email = "user@example.com"
@@ -434,7 +421,6 @@ class TestNotifier:
             await notifier.send(Alert(level="warning", source="t", message="m"))
             mock_email.assert_not_awaited()
 
-    @pytest.mark.asyncio
     async def test_send_cooldown(self):
         config = _configured_email_config()
         notifier = Notifier(config)
@@ -795,7 +781,6 @@ async def _round(monitor):
 
 
 class TestPendingAlertRetry:
-    @pytest.mark.asyncio
     async def test_false_return_is_retried_until_true(self):
         monitor = HealthMonitor()
         callback = AsyncMock(side_effect=[False, False, True])
@@ -812,7 +797,6 @@ class TestPendingAlertRetry:
         await _round(monitor)
         assert callback.await_count == 3
 
-    @pytest.mark.asyncio
     async def test_retries_run_after_liveness_detection(self):
         monitor = HealthMonitor()
         seen: list[str] = []
@@ -830,7 +814,6 @@ class TestPendingAlertRetry:
         assert "ice_maker" in seen[0]  # the new stale alert is detected first
         assert "MQTT" in seen[-1]  # the pending retry comes last
 
-    @pytest.mark.asyncio
     async def test_raising_callback_stays_pending(self):
         monitor = HealthMonitor()
         callback = AsyncMock(side_effect=[RuntimeError("boom"), True])
@@ -841,7 +824,6 @@ class TestPendingAlertRetry:
         await _round(monitor)
         assert monitor.pending_alert_keys == frozenset()
 
-    @pytest.mark.asyncio
     async def test_clear_alert_drops_pending(self):
         monitor = HealthMonitor()
         monitor.update_mqtt_status(True)
@@ -855,7 +837,6 @@ class TestPendingAlertRetry:
         await _round(monitor)
         callback.assert_awaited_once()
 
-    @pytest.mark.asyncio
     async def test_none_return_is_handled(self):
         monitor = HealthMonitor()
 
@@ -866,7 +847,6 @@ class TestPendingAlertRetry:
         await _round(monitor)
         assert monitor.pending_alert_keys == frozenset()
 
-    @pytest.mark.asyncio
     async def test_clear_during_inflight_failed_send_does_not_resurrect(self):
         monitor = HealthMonitor()
         monitor.update_mqtt_status(True)

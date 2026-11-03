@@ -95,7 +95,6 @@ class TestHADiscovery:
         assert device["manufacturer"] == "ice-colder"
         assert device["via_device"] == "vmc-0001"
 
-    @pytest.mark.asyncio
     async def test_publish_ha_discovery_sends_retained_messages(self):
         sim = ConcreteSimulator(machine_id="vmc-0001")
         sim.ha_discovery_entities = lambda: [
@@ -133,14 +132,12 @@ class TestHADiscovery:
         assert payload["device"]["identifiers"] == ["vmc-0001_test_subsystem"]
         assert call_args.kwargs.get("retain") is True
 
-    @pytest.mark.asyncio
     async def test_publish_ha_discovery_empty_entities_no_publish(self):
         sim = ConcreteSimulator()
         client = AsyncMock()
         await sim._publish_ha_discovery(client)
         client.publish.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_publish_ha_discovery_binary_sensor(self):
         sim = ConcreteSimulator(machine_id="vmc-0001")
         sim.ha_discovery_entities = lambda: [
@@ -210,7 +207,6 @@ class TestFaultRegistration:
         sim = ConcreteSimulator()
         assert sim.active_fault_names == set()
 
-    @pytest.mark.asyncio
     async def test_active_fault_names_reflects_active_state(self):
         sim = ConcreteSimulator()
         fault = FaultDef(
@@ -274,7 +270,6 @@ class TestFaultRegistration:
 
 
 class TestFaultLoop:
-    @pytest.mark.asyncio
     async def test_activate_fault_sets_active_state(self):
         sim = ConcreteSimulator()
         fault = FaultDef(
@@ -297,7 +292,6 @@ class TestFaultLoop:
             <= now + hi + 1.0
         )
 
-    @pytest.mark.asyncio
     async def test_activate_fault_calls_on_activate(self):
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
@@ -314,7 +308,6 @@ class TestFaultLoop:
         await sim.activate_fault(client, fault)
         on_activate.assert_called_once_with(client)
 
-    @pytest.mark.asyncio
     async def test_try_roll_faults_activates_on_probability_1(self):
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
@@ -332,7 +325,6 @@ class TestFaultLoop:
         assert sim.fault_state["test_fault"]["active"] is True
         on_activate.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_try_roll_faults_skips_on_probability_0(self):
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
@@ -350,7 +342,6 @@ class TestFaultLoop:
         assert sim.fault_state["test_fault"]["active"] is False
         on_activate.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_try_roll_faults_only_one_at_a_time(self):
         sim = ConcreteSimulator()
         for name in ("fault_a", "fault_b"):
@@ -369,7 +360,6 @@ class TestFaultLoop:
         active_count = sum(1 for s in sim.fault_state.values() if s["active"])
         assert active_count == 1
 
-    @pytest.mark.asyncio
     async def test_try_roll_faults_skips_if_fault_already_active(self):
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
@@ -389,7 +379,6 @@ class TestFaultLoop:
         await sim.try_roll_faults(client)
         on_activate.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_check_recoveries_clears_overdue_fault(self):
         sim = ConcreteSimulator()
         on_recover = AsyncMock()
@@ -411,7 +400,6 @@ class TestFaultLoop:
         assert sim.fault_state["test_fault"]["active"] is False
         on_recover.assert_called_once_with(client)
 
-    @pytest.mark.asyncio
     async def test_check_recoveries_marks_recovering_immediately(self):
         """The fault must stay 'active' while recovery is in flight."""
         sim = ConcreteSimulator()
@@ -447,7 +435,6 @@ class TestFaultLoop:
         assert sim.fault_state["slow_fault"]["active"] is False
         assert sim.fault_state["slow_fault"]["recovering"] is False
 
-    @pytest.mark.asyncio
     async def test_check_recoveries_does_not_start_second_recovery(self):
         """A fault already recovering must not get a second recovery task."""
         sim = ConcreteSimulator()
@@ -486,7 +473,6 @@ class TestFaultLoop:
         for task in list(sim._recovery_tasks):
             await task
 
-    @pytest.mark.asyncio
     async def test_try_roll_faults_blocked_while_other_fault_recovering(self):
         """A slow recovery must not block a second fault from being excluded
         from rolling — recovering counts as active."""
@@ -526,7 +512,6 @@ class TestFaultLoop:
         for task in list(sim._recovery_tasks):
             await task
 
-    @pytest.mark.asyncio
     async def test_cancel_recovery_tasks_cancels_outstanding(self):
         sim = ConcreteSimulator()
 
@@ -551,7 +536,6 @@ class TestFaultLoop:
         await asyncio.sleep(0)
         assert len(sim._recovery_tasks) == 0
 
-    @pytest.mark.asyncio
     async def test_check_recoveries_leaves_non_overdue_fault(self):
         sim = ConcreteSimulator()
         on_recover = AsyncMock()
@@ -572,7 +556,6 @@ class TestFaultLoop:
 
 
 class TestRecoveryFailure:
-    @pytest.mark.asyncio
     async def test_run_recovery_failure_leaves_active_and_reschedules(self):
         sim = ConcreteSimulator()
         on_recover = AsyncMock(side_effect=RuntimeError("publish failed"))
@@ -598,7 +581,6 @@ class TestRecoveryFailure:
         now = time.monotonic()
         assert now < state["recover_at"] <= now + RECOVERY_RETRY_SECONDS + 3.0
 
-    @pytest.mark.asyncio
     async def test_check_recoveries_retries_after_failure(self):
         sim = ConcreteSimulator()
         on_recover = AsyncMock(side_effect=[RuntimeError("boom"), None])
@@ -634,7 +616,6 @@ class TestRecoveryFailure:
         assert sim.fault_state["test_fault"]["recovering"] is False
         assert on_recover.call_count == 2
 
-    @pytest.mark.asyncio
     async def test_run_recovery_cancelled_leaves_active_and_propagates(self):
         sim = ConcreteSimulator()
         started = asyncio.Event()
@@ -668,7 +649,6 @@ class TestRecoveryFailure:
 
 
 class TestPublishAlertFormat:
-    @pytest.mark.asyncio
     async def test_publish_alert_active_includes_recover_in(self):
         sim = ConcreteSimulator(machine_id="vmc-0001")
         fault = FaultDef(
@@ -693,7 +673,6 @@ class TestPublishAlertFormat:
         assert payload["severity"] == "warning"
         assert payload["recover_in_seconds"] == 300
 
-    @pytest.mark.asyncio
     async def test_publish_alert_cleared_omits_recover_in(self):
         sim = ConcreteSimulator(machine_id="vmc-0001")
         fault = FaultDef(
@@ -712,7 +691,6 @@ class TestPublishAlertFormat:
 
 
 class TestFaultInject:
-    @pytest.mark.asyncio
     async def test_handle_inject_activates_named_fault(self):
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
@@ -730,14 +708,12 @@ class TestFaultInject:
         assert sim.fault_state["test_fault"]["active"] is True
         on_activate.assert_called_once_with(client)
 
-    @pytest.mark.asyncio
     async def test_handle_inject_ignores_unknown_fault(self):
         sim = ConcreteSimulator()
         client = AsyncMock()
         # Should not raise
         await sim._handle_inject_command(client, {"fault": "nonexistent_fault"})
 
-    @pytest.mark.asyncio
     async def test_handle_inject_ignored_if_fault_already_active(self):
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
@@ -756,7 +732,6 @@ class TestFaultInject:
         await sim._handle_inject_command(client, {"fault": "test_fault"})
         on_activate.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_handle_inject_ignored_if_different_fault_active(self):
         sim = ConcreteSimulator()
         on_activate_b = AsyncMock()
@@ -778,7 +753,6 @@ class TestFaultInject:
         await sim._handle_inject_command(client, {"fault": "fault_b"})
         on_activate_b.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_handle_inject_ignores_missing_fault_key(self):
         sim = ConcreteSimulator()
         client = AsyncMock()
@@ -862,7 +836,6 @@ class TestContractTransport:
         }
         assert will.qos == 1
 
-    @pytest.mark.asyncio
     async def test_publish_passes_retain_flag(self):
         from unittest.mock import AsyncMock
 
@@ -873,7 +846,6 @@ class TestContractTransport:
         await sim.publish(client, "capabilities/ice_maker", {"x": 1}, retain=True)
         assert client.publish.call_args.kwargs.get("retain") is True
 
-    @pytest.mark.asyncio
     async def test_publish_defaults_to_qos_1(self):
         from unittest.mock import AsyncMock
 
@@ -1014,7 +986,6 @@ def _cmd(request_id: str, command: str, params: dict | None = None) -> Subsystem
 
 
 class TestStandardCommands:
-    @pytest.mark.asyncio
     async def test_ping_acks_ok(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
@@ -1026,7 +997,6 @@ class TestStandardCommands:
         assert payload["status"] == "ok"
         assert payload["result"] is None
 
-    @pytest.mark.asyncio
     async def test_unknown_command_acks_unsupported(self):
         sim = ConcreteSimulator()
         client = AsyncMock()
@@ -1049,7 +1019,6 @@ class TestSelfTest:
                 )
             )
 
-    @pytest.mark.asyncio
     async def test_one_check_per_fault_none_active(self):
         sim = ConcreteSimulator()
         self._register_two_faults(sim)
@@ -1060,7 +1029,6 @@ class TestSelfTest:
         assert len(checks) == 2  # guard: the assertion below must not be vacuous
         assert all(c["pass"] for c in checks)
 
-    @pytest.mark.asyncio
     async def test_fails_exactly_the_injected_fault(self):
         sim = ConcreteSimulator()
         self._register_two_faults(sim)
@@ -1074,7 +1042,6 @@ class TestSelfTest:
         assert by_name["fault_a"]["pass"] is False
         assert by_name["fault_b"]["pass"] is True
 
-    @pytest.mark.asyncio
     async def test_injecting_different_fault_changes_which_check_fails(self):
         sim = ConcreteSimulator()
         self._register_two_faults(sim)
@@ -1104,7 +1071,6 @@ class TestSelfTest:
 
 
 class TestForceReport:
-    @pytest.mark.asyncio
     async def test_republishes_heartbeat_and_acks_ok(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
@@ -1115,7 +1081,6 @@ class TestForceReport:
         ack_payload = json.loads(client.publish.call_args_list[-1][0][1])
         assert ack_payload["status"] == "ok"
 
-    @pytest.mark.asyncio
     async def test_calls_subclass_republish_hook(self):
         sim = ConcreteSimulator()
         sim._force_report_extra = AsyncMock()
@@ -1125,7 +1090,6 @@ class TestForceReport:
 
 
 class TestIdempotencyCache:
-    @pytest.mark.asyncio
     async def test_duplicate_request_id_runs_side_effect_once(self):
         sim = ConcreteSimulator()
         calls = []
@@ -1144,7 +1108,6 @@ class TestIdempotencyCache:
 
         assert len(calls) == 1  # the observable side effect ran exactly once
 
-    @pytest.mark.asyncio
     async def test_duplicate_request_id_republishes_identical_ack(self):
         sim = ConcreteSimulator()
 
@@ -1163,7 +1126,6 @@ class TestIdempotencyCache:
 
         assert first_payload == second_payload
 
-    @pytest.mark.asyncio
     async def test_cache_evicts_beyond_32_and_treats_old_id_as_new(self):
         sim = ConcreteSimulator()
         calls = []
@@ -1191,7 +1153,6 @@ class TestIdempotencyCache:
         assert calls.count(oldest) == 2
         assert len(calls) == IDEMPOTENCY_CACHE_SIZE + 2
 
-    @pytest.mark.asyncio
     async def test_still_in_window_id_is_not_treated_as_new(self):
         """Control for the eviction test: an id that hasn't fallen out of
         the last 32 must still be replayed from cache, not re-run."""
@@ -1214,7 +1175,6 @@ class TestIdempotencyCache:
 
 
 class TestHandlerExceptions:
-    @pytest.mark.asyncio
     async def test_raising_handler_acks_failed_with_detail(self):
         sim = ConcreteSimulator()
 
@@ -1229,7 +1189,6 @@ class TestHandlerExceptions:
         assert payload["status"] == "failed"
         assert payload["detail"] == "motor jammed"
 
-    @pytest.mark.asyncio
     async def test_raising_handler_still_publishes_promptly_not_a_timeout(self):
         """A broken handler must ack immediately, never hang the loop."""
         sim = ConcreteSimulator()
@@ -1246,7 +1205,6 @@ class TestHandlerExceptions:
 
 
 class TestCommandOutcome:
-    @pytest.mark.asyncio
     async def test_handler_returning_command_outcome_controls_status(self):
         sim = ConcreteSimulator()
 
@@ -1260,7 +1218,6 @@ class TestCommandOutcome:
         assert payload["status"] == "rejected"
         assert payload["detail"] == "lockout"
 
-    @pytest.mark.asyncio
     async def test_handler_returning_plain_dict_is_result_with_ok_status(self):
         sim = ConcreteSimulator()
 
@@ -1292,7 +1249,6 @@ class TestRegisterCommandHook:
         sim.register_command("brew", second)
         assert sim._commands["brew"] is second
 
-    @pytest.mark.asyncio
     async def test_registered_handler_receives_client_and_command(self):
         sim = ConcreteSimulator()
         received = {}
@@ -1322,7 +1278,6 @@ class TestCommandLoop:
         )
         return task, topic, queue
 
-    @pytest.mark.asyncio
     async def test_subscribes_to_cmd_subsystem_topic(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
@@ -1333,7 +1288,6 @@ class TestCommandLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    @pytest.mark.asyncio
     async def test_dispatches_a_queued_command_and_acks(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
@@ -1351,7 +1305,6 @@ class TestCommandLoop:
         assert len(ack_calls) == 1
         assert json.loads(ack_calls[0][0][1])["status"] == "ok"
 
-    @pytest.mark.asyncio
     async def test_invalid_payload_is_dropped_not_raised(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
@@ -1364,7 +1317,6 @@ class TestCommandLoop:
             await task
         client.publish.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_command_loop_marks_items_done(self):
         """`queue.task_done()` must fire for every dequeued item, valid or
         invalid, so `queue.join()` is a true "fully dispatched" signal."""
@@ -1430,7 +1382,6 @@ class TestCommandLoopValidationRejection:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    @pytest.mark.asyncio
     async def test_out_of_range_water_valve_over_wire_acks_rejected(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
@@ -1459,7 +1410,6 @@ class TestCommandLoopValidationRejection:
         assert payload["status"] == "rejected"
         assert "seconds" in payload["detail"]
 
-    @pytest.mark.asyncio
     async def test_out_of_range_power_cycle_over_wire_acks_rejected(self):
         """Same fix, a different command — proves it is generic, not
         water_valve-specific."""
@@ -1490,7 +1440,6 @@ class TestCommandLoopValidationRejection:
         assert payload["status"] == "rejected"
         assert "dwell_seconds" in payload["detail"]
 
-    @pytest.mark.asyncio
     async def test_no_usable_request_id_is_dropped_without_an_ack(self):
         """Documents the deliberate limit: with nothing in the raw payload
         to correlate an ack to, the loop still just logs and drops."""
@@ -1504,7 +1453,6 @@ class TestCommandLoopValidationRejection:
         await self._stop_loop(task)
         client.publish.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_loop_survives_bad_commands_and_still_serves_the_next_valid_one(
         self,
     ):

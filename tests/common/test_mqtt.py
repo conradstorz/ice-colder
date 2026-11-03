@@ -153,14 +153,12 @@ class TestMQTTClientUnit:
         assert client.connected is False
         assert client.subscribed is False
 
-    @pytest.mark.asyncio
     async def test_publish_when_not_connected_does_nothing(self):
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="vmc-0001")
         # Should not raise
         await client.publish("status", {"state": "idle"})
 
-    @pytest.mark.asyncio
     async def test_publish_defaults_to_qos_1(self):
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="vmc-0001")
@@ -173,7 +171,6 @@ class TestMQTTClientUnit:
         _, kwargs = client._client.publish.call_args
         assert kwargs["qos"] == 1
 
-    @pytest.mark.asyncio
     async def test_publish_honors_explicit_qos_0(self):
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="vmc-0001")
@@ -186,7 +183,6 @@ class TestMQTTClientUnit:
         _, kwargs = client._client.publish.call_args
         assert kwargs["qos"] == 0
 
-    @pytest.mark.asyncio
     async def test_dispatch_routes_to_handler(self):
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="test-machine")
@@ -204,7 +200,6 @@ class TestMQTTClientUnit:
             "payment/credit", {"amount": 1.0, "method": "cash"}
         )
 
-    @pytest.mark.asyncio
     async def test_dispatch_ignores_wrong_prefix(self):
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="test-machine")
@@ -219,7 +214,6 @@ class TestMQTTClientUnit:
         await client._dispatch(msg)
         handler.assert_not_awaited()
 
-    @pytest.mark.asyncio
     async def test_dispatch_handles_invalid_json(self):
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="test-machine")
@@ -270,7 +264,6 @@ class _FakeAiomqttClient:
 
 
 class TestMQTTClientSubscribeQoS:
-    @pytest.mark.asyncio
     async def test_connect_and_listen_subscribes_at_qos_1(self, monkeypatch):
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="vmc-0001")
@@ -316,7 +309,6 @@ class _BlockingMessagesAiomqttClient(_FakeAiomqttClient):
 
 
 class TestMQTTClientSubscribedResetOnCancel:
-    @pytest.mark.asyncio
     async def test_subscribed_resets_when_message_loop_is_cancelled(self, monkeypatch):
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="vmc-0001")
@@ -358,7 +350,6 @@ class TestMQTTProtocolVersion:
         await client._connect_and_listen()
         return captured
 
-    @pytest.mark.asyncio
     async def test_bounds_incoming_queue(self, monkeypatch):
         captured = await self._connect_with(MQTTConfig(), monkeypatch)
         assert (
@@ -366,12 +357,10 @@ class TestMQTTProtocolVersion:
         )
         assert MQTTClient.MAX_QUEUED_INCOMING == 2048
 
-    @pytest.mark.asyncio
     async def test_defaults_to_v5(self, monkeypatch):
         captured = await self._connect_with(MQTTConfig(), monkeypatch)
         assert captured["protocol"] is aiomqtt.ProtocolVersion.V5
 
-    @pytest.mark.asyncio
     async def test_honors_configured_v311(self, monkeypatch):
         cfg = MQTTConfig(protocol_version="3.1.1")
         captured = await self._connect_with(cfg, monkeypatch)
@@ -388,7 +377,6 @@ class TestMQTTProtocolVersion:
     def test_default_is_not_deprecated(self):
         assert MQTTConfig().protocol_version not in DEPRECATED_PROTOCOL_VERSIONS
 
-    @pytest.mark.asyncio
     async def test_v311_logs_a_deprecation_warning(self, monkeypatch, caplog):
         cfg = MQTTConfig(protocol_version="3.1.1")
         with caplog.at_level("WARNING"):
@@ -435,7 +423,6 @@ class TestVMCMQTTWiring:
         # _loop is None (attach_to_loop was never called)
         machine.vmc.start_interaction()
 
-    @pytest.mark.asyncio
     async def test_handle_mqtt_payment_deposits_funds(self):
         machine = _make_machine()
         vmc = machine.vmc
@@ -448,7 +435,6 @@ class TestVMCMQTTWiring:
         assert vmc.last_payment_method == "cash_coin"
         assert vmc.escrow_credits[0].event_id == "evt-boot-0001-0001"
 
-    @pytest.mark.asyncio
     async def test_handle_mqtt_button_selects_product(self):
         config = ConfigModel()
         config.physical.products = [

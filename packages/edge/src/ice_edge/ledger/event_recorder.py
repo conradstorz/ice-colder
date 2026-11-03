@@ -709,11 +709,6 @@ class EventRecorder:
         except queue.Full:
             raise RuntimeError("event recorder queue full") from None
 
-    @property
-    def dropped_events(self) -> int:
-        """Event rows dropped because the writer queue was full."""
-        return self._dropped_events
-
     def _note_discarded_event(self, what: str) -> None:
         self._discarded_events += 1
         if self._discarded_events == 1:

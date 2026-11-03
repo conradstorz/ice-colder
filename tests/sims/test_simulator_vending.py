@@ -242,13 +242,11 @@ class TestVendingFaultRegistration:
 
 
 class TestAugerJamFault:
-    @pytest.mark.asyncio
     async def test_fault_is_registered(self):
         sim = VendingMachineSimulator()
         names = {f.name for f in sim.fault_defs}
         assert "auger_jam" in names
 
-    @pytest.mark.asyncio
     async def test_recover_logs_and_does_not_crash(self):
         sim = VendingMachineSimulator()
         client = AsyncMock()
@@ -257,7 +255,6 @@ class TestAugerJamFault:
 
 
 class TestWaterValveStuckOpenFault:
-    @pytest.mark.asyncio
     async def test_activate_sets_the_valve_on(self):
         sim = VendingMachineSimulator()
         set_hw_calls = []
@@ -270,7 +267,6 @@ class TestWaterValveStuckOpenFault:
         await _fault(sim, "water_valve_stuck_open").on_activate(client)
         assert set_hw_calls == [("water_valve_solenoid", True)]
 
-    @pytest.mark.asyncio
     async def test_recover_closes_the_valve(self):
         sim = VendingMachineSimulator()
         set_hw_calls = []
@@ -285,7 +281,6 @@ class TestWaterValveStuckOpenFault:
 
 
 class TestIceBinEmptyFault:
-    @pytest.mark.asyncio
     async def test_touches_no_bin_channel(self):
         sim = VendingMachineSimulator()
         set_hw_calls = []
@@ -301,7 +296,6 @@ class TestIceBinEmptyFault:
 
 
 class TestSensorLoop:
-    @pytest.mark.asyncio
     async def test_publishes_the_standing_state_and_ambient_but_no_flow(self):
         sim = _make_sim()
         topics: list[str] = []
@@ -332,7 +326,6 @@ class TestSensorLoop:
 
 
 class TestCustomerPresses:
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("config", [None, ConfigModel()], ids=["sample", "empty"])
     async def test_press_is_a_declared_button_whatever_the_catalog_holds(self, config):
         sim = VendingMachineSimulator(config=config) if config else _make_sim()
@@ -355,7 +348,6 @@ class TestCustomerPresses:
         assert isinstance(press, ButtonPress)
         assert press.button in BUTTON_CHANNELS
 
-    @pytest.mark.asyncio
     async def test_indecisive_second_press_names_a_different_button(self):
         sim = _make_sim()
         client = AsyncMock()
@@ -518,7 +510,6 @@ class TestExecuteProfile:
     """`execute_profile` -- the profile-driven replacement for
     `_dispense_slot`/`_run_ice_dispense`/`_run_water_dispense`."""
 
-    @pytest.mark.asyncio
     async def test_bagged_ice_profile_step_sequence_and_io(self):
         sim = _make_sim()
         sim.sleep = AsyncMock()
@@ -561,7 +552,6 @@ class TestExecuteProfile:
             assert [s for d, s in hw_events if d == channel][-1] is False
         assert sim.dispenser.pending_lag_off == {}
 
-    @pytest.mark.asyncio
     async def test_timed_fill_runs_exactly_max_run_seconds(self):
         sim = _make_sim()
         durations = []
@@ -599,7 +589,6 @@ class TestExecuteProfile:
 
         assert 17.0 in durations
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "fault,expected",
         [
@@ -638,7 +627,6 @@ class TestExecuteProfile:
         if fault == "ice_bin_empty":
             assert terminal == ["agitate", "fill", "bin_empty"]
 
-    @pytest.mark.asyncio
     async def test_water_fill_by_volume_stops_within_over_dispense_percent(self):
         """I3: the pulse model -- the flow meter's cumulative pulse count,
         converted back to a volume via `pulses_per_liter`, must land
@@ -680,7 +668,6 @@ class TestExecuteProfile:
         # over_dispense tolerance rather than running the full window.
         assert sum(durations) < fill.max_fill_seconds
 
-    @pytest.mark.asyncio
     async def test_flow_runaway_exceeds_over_dispense_percent(self):
         """I3: with `flow_runaway` injected, the simulated flow meter
         keeps pulsing past the target until the dispensed volume exceeds
@@ -710,7 +697,6 @@ class TestExecuteProfile:
         tolerance_ml = fill.target_volume_ml * (1 + fill.over_dispense_percent / 100.0)
         assert dispensed_ml > tolerance_ml
 
-    @pytest.mark.asyncio
     async def test_slow_flow_times_out_when_target_unreachable(self):
         """Copilot review (PR #32) finding C7: slow_flow's rate (1.05 x
         min_flow_ml_per_second, just above the no-flow floor) is too
@@ -736,7 +722,6 @@ class TestExecuteProfile:
 
         assert terminal[-1][0] == "timeout"
 
-    @pytest.mark.asyncio
     async def test_slow_flow_completes_when_target_reachable(self):
         """Finding C7: the same modest slow_flow rate completes normally
         when the slot's own target_volume_ml/max_fill_seconds budget is
@@ -778,7 +763,6 @@ class TestExecuteProfile:
 
         assert terminal[-1][0] == "complete"
 
-    @pytest.mark.asyncio
     async def test_rate_below_minimum_yields_no_flow_after_grace(self):
         """Finding C7: min_flow_ml_per_second is now actually consulted
         -- a flow rate below the floor (the low_flow fault, rate = 0.5 x
@@ -817,7 +801,6 @@ class TestExecuteProfile:
         # max_fill_seconds.
         assert sum(durations) == pytest.approx(fill.no_flow_grace_seconds)
 
-    @pytest.mark.asyncio
     async def test_accessory_lag_runs_after_last_step_on_success(self):
         """I1: `lag_seconds` must not be defeated by an unconditional
         cancellation of every pending accessory-off task -- an accessory
@@ -870,7 +853,6 @@ class TestExecuteProfile:
         assert complete_time == pytest.approx(1.0)
         assert light_off_time == pytest.approx(3.0)
 
-    @pytest.mark.asyncio
     async def test_concurrent_accessory_leads_overlap(self):
         """M1: two accessories leading the same step overlap (one wait for
         the longer lead) instead of stacking (a wait per accessory)."""
@@ -915,7 +897,6 @@ class TestExecuteProfile:
         fill_time = next(t for state, t in events if state == "fill")
         assert fill_time == pytest.approx(3.0)
 
-    @pytest.mark.asyncio
     async def test_new_run_cancels_previous_runs_lag_off(self):
         """Copilot review (PR #32) finding C4: a lag-off task is keyed by
         channel and owned by the simulator, not the run that created it
@@ -984,7 +965,6 @@ class TestExecuteProfile:
         await asyncio.wait_for(task2, timeout=2.0)
         assert ("heater_power", False) in hw_events
 
-    @pytest.mark.asyncio
     async def test_failed_run_turns_every_accessory_off(self):
         """motor_stall aborts mid-agitate, before fill is ever reached --
         bag_fan (on_during agitate and fill) already turned on, and must
@@ -1019,7 +999,6 @@ class TestDispenseCommand:
     """Command-channel `dispense`: runs the slot's profile via
     `execute_profile` through `handle_command`."""
 
-    @pytest.mark.asyncio
     async def test_runs_profile_once_and_publishes_hardware_dispenser(self):
         """Completion-table amendment (2026-09-29): `handle_command`
         itself now returns as soon as the "accepted" ack is published —
@@ -1048,7 +1027,6 @@ class TestDispenseCommand:
         assert dispenser_states == ["agitate", "fill", "release", "complete"]
         assert ack is None  # handle_command publishes the ack, doesn't return it
 
-    @pytest.mark.asyncio
     async def test_publishes_ok_ack_with_slot_and_mechanism_result(self):
         """This ack is the "accepted" one (published synchronously, before
         `handle_command` returns) — the command's own completion is the
@@ -1074,7 +1052,6 @@ class TestDispenseCommand:
 
         await _drain_background(sim)
 
-    @pytest.mark.asyncio
     async def test_duplicate_request_id_runs_profile_only_once(self):
         """The most consequential duplicate in the system: a retried
         request_id must not run the dispense sequence a second time.
@@ -1106,7 +1083,6 @@ class TestDispenseCommand:
         assert len(ack_calls) == 2
         assert ack_calls[0] == ack_calls[1]
 
-    @pytest.mark.asyncio
     async def test_water_slot_runs_fill_only(self):
         sim = _make_sim()
         sim.sleep = AsyncMock()
@@ -1126,7 +1102,6 @@ class TestDispenseCommand:
 
         assert dispenser_states == ["fill", "complete"]
 
-    @pytest.mark.asyncio
     async def test_bare_slot_params_are_rejected(self):
         """A bare `{"slot": n}` payload (the pre-profile shape) fails
         `DispenseCommand.model_validate` inside `_handle_dispense` --
@@ -1174,7 +1149,6 @@ class TestWaterValveCommand:
     reaching this simulator at all.
     """
 
-    @pytest.mark.asyncio
     async def test_seconds_one_acks_ok(self):
         """This is the "accepted" ack -- published synchronously before
         `handle_command` returns, before the background task that
@@ -1203,7 +1177,6 @@ class TestWaterValveCommand:
         assert completed_ack.phase == "completed"
         assert completed_ack.result == {"seconds": 1}
 
-    @pytest.mark.asyncio
     async def test_drives_only_the_declared_valve_channel(self):
         sim = _make_sim()
         client = AsyncMock()
@@ -1224,7 +1197,6 @@ class TestWaterValveCommand:
             ("water_valve_solenoid", False),
         ]
 
-    @pytest.mark.asyncio
     async def test_seconds_ten_acks_ok(self):
         sim = _make_sim()
         client = AsyncMock()
@@ -1249,7 +1221,6 @@ class TestWaterValveCommand:
         )
         return task, topic, queue
 
-    @pytest.mark.asyncio
     async def test_seconds_zero_over_the_wire_acks_rejected_by_the_loop(self):
         """Out-of-range `seconds` reaches this simulator only as a raw wire
         payload now — `command_loop` (`simulators/base.py`) acks
@@ -1285,7 +1256,6 @@ class TestWaterValveCommand:
         assert payload["status"] == "rejected"
         assert payload["request_id"] == "req-wv-wire01"
 
-    @pytest.mark.asyncio
     async def test_seconds_eleven_over_the_wire_acks_rejected_by_the_loop(self):
         sim = _make_sim()
         client = AsyncMock()
@@ -1317,7 +1287,6 @@ class TestWaterValveCommand:
         assert payload["status"] == "rejected"
         assert payload["request_id"] == "req-wv-wire02"
 
-    @pytest.mark.asyncio
     async def test_rejected_seconds_never_opens_the_valve(self):
         """Guard against a fixture that makes the rejection branch vacuous:
         prove the hardware was never touched, not just that the ack says
@@ -1346,7 +1315,6 @@ class TestWaterValveCommand:
 
         set_hw.assert_not_awaited()
 
-    @pytest.mark.asyncio
     async def test_cancelled_mid_sleep_still_closes_valve(self):
         """Copilot review (PR 22, id=4128088539): if this task is cancelled
         during the sleep (e.g. an MQTT disconnect), the valve/flow states
@@ -1382,7 +1350,6 @@ class TestWaterValveCommand:
 
         assert sim._hw["water_valve_solenoid"] is False
 
-    @pytest.mark.asyncio
     async def test_hardware_update_raising_still_closes_valve(self):
         """Copilot review (PR 22, id=4128088539): 'either awaited hardware
         update raises' -- here the flow-sensor-on update raises after the
@@ -1440,7 +1407,6 @@ class TestWaterValveCommand:
 
 
 class TestUnknownCommand:
-    @pytest.mark.asyncio
     async def test_unsupported_ack(self):
         sim = _make_sim()
         client = AsyncMock()
@@ -1472,7 +1438,6 @@ def _capture_io(sim) -> list[tuple[str, bool]]:
 
 
 class TestRoTankAndClimateWiring:
-    @pytest.mark.asyncio
     async def test_a_completed_water_vend_lowers_the_tank_by_the_profile_volume(self):
         sim = _make_sim()
         sim.sleep = FakeClock()
@@ -1485,7 +1450,6 @@ class TestRoTankAndClimateWiring:
         assert before - sim.ro_tank.level_gal == pytest.approx(3785.0 / 3785.411784)
         assert ("ro_tank_full", False) not in seen  # 80 gal start: never full
 
-    @pytest.mark.asyncio
     async def test_a_vend_that_drains_the_tank_publishes_ro_tank_empty(self):
         sim = _make_sim()
         sim.sleep = FakeClock()
@@ -1497,7 +1461,6 @@ class TestRoTankAndClimateWiring:
 
         assert ("ro_tank_empty", True) in seen
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "name, expected",
         [
@@ -1516,7 +1479,6 @@ class TestRoTankAndClimateWiring:
         await _fault(sim, name).on_recover(AsyncMock())
         assert seen == expected
 
-    @pytest.mark.asyncio
     async def test_ro_tank_empty_fault_empties_the_tank_and_recovers(self):
         sim = _make_sim()
         seen = _capture_io(sim)
@@ -1526,7 +1488,6 @@ class TestRoTankAndClimateWiring:
         await _fault(sim, "ro_tank_empty").on_recover(AsyncMock())
         assert not sim.ro_tank.fill_blocked
 
-    @pytest.mark.asyncio
     async def test_ro_fill_stuck_recovery_resets_the_cutoff(self):
         sim = _make_sim()
         _capture_io(sim)
@@ -1537,7 +1498,6 @@ class TestRoTankAndClimateWiring:
         assert not sim.ro_tank.fill_stuck
         assert not sim.ro_tank.cutoff_latched
 
-    @pytest.mark.asyncio
     async def test_sensor_pass_ticks_the_models_and_publishes_changes(self):
         sim = _make_sim()
         seen = _capture_io(sim)

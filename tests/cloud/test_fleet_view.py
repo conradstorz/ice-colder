@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from ice_cloud import fleet_view, portal
+from ice_cloud import fleet_view
 from ice_cloud.fleet_view import (
     ATTENTION_LIMIT,
     MachineStatus,
@@ -372,8 +372,7 @@ def test_row_fields():
     assert next(x for x in r if x.label == "b").claim_open is False
 
 
-def test_portal_is_stale_uses_fleet_view():
-    assert portal.STALE_FACTOR is fleet_view.STALE_FACTOR
+def test_is_stale_threshold_is_three_intervals():
     assert fleet_view.is_stale(_report(age=181), NOW) is True
     assert fleet_view.is_stale(_report(age=180), NOW) is False
 

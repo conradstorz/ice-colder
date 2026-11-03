@@ -30,7 +30,7 @@ from ice_cloud.auth import (
 from ice_cloud import fleet_view
 from ice_cloud.store.repository import Account, Machine
 from ice_cloud.ui_registry import ResolvedUi
-from ice_cloud.viewer import VIEWER, RemoteViewer, admin_switch
+from ice_cloud.viewer import RemoteViewer, admin_switch
 from ice_contracts.access import (
     PERMISSION_LABELS,
     REMOTE_VIEWER_PERMISSIONS,
@@ -53,9 +53,7 @@ from ice_ui.views.health import VMC_MISSING_HTML, pill_state
 COOKIE = "ice_cloud_machine"
 LEVEL_FLEET = Level(title="Fleet", url="/fleet")
 
-STALE_FACTOR = fleet_view.STALE_FACTOR
-
-__all__ = ["STALE_FACTOR", "VIEWER", "RemoteViewer", "router"]
+__all__ = ["RemoteViewer", "router"]
 
 router = APIRouter()
 

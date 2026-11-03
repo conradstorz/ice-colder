@@ -33,7 +33,7 @@ Define a uniform gateway interface (e.g. send(to, body, **kwargs) and start_rece
 
 Implement one adapter class per channel using the patterns above
 
-Wire them into your CommunicationConfig so cfg.comm.email returns your SMTP/SES client, cfg.comm.slack your Slack client, etc.
+Wire them into your CommunicationConfig (the ConfigModel.communication section) so each channel gateway is reached through it, e.g. email_gateway for your SMTP/SES client, sms_gateway for SMS, etc.
 
 class ConfigModel(BaseModel): holds high-level fields for version, physical, payment, communication
 
@@ -288,27 +288,6 @@ class PhysicalDetails(BaseModel):
             )
         return self
 
-    # --- convenience properties ---
-    @property
-    def machine_id(self) -> str:
-        return self.serial_number
-
-    @property
-    def machine_location(self) -> Location:
-        return self.location
-
-    @property
-    def machine_owner(self) -> Person:
-        return self.people.machine_owner
-
-    @property
-    def location_owner(self) -> Person:
-        return self.people.location_owner
-
-    @property
-    def service_technicians(self) -> List[Person]:
-        return self.people.service_technicians
-
 
 class StripeConfig(BaseModel):
     api_key: SecretStr = Field(
@@ -553,31 +532,6 @@ class ConfigModel(BaseModel):
     @property
     def machine_owner(self) -> Person:
         return self.physical.people.machine_owner
-
-    @property
-    def location_owner(self) -> Person:
-        return self.physical.people.location_owner
-
-    @property
-    def service_technicians(self) -> List[Person]:
-        return self.physical.people.service_technicians
-
-    @property
-    def stripe(self) -> StripeConfig:
-        return self.payment.stripe
-
-    @property
-    def paypal(self) -> Optional[PayPalConfig]:
-        return self.payment.paypal
-
-    @property
-    def mdb_devices(self) -> List[MDBDevice]:
-        return self.payment.mdb.devices
-
-    @property
-    def comm(self) -> CommunicationConfig:
-        """Access all communication gateway configs in one place."""
-        return self.communication
 
     def get_preferred_gateway_for(
         self, person: Person

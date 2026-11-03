@@ -343,13 +343,6 @@ class SqliteRepository:
             row = conn.execute("SELECT * FROM accounts WHERE id = ?", (id,)).fetchone()
         return None if row is None else _account(row)
 
-    def account_by_email(self, email: str) -> Account | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM accounts WHERE email = ?", (email.lower(),)
-            ).fetchone()
-        return None if row is None else _account(row)
-
     def set_suspended(self, id: str, suspended_at: datetime | None) -> None:
         with self._tx() as conn:
             conn.execute(
@@ -501,14 +494,6 @@ class SqliteRepository:
                 " DO UPDATE SET uploaded_at = excluded.uploaded_at",
                 (fingerprint, digest, _iso(now)),
             )
-
-    def consumed_claim_hashes(self, fingerprint: str) -> set[str]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT hash FROM consumed_claim_hashes WHERE fingerprint = ?",
-                (fingerprint,),
-            ).fetchall()
-        return {r["hash"] for r in rows}
 
     def unbind_machine(self, fingerprint: str) -> None:
         with self._tx() as conn:
@@ -684,25 +669,6 @@ class SqliteRepository:
             for r in rows
         ]
 
-    def grant_tech(
-        self, account_id: str, fingerprint: str, granted_by: str, now: datetime
-    ) -> None:
-        with self._tx() as conn:
-            if not conn.execute(
-                "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
-            ).fetchone():
-                raise LookupError(f"unknown account {account_id}")
-            if not conn.execute(
-                "SELECT 1 FROM machines WHERE fingerprint = ?", (fingerprint,)
-            ).fetchone():
-                raise LookupError(f"unknown machine {fingerprint}")
-            conn.execute(
-                "INSERT OR IGNORE INTO memberships"
-                " (account_id, fingerprint, role, granted_by, granted_at)"
-                " VALUES (?, ?, 'tech', ?, ?)",
-                (account_id, fingerprint, granted_by, _iso(now)),
-            )
-
     def revoke(self, account_id: str, fingerprint: str) -> None:
         with self._tx() as conn:
             conn.execute(
@@ -817,10 +783,6 @@ class SqliteRepository:
             ).fetchone()
         return None if row is None else _alert_state(row)
 
-    def put_alert_state(self, state: AlertState) -> None:
-        with self._tx() as conn:
-            self._upsert_alert_state(conn, state)
-
     @staticmethod
     def _upsert_alert_state(conn: sqlite3.Connection, state: AlertState) -> None:
         faults = json.dumps([f.model_dump(mode="json") for f in state.faults])
@@ -841,10 +803,6 @@ class SqliteRepository:
             ),
         )
 
-    def delete_alert_state(self, fingerprint: str) -> None:
-        with self._tx() as conn:
-            conn.execute(_ALERT_DELETES[0], (fingerprint,))
-
     def claimed_machines_with_state(self) -> list[tuple[Machine, AlertState]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -855,10 +813,6 @@ class SqliteRepository:
                 " WHERE m.owner_id IS NOT NULL ORDER BY m.label, m.fingerprint"
             ).fetchall()
         return [(_machine(r), _alert_state(r)) for r in rows]
-
-    def record_alert_events(self, events: list[AlertEventRow]) -> list[StoredEvent]:
-        with self._tx() as conn:
-            return self._insert_alert_events(conn, events)
 
     def record_alert_pass(
         self, events: Sequence[AlertEventRow], state: AlertState
@@ -1042,14 +996,6 @@ class SqliteRepository:
                 " DO UPDATE SET muted = excluded.muted",
                 (account_id, fingerprint, int(muted)),
             )
-
-    def is_muted(self, account_id: str, fingerprint: str) -> bool:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT muted FROM alert_prefs WHERE account_id = ? AND fingerprint = ?",
-                (account_id, fingerprint),
-            ).fetchone()
-        return row is not None and bool(row["muted"])
 
     def create_delivery(
         self,

@@ -249,7 +249,6 @@ class TestHeartbeatCoalescing:
                 "SELECT timestamp FROM events WHERE event_type=?", (etype,)
             ).fetchall()
 
-    @pytest.mark.asyncio
     async def test_three_subsystems_in_one_bucket_write_one_row(self, recorder, clock):
         handler = _heartbeat_handler(recorder)
         for name in ("vending", "ice_maker", "mdb"):
@@ -257,7 +256,6 @@ class TestHeartbeatCoalescing:
             clock.now += 1
         assert len(self._rows(recorder, "heartbeat")) == 1
 
-    @pytest.mark.asyncio
     async def test_two_buckets_apart_write_two_rows(self, recorder, clock):
         handler = _heartbeat_handler(recorder)
         await handler("heartbeat/vending", self._payload("vending"))
@@ -265,7 +263,6 @@ class TestHeartbeatCoalescing:
         await handler("heartbeat/vending", self._payload("vending"))
         assert len(self._rows(recorder, "heartbeat")) == 2
 
-    @pytest.mark.asyncio
     async def test_covered_window_reads_100_pct(self, recorder, clock):
         handler = _heartbeat_handler(recorder)
         for _ in range(5):
@@ -278,7 +275,6 @@ class TestHeartbeatCoalescing:
             5 * HEARTBEAT_BUCKET_SECONDS / 3600 * 100, rel=0.01
         )
 
-    @pytest.mark.asyncio
     async def test_offline_will_still_records_in_a_covered_bucket(
         self, recorder, clock
     ):
@@ -311,7 +307,6 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         assert "hardware/dispenser" not in h
 
-    @pytest.mark.asyncio
     async def test_ice_dropped_records_cycle(self, recorder):
         h = self._get_handlers(recorder)
         await h["ice_maker/event"](
@@ -324,7 +319,6 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["ice_cycles"] == 1
 
-    @pytest.mark.asyncio
     async def test_ice_power_on_not_recorded(self, recorder):
         h = self._get_handlers(recorder)
         await h["ice_maker/event"](
@@ -337,7 +331,6 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["ice_cycles"] == 0
 
-    @pytest.mark.asyncio
     async def test_service_door_open_records_event(self, recorder):
         h = self._get_handlers(recorder)
         await h["hardware/io/service_door"](
@@ -350,7 +343,6 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["service_door_opens"] == 1
 
-    @pytest.mark.asyncio
     async def test_service_door_close_not_recorded(self, recorder):
         h = self._get_handlers(recorder)
         await h["hardware/io/service_door"](
@@ -363,7 +355,6 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["service_door_opens"] == 0
 
-    @pytest.mark.asyncio
     async def test_out_of_range_temp_records_exceedance(self, recorder):
         h = self._get_handlers(recorder)
         await h["sensors/temp/+"](
@@ -377,7 +368,6 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["temp_exceedances"] == 1
 
-    @pytest.mark.asyncio
     async def test_normal_temp_not_recorded(self, recorder):
         h = self._get_handlers(recorder)
         await h["sensors/temp/+"](
@@ -391,7 +381,6 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["temp_exceedances"] == 0
 
-    @pytest.mark.asyncio
     async def test_heartbeat_recorded(self, recorder):
         h = self._get_handlers(recorder)
         await h["heartbeat/+"](
@@ -404,7 +393,6 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["uptime_pct"] > 0
 
-    @pytest.mark.asyncio
     async def test_heartbeat_lwt_not_counted_as_uptime(self, recorder):
         """uptime_seconds == -1 is the MQTT Last-Will payload meaning OFFLINE;
         it must not be recorded as an ordinary heartbeat (which would count
@@ -420,7 +408,6 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["uptime_pct"] == 0.0
 
-    @pytest.mark.asyncio
     async def test_heartbeat_lwt_records_subsystem_offline_event(self, recorder):
         h = self._get_handlers(recorder)
         await h["heartbeat/+"](
@@ -2638,20 +2625,48 @@ def stalled(recorder):
     yield recorder
 
 
+def _capture_warnings():
+    from loguru import logger
+
+    lines: list[str] = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+    return lines, lambda: logger.remove(sink)
+
+
+def _drop_warnings(lines):
+    return [line for line in lines if "event row(s) so far" in line]
+
+
 class TestBoundedQueue:
     def test_record_drops_and_counts_when_queue_full(self, stalled):
-        stalled.record("dropped")
-        stalled.record("dropped")
-        assert stalled.dropped_events == 2
+        lines, stop = _capture_warnings()
+        try:
+            for _ in range(1001):
+                stalled.record("dropped")
+        finally:
+            stop()
+        # The running count is logged on the 1st drop and every 1000th after.
+        drops = _drop_warnings(lines)
+        assert len(drops) == 2
+        assert "dropped 1 event row(s) so far" in drops[0]
+        assert "dropped 1001 event row(s) so far" in drops[1]
 
     def test_cash_collection_and_update_metadata_raise_when_full(self, stalled):
-        with pytest.raises(RuntimeError, match="queue full"):
-            stalled.record_cash_collection("u1", "User")
-        with pytest.raises(RuntimeError, match="queue full"):
-            stalled.update_metadata("run1", verdict="pass")
-        assert stalled.dropped_events == 0
+        lines, stop = _capture_warnings()
+        try:
+            with pytest.raises(RuntimeError, match="queue full"):
+                stalled.record_cash_collection("u1", "User")
+            with pytest.raises(RuntimeError, match="queue full"):
+                stalled.update_metadata("run1", verdict="pass")
+        finally:
+            stop()
+        assert _drop_warnings(lines) == []
 
     def test_newer_schema_discards_are_not_counted_as_drops(self, recorder):
-        recorder.db_newer_than_code = True
-        recorder.record("x")
-        assert recorder.dropped_events == 0
+        lines, stop = _capture_warnings()
+        try:
+            recorder.db_newer_than_code = True
+            recorder.record("x")
+        finally:
+            stop()
+        assert _drop_warnings(lines) == []

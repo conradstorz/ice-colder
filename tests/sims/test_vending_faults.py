@@ -73,7 +73,6 @@ def test_simulator_registers_exactly_those_faults_in_order():
     assert [f.message for f in sim.fault_defs] == [f.message for f in vending_faults()]
 
 
-@pytest.mark.asyncio
 async def test_water_valve_stuck_open_drives_only_the_valve():
     board = RecordingBoard()
     await _by_name("water_valve_stuck_open").activate(board)
@@ -89,7 +88,6 @@ def test_removed_faults_are_gone():
     assert not {"door_stuck_open", "bag_drop_solenoid_stuck"} & names
 
 
-@pytest.mark.asyncio
 async def test_ice_bin_empty_touches_no_bin_channel():
     board = RecordingBoard()
     await _by_name("ice_bin_empty").activate(board)
@@ -97,7 +95,6 @@ async def test_ice_bin_empty_touches_no_bin_channel():
     assert board.set_hw_calls == []
 
 
-@pytest.mark.asyncio
 async def test_log_only_faults_touch_no_hardware():
     board = RecordingBoard()
     for name in (
@@ -112,7 +109,6 @@ async def test_log_only_faults_touch_no_hardware():
     assert board.set_hw_calls == []
 
 
-@pytest.mark.asyncio
 async def test_ro_tank_empty_drains_and_blocks_filling_then_recovers():
     board = RecordingBoard()
     fault = _by_name("ro_tank_empty")
@@ -124,7 +120,6 @@ async def test_ro_tank_empty_drains_and_blocks_filling_then_recovers():
     assert board.set_hw_calls == []
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("name", "channel", "active_state", "idle_state"),
     [
@@ -142,7 +137,6 @@ async def test_input_faults_flip_their_input_and_restore_it(
     assert board.set_hw_calls == [(channel, active_state), (channel, idle_state)]
 
 
-@pytest.mark.asyncio
 async def test_ro_fill_stuck_sticks_the_level_and_recovery_resets_the_cutoff():
     board = RecordingBoard()
     board.ro_tank.max_run_ticks = 2

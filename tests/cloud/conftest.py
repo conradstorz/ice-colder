@@ -9,7 +9,6 @@ from datetime import timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from ice_cloud.alerts.mail import RecordingMailer
 from ice_cloud.app import create_app
 from ice_cloud.auth import IdentityClaims, SignInError
 from ice_cloud.store.repository import Account
@@ -17,7 +16,9 @@ from ice_cloud.settings import CloudSettings
 from ice_contracts.cloud import signing
 from ice_contracts.cloud.identity import RegisterMachine
 from ice_ui.bundle import INSTALLED_ROOT, build_bundle
+from tests.cloud.alerts.helpers import RecordingMailer
 from tests.cloud.reports import NOW, later
+from tests.cloud.sql_helpers import account_id_by_email, cloud_db
 
 
 class Clock:
@@ -109,7 +110,9 @@ def login(
     assert start.status_code == 303
     callback = cloud.get(start.headers["location"])
     assert callback.status_code == 303, callback.text
-    account = cloud.app.state.repo.account_by_email(email)
+    account_id = account_id_by_email(cloud_db(cloud), email)
+    assert account_id is not None
+    account = cloud.app.state.repo.account(account_id)
     assert account is not None
     return account
 

@@ -15,14 +15,28 @@ from ice_cloud.store import (
     sqlite,
 )
 from tests.cloud.reports import FP, FP_2
+from tests.cloud.sql_helpers import (
+    account_id_by_email,
+    consumed_hashes,
+    grant_tech,
+    is_muted_sql,
+    put_alert_state,
+    record_alert_events,
+    sql_exec,
+)
 
 T0 = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 KEY = "a2V5"
 
 
 @pytest.fixture
-def repo(tmp_path):
-    return SqliteRepository(tmp_path / "data" / "cloud.db")
+def db_path(tmp_path):
+    return tmp_path / "data" / "cloud.db"
+
+
+@pytest.fixture
+def repo(db_path):
+    return SqliteRepository(db_path)
 
 
 def _accounts(repo):
@@ -31,7 +45,7 @@ def _accounts(repo):
     return owner, tech
 
 
-def test_upsert_account_creates_then_updates_by_google_sub(repo):
+def test_upsert_account_creates_then_updates_by_google_sub(repo, db_path):
     first = repo.upsert_account_from_login("sub-1", "A@Example.com", "Ann", T0)
     assert first.email == "a@example.com" and first.suspended_at is None
     assert first.created_at == T0
@@ -41,8 +55,9 @@ def test_upsert_account_creates_then_updates_by_google_sub(repo):
     assert again.id == first.id and again.name == "Ann B"
     assert again.email == "ann@example.com" and again.created_at == T0
     assert repo.account(first.id) == again
-    assert repo.account_by_email("ANN@example.com") == again
-    assert repo.account("nope") is None and repo.account_by_email("x@y.z") is None
+    assert account_id_by_email(db_path, "ANN@example.com") == again.id
+    assert repo.account("nope") is None
+    assert account_id_by_email(db_path, "x@y.z") is None
 
 
 def test_suspend_and_all_accounts(repo):
@@ -98,13 +113,13 @@ def test_set_claim_code_stores_and_clears(repo):
     assert m.claim_code_hash is None and m.claim_code_expires_at is None
 
 
-def test_claim_sets_owner_clears_code_and_drops_memberships(repo):
+def test_claim_sets_owner_clears_code_and_drops_memberships(repo, db_path):
     old, tech = _accounts(repo)
     new = repo.upsert_account_from_login("sub-n", "new@example.com", "Nell", T0)
     repo.register_machine(FP, KEY, "a", T0)
     repo.set_claim_code(FP, "hash", T0 + timedelta(days=7))
     assert repo.claim_machine(FP, old.id, T0) is True
-    repo.grant_tech(tech.id, FP, old.id, T0)
+    grant_tech(db_path, tech.id, FP, old.id, T0)
     claimed = repo.machine(FP)
     assert claimed.owner_id == old.id and claimed.claimed_at == T0
     assert claimed.claim_code_hash is None and claimed.claim_code_expires_at is None
@@ -151,12 +166,12 @@ def test_claim_unknown_machine_is_false(repo):
     assert repo.claim_machine(FP, owner.id, T0) is False
 
 
-def test_claim_is_atomic_when_membership_delete_fails(repo, monkeypatch):
+def test_claim_is_atomic_when_membership_delete_fails(repo, monkeypatch, db_path):
     owner, tech = _accounts(repo)
     other = repo.upsert_account_from_login("sub-x", "x@example.com", "Xan", T0)
     repo.register_machine(FP, KEY, "a", T0)
     repo.claim_machine(FP, owner.id, T0)
-    repo.grant_tech(tech.id, FP, owner.id, T0)
+    grant_tech(db_path, tech.id, FP, owner.id, T0)
     repo.set_claim_code(FP, "hash", T0 + timedelta(days=1))
     monkeypatch.setattr(sqlite, "DELETE_MEMBERSHIPS_SQL", "DELETE FROM no_such_table")
     with pytest.raises(sqlite3.OperationalError):
@@ -167,24 +182,24 @@ def test_claim_is_atomic_when_membership_delete_fails(repo, monkeypatch):
     assert repo.access_for(tech.id, FP) == "tech"
 
 
-def test_unbind_machine_clears_owner_claim_and_memberships(repo):
+def test_unbind_machine_clears_owner_claim_and_memberships(repo, db_path):
     owner, tech = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.claim_machine(FP, owner.id, T0)
-    repo.grant_tech(tech.id, FP, owner.id, T0)
+    grant_tech(db_path, tech.id, FP, owner.id, T0)
     repo.unbind_machine(FP)
     m = repo.machine(FP)
     assert m.owner_id is None and m.claimed_at is None
     assert repo.memberships(FP) == []
 
 
-def test_access_and_machines_for_account(repo):
+def test_access_and_machines_for_account(repo, db_path):
     owner, tech = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.register_machine(FP_2, KEY, "b", T0)
     repo.claim_machine(FP, owner.id, T0)
     repo.claim_machine(FP_2, tech.id, T0)
-    repo.grant_tech(tech.id, FP, owner.id, T0)
+    grant_tech(db_path, tech.id, FP, owner.id, T0)
     assert repo.access_for(owner.id, FP) == "owner"
     assert repo.access_for(tech.id, FP) == "tech"
     assert repo.access_for(tech.id, FP_2) == "owner"
@@ -197,12 +212,14 @@ def test_access_and_machines_for_account(repo):
     assert [a.role for a in repo.machines_for_account(owner.id)] == ["owner"]
 
 
-def test_grant_is_idempotent_revoke_removes_and_memberships_join_accounts(repo):
+def test_grant_is_idempotent_revoke_removes_and_memberships_join_accounts(
+    repo, db_path
+):
     owner, tech = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.claim_machine(FP, owner.id, T0)
-    repo.grant_tech(tech.id, FP, owner.id, T0)
-    repo.grant_tech(tech.id, FP, owner.id, T0 + timedelta(days=1))
+    grant_tech(db_path, tech.id, FP, owner.id, T0)
+    grant_tech(db_path, tech.id, FP, owner.id, T0 + timedelta(days=1))
     [(membership, account)] = repo.memberships(FP)
     assert membership.role == "tech" and membership.granted_by == owner.id
     assert membership.granted_at == T0 and membership.account_id == tech.id
@@ -339,16 +356,6 @@ def test_claim_unknown_account_is_false_and_unchanged(repo):
     assert repo.claim_machine(FP_2, owner.id, T0) is False
 
 
-def test_grant_tech_unknown_account_or_machine_raises_lookup_error(repo):
-    owner, _ = _accounts(repo)
-    repo.register_machine(FP, KEY, "a", T0)
-    with pytest.raises(LookupError, match="account"):
-        repo.grant_tech("no-such-account", FP, owner.id, T0)
-    with pytest.raises(LookupError, match="machine"):
-        repo.grant_tech(owner.id, FP_2, owner.id, T0)
-    assert repo.memberships(FP) == []
-
-
 def test_invitations_by_excludes_expired_and_accepted(repo):
     owner, tech = _accounts(repo)
     live = repo.create_invitation(owner.id, "a@example.com", "fleet", T0)
@@ -367,18 +374,18 @@ def test_invitations_by_excludes_expired_and_accepted(repo):
     assert repo.invitations_by(owner.id, None, old.expires_at) == [live]
 
 
-def test_set_claim_code_ignores_the_hash_a_claim_consumed(repo):
+def test_set_claim_code_ignores_the_hash_a_claim_consumed(repo, db_path):
     owner, _ = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.set_claim_code(FP, "h", None)
     assert repo.claim_machine(FP, owner.id, T0, expected_hash="h") is True
     repo.set_claim_code(FP, "h", None)  # the edge re-sending the consumed code
     assert repo.machine(FP).claim_code_hash is None
-    assert repo.consumed_claim_hashes(FP) == {"h"}
+    assert consumed_hashes(db_path, FP) == {"h"}
     repo.set_claim_code(FP, "fresh", None)
     assert repo.machine(FP).claim_code_hash == "fresh"
     # A fresh hash does not make a consumed one usable again.
-    assert repo.consumed_claim_hashes(FP) == {"h"}
+    assert consumed_hashes(db_path, FP) == {"h"}
     repo.set_claim_code(FP, "h", None)
     assert repo.machine(FP).claim_code_hash == "fresh"
     repo.set_claim_code(FP, None, None)
@@ -386,22 +393,22 @@ def test_set_claim_code_ignores_the_hash_a_claim_consumed(repo):
     assert repo.machine(FP).claim_code_hash is None
 
 
-def test_unbind_is_the_only_thing_that_forgets_consumed_hashes(repo):
+def test_unbind_is_the_only_thing_that_forgets_consumed_hashes(repo, db_path):
     owner, _ = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.set_claim_code(FP, "h", None)
     repo.claim_machine(FP, owner.id, T0, expected_hash="h")
     repo.unbind_machine(FP)
-    assert repo.consumed_claim_hashes(FP) == set()
+    assert consumed_hashes(db_path, FP) == set()
     repo.set_claim_code(FP, "h", None)
     assert repo.machine(FP).claim_code_hash == "h"
 
 
-def test_reclaim_by_the_same_owner_keeps_techs(repo):
+def test_reclaim_by_the_same_owner_keeps_techs(repo, db_path):
     owner, tech = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.claim_machine(FP, owner.id, T0)
-    repo.grant_tech(tech.id, FP, owner.id, T0)
+    grant_tech(db_path, tech.id, FP, owner.id, T0)
     assert repo.claim_machine(FP, owner.id, T0 + timedelta(hours=1)) is True
     assert repo.access_for(tech.id, FP) == "tech"
 
@@ -443,43 +450,43 @@ def _state(fp=FP, keys=("A",), offline_since=None):
     return AlertState(fp, tuple(_fault(k) for k in keys), T0, 60, offline_since)
 
 
-def _claimed(repo):
+def _claimed(repo, db_path):
     owner, tech = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.claim_machine(FP, owner.id, T0)
-    repo.grant_tech(tech.id, FP, owner.id, T0)
+    grant_tech(db_path, tech.id, FP, owner.id, T0)
     return owner, tech
 
 
-def test_alert_state_put_get_replace_delete(repo):
+def test_alert_state_put_get_replace_delete(repo, db_path):
     repo.register_machine(FP, KEY, "a", T0)
     assert repo.alert_state(FP) is None
-    repo.put_alert_state(_state(keys=("B", "A")))
+    put_alert_state(db_path, _state(keys=("B", "A")))
     got = repo.alert_state(FP)
     assert got == _state(keys=("B", "A"))
     assert got.faults[0].product == "Bag of Ice" and got.keys == {"A", "B"}
     later = AlertState(FP, (), T0 + timedelta(minutes=1), 120, T0)
-    repo.put_alert_state(later)
+    put_alert_state(db_path, later)
     assert repo.alert_state(FP) == later
-    repo.delete_alert_state(FP)
+    sql_exec(db_path, "DELETE FROM machine_alert_state WHERE fingerprint = ?", (FP,))
     assert repo.alert_state(FP) is None
 
 
-def test_claimed_machines_with_state_only_claimed(repo):
+def test_claimed_machines_with_state_only_claimed(repo, db_path):
     owner, _ = _accounts(repo)
     repo.register_machine(FP, KEY, "a", T0)
     repo.register_machine(FP_2, KEY, "b", T0)
     repo.claim_machine(FP, owner.id, T0)
-    repo.put_alert_state(_state(FP))
-    repo.put_alert_state(_state(FP_2))
+    put_alert_state(db_path, _state(FP))
+    put_alert_state(db_path, _state(FP_2))
     found = repo.claimed_machines_with_state()
     assert [(m.fingerprint, s.fingerprint) for m, s in found] == [(FP, FP)]
 
 
-def test_record_and_list_alert_events_newest_first(repo):
+def test_record_and_list_alert_events_newest_first(repo, db_path):
     repo.register_machine(FP, KEY, "a", T0)
-    stored = repo.record_alert_events(
-        [_event(at=T0), _event(kind="cleared", at=T0 + timedelta(minutes=1))]
+    stored = record_alert_events(
+        db_path, [_event(at=T0), _event(kind="cleared", at=T0 + timedelta(minutes=1))]
     )
     assert [e.id for e in stored] == sorted(e.id for e in stored)
     assert stored[0].kind == "raised" and stored[0].at == T0
@@ -489,24 +496,25 @@ def test_record_and_list_alert_events_newest_first(repo):
     assert repo.alert_events(FP_2, limit=10) == []
 
 
-def test_alert_count_since_counts_raised_and_offline_only(repo):
+def test_alert_count_since_counts_raised_and_offline_only(repo, db_path):
     repo.register_machine(FP, KEY, "a", T0)
-    repo.record_alert_events(
+    record_alert_events(
+        db_path,
         [
             _event(at=T0 - timedelta(hours=30)),
             _event(at=T0 - timedelta(hours=1)),
             _event(kind="offline", at=T0),
             _event(kind="cleared", at=T0),
             _event(kind="online", at=T0),
-        ]
+        ],
     )
     assert repo.alert_count_since(FP, T0 - timedelta(hours=24)) == 2
 
 
-def test_people_for_alerts_owner_first_then_techs_with_muted(repo):
-    owner, tech = _claimed(repo)
+def test_people_for_alerts_owner_first_then_techs_with_muted(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
     other = repo.upsert_account_from_login("sub-x", "x@example.com", "Xi", T0)
-    repo.grant_tech(other.id, FP, owner.id, T0 - timedelta(days=1))
+    grant_tech(db_path, other.id, FP, owner.id, T0 - timedelta(days=1))
     repo.set_muted(tech.id, FP, True)
     people = repo.people_for_alerts(FP)
     assert [(r.account_id, r.role, m) for r, m in people] == [
@@ -518,27 +526,27 @@ def test_people_for_alerts_owner_first_then_techs_with_muted(repo):
     assert repo.people_for_alerts(FP_2) == []
 
 
-def test_people_for_alerts_excludes_suspended(repo):
-    owner, tech = _claimed(repo)
+def test_people_for_alerts_excludes_suspended(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
     repo.set_suspended(tech.id, T0)
     assert [r.account_id for r, _ in repo.people_for_alerts(FP)] == [owner.id]
     repo.set_suspended(owner.id, T0)
     assert repo.people_for_alerts(FP) == []
 
 
-def test_set_muted_and_is_muted(repo):
-    owner, tech = _claimed(repo)
-    assert repo.is_muted(tech.id, FP) is False
+def test_set_muted_and_is_muted(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
+    assert is_muted_sql(db_path, tech.id, FP) is False
     repo.set_muted(tech.id, FP, True)
-    assert repo.is_muted(tech.id, FP) is True
-    assert repo.is_muted(owner.id, FP) is False
+    assert is_muted_sql(db_path, tech.id, FP) is True
+    assert is_muted_sql(db_path, owner.id, FP) is False
     repo.set_muted(tech.id, FP, False)
-    assert repo.is_muted(tech.id, FP) is False
+    assert is_muted_sql(db_path, tech.id, FP) is False
 
 
-def test_create_delivery_and_mark_increments_attempts(repo):
-    owner, _ = _claimed(repo)
-    events = repo.record_alert_events([_event(), _event(key="k2")])
+def test_create_delivery_and_mark_increments_attempts(repo, db_path):
+    owner, _ = _claimed(repo, db_path)
+    events = record_alert_events(db_path, [_event(), _event(key="k2")])
     ids = [e.id for e in events]
     d = repo.create_delivery(FP, owner.id, ids, "pending", T0)
     assert d.event_ids == tuple(ids) and d.status == "pending"
@@ -554,9 +562,9 @@ def test_create_delivery_and_mark_increments_attempts(repo):
     assert repo.last_sent_at(FP, owner.id) == T0 + timedelta(minutes=2)
 
 
-def test_pending_deliveries_before_cutoff(repo):
-    owner, _ = _claimed(repo)
-    e = repo.record_alert_events([_event()])[0]
+def test_pending_deliveries_before_cutoff(repo, db_path):
+    owner, _ = _claimed(repo, db_path)
+    e = record_alert_events(db_path, [_event()])[0]
     due = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
     repo.create_delivery(FP, owner.id, [e.id], "pending", T0 + timedelta(minutes=5))
     repo.create_delivery(FP, owner.id, [e.id], "muted", T0)
@@ -565,9 +573,9 @@ def test_pending_deliveries_before_cutoff(repo):
     assert len(repo.pending_deliveries(before=T0 + timedelta(minutes=5))) == 2
 
 
-def test_pending_deliveries_excludes_exhausted_failed(repo):
-    owner, _ = _claimed(repo)
-    e = repo.record_alert_events([_event()])[0]
+def test_pending_deliveries_excludes_exhausted_failed(repo, db_path):
+    owner, _ = _claimed(repo, db_path)
+    e = record_alert_events(db_path, [_event()])[0]
     d = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
     for n in range(4):
         repo.mark_delivery(d.id, status="failed", now=T0, error="x")
@@ -577,9 +585,9 @@ def test_pending_deliveries_excludes_exhausted_failed(repo):
     assert repo.pending_deliveries(before=T0 + timedelta(days=1)) == []
 
 
-def test_failed_delivery_backs_off_exponentially(repo):
-    owner, _ = _claimed(repo)
-    e = repo.record_alert_events([_event()])[0]
+def test_failed_delivery_backs_off_exponentially(repo, db_path):
+    owner, _ = _claimed(repo, db_path)
+    e = record_alert_events(db_path, [_event()])[0]
     d = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
     for attempts, minutes in [(1, 2), (2, 4), (3, 8), (4, 16)]:
         repo.mark_delivery(d.id, status="failed", now=T0, error="x")
@@ -589,14 +597,15 @@ def test_failed_delivery_backs_off_exponentially(repo):
         assert [x.attempts for x in due] == [attempts]
 
 
-def test_last_sent_at_and_cleared_since_last_sent(repo):
-    owner, tech = _claimed(repo)
-    first, cleared_old, cleared_new = repo.record_alert_events(
+def test_last_sent_at_and_cleared_since_last_sent(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
+    first, cleared_old, cleared_new = record_alert_events(
+        db_path,
         [
             _event(at=T0),
             _event(kind="cleared", at=T0 + timedelta(minutes=1)),
             _event(kind="cleared", at=T0 + timedelta(minutes=30)),
-        ]
+        ],
     )
     assert repo.last_sent_at(FP, owner.id) is None
     assert repo.cleared_since_last_sent(FP, owner.id) == [cleared_old, cleared_new]
@@ -607,25 +616,25 @@ def test_last_sent_at_and_cleared_since_last_sent(repo):
     assert repo.last_sent_at(FP, tech.id) is None
 
 
-def test_cleared_since_last_sent_bounded_by_access_start(repo):
-    owner, tech = _claimed(repo)  # both gain access at T0
-    early = repo.record_alert_events(
-        [_event(kind="cleared", at=T0 + timedelta(minutes=1))]
+def test_cleared_since_last_sent_bounded_by_access_start(repo, db_path):
+    owner, tech = _claimed(repo, db_path)  # both gain access at T0
+    early = record_alert_events(
+        db_path, [_event(kind="cleared", at=T0 + timedelta(minutes=1))]
     )[0]
     late_tech = repo.upsert_account_from_login("sub-l", "late@example.com", "L", T0)
-    repo.grant_tech(late_tech.id, FP, owner.id, T0 + timedelta(minutes=5))
+    grant_tech(db_path, late_tech.id, FP, owner.id, T0 + timedelta(minutes=5))
     stranger = repo.upsert_account_from_login("sub-s", "s@example.com", "S", T0)
-    after = repo.record_alert_events(
-        [_event(kind="cleared", at=T0 + timedelta(minutes=10))]
+    after = record_alert_events(
+        db_path, [_event(kind="cleared", at=T0 + timedelta(minutes=10))]
     )[0]
     assert repo.cleared_since_last_sent(FP, owner.id) == [early, after]
     assert repo.cleared_since_last_sent(FP, late_tech.id) == [after]
     assert repo.cleared_since_last_sent(FP, stranger.id) == []
 
 
-def test_deliveries_for_events_groups_by_event(repo):
-    owner, tech = _claimed(repo)
-    a, b, c = repo.record_alert_events([_event(key=k) for k in "abc"])
+def test_deliveries_for_events_groups_by_event(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
+    a, b, c = record_alert_events(db_path, [_event(key=k) for k in "abc"])
     d1 = repo.create_delivery(FP, owner.id, [a.id, b.id], "sent", T0)
     d2 = repo.create_delivery(FP, tech.id, [b.id], "muted", T0)
     got = repo.deliveries_for_events(FP, [a.id, b.id, c.id])
@@ -633,13 +642,13 @@ def test_deliveries_for_events_groups_by_event(repo):
     assert repo.deliveries_for_events(FP, []) == {}
 
 
-def test_deliveries_for_events_ignores_other_machines(repo):
-    owner, _tech = _claimed(repo)
+def test_deliveries_for_events_ignores_other_machines(repo, db_path):
+    owner, _tech = _claimed(repo, db_path)
     other = "other-fp"
     repo.register_machine(other, KEY, "b", T0)
     repo.claim_machine(other, owner.id, T0)
-    (a,) = repo.record_alert_events([_event()])
-    (b,) = repo.record_alert_events([_event(fp=other)])
+    (a,) = record_alert_events(db_path, [_event()])
+    (b,) = record_alert_events(db_path, [_event(fp=other)])
     mine = repo.create_delivery(FP, owner.id, [a.id], "sent", T0)
     theirs = repo.create_delivery(other, owner.id, [a.id, b.id], "sent", T0)
     got = repo.deliveries_for_events(FP, [a.id, b.id])
@@ -647,57 +656,57 @@ def test_deliveries_for_events_ignores_other_machines(repo):
     assert theirs not in got[a.id]
 
 
-def _seed_alerts(repo, owner, tech):
-    repo.put_alert_state(_state())
+def _seed_alerts(repo, owner, tech, db_path):
+    put_alert_state(db_path, _state())
     repo.set_muted(tech.id, FP, True)
-    e = repo.record_alert_events([_event()])[0]
+    e = record_alert_events(db_path, [_event()])[0]
     repo.create_delivery(FP, owner.id, [e.id], "sent", T0)
     return e
 
 
-def test_claim_change_resets_alert_state_prefs_and_history(repo):
-    owner, tech = _claimed(repo)
-    e = _seed_alerts(repo, owner, tech)
+def test_claim_change_resets_alert_state_prefs_and_history(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
+    e = _seed_alerts(repo, owner, tech, db_path)
     newer = repo.upsert_account_from_login("sub-n", "new@example.com", "Nia", T0)
     assert repo.claim_machine(FP, newer.id, T0 + timedelta(hours=1)) is True
     assert repo.alert_state(FP) is None
-    assert repo.is_muted(tech.id, FP) is False
+    assert is_muted_sql(db_path, tech.id, FP) is False
     assert repo.alert_events(FP, limit=5) == []
     assert repo.deliveries_for_events(FP, [e.id]) == {e.id: []}
     assert repo.last_sent_at(FP, owner.id) is None
 
 
-def test_reclaim_same_owner_keeps_state(repo):
-    owner, tech = _claimed(repo)
-    _seed_alerts(repo, owner, tech)
+def test_reclaim_same_owner_keeps_state(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
+    _seed_alerts(repo, owner, tech, db_path)
     assert repo.claim_machine(FP, owner.id, T0 + timedelta(hours=1)) is True
     assert repo.alert_state(FP) == _state()
-    assert repo.is_muted(tech.id, FP) is True
+    assert is_muted_sql(db_path, tech.id, FP) is True
 
 
-def test_revoke_deletes_pref(repo):
-    owner, tech = _claimed(repo)
+def test_revoke_deletes_pref(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
     repo.set_muted(tech.id, FP, True)
     repo.set_muted(owner.id, FP, True)
     repo.revoke(tech.id, FP)
-    assert repo.is_muted(tech.id, FP) is False
-    assert repo.is_muted(owner.id, FP) is True
+    assert is_muted_sql(db_path, tech.id, FP) is False
+    assert is_muted_sql(db_path, owner.id, FP) is True
 
 
-def test_unbind_deletes_everything_alert(repo):
-    owner, tech = _claimed(repo)
-    e = _seed_alerts(repo, owner, tech)
+def test_unbind_deletes_everything_alert(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
+    e = _seed_alerts(repo, owner, tech, db_path)
     repo.unbind_machine(FP)
     assert repo.alert_state(FP) is None
     assert repo.alert_events(FP, limit=5) == []
     assert repo.deliveries_for_events(FP, [e.id]) == {e.id: []}
     assert repo.pending_deliveries(before=T0 + timedelta(days=1)) == []
     assert repo.last_sent_at(FP, owner.id) is None
-    assert repo.is_muted(tech.id, FP) is False
+    assert is_muted_sql(db_path, tech.id, FP) is False
 
 
-def test_machine_view_upsert_overwrites_viewed_at(repo):
-    owner, _tech = _claimed(repo)
+def test_machine_view_upsert_overwrites_viewed_at(repo, db_path):
+    owner, _tech = _claimed(repo, db_path)
     assert repo.machine_views_for_account(owner.id) == {}
     repo.record_machine_view(owner.id, FP, T0)
     assert repo.machine_views_for_account(owner.id) == {FP: T0}
@@ -706,16 +715,16 @@ def test_machine_view_upsert_overwrites_viewed_at(repo):
     assert repo.machine_views_for_account(owner.id) == {FP: later}
 
 
-def test_machine_views_for_account_only_returns_that_account(repo):
-    owner, tech = _claimed(repo)
+def test_machine_views_for_account_only_returns_that_account(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
     repo.record_machine_view(owner.id, FP, T0)
     repo.record_machine_view(tech.id, FP, T0 + timedelta(hours=1))
     assert repo.machine_views_for_account(owner.id) == {FP: T0}
     assert repo.machine_views_for_account(tech.id) == {FP: T0 + timedelta(hours=1)}
 
 
-def test_claim_change_deletes_machine_views(repo):
-    owner, tech = _claimed(repo)
+def test_claim_change_deletes_machine_views(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
     repo.record_machine_view(owner.id, FP, T0)
     repo.record_machine_view(tech.id, FP, T0)
     newer = repo.upsert_account_from_login("sub-n", "new@example.com", "Nia", T0)
@@ -724,15 +733,15 @@ def test_claim_change_deletes_machine_views(repo):
     assert repo.machine_views_for_account(tech.id) == {}
 
 
-def test_reclaim_same_owner_keeps_machine_views(repo):
-    owner, _tech = _claimed(repo)
+def test_reclaim_same_owner_keeps_machine_views(repo, db_path):
+    owner, _tech = _claimed(repo, db_path)
     repo.record_machine_view(owner.id, FP, T0)
     assert repo.claim_machine(FP, owner.id, T0 + timedelta(hours=1)) is True
     assert repo.machine_views_for_account(owner.id) == {FP: T0}
 
 
-def test_unbind_deletes_machine_views(repo):
-    owner, tech = _claimed(repo)
+def test_unbind_deletes_machine_views(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
     repo.record_machine_view(owner.id, FP, T0)
     repo.record_machine_view(tech.id, FP, T0)
     repo.unbind_machine(FP)
@@ -757,28 +766,28 @@ def test_migrations_apply_on_existing_db(tmp_path):
     old.close()
     repo = SqliteRepository(path)
     assert repo.machine(FP).label == "a"
-    repo.put_alert_state(_state())
+    put_alert_state(path, _state())
     assert repo.alert_state(FP) == _state()
-    assert repo.record_alert_events([_event()])[0].id == 1
+    assert record_alert_events(path, [_event()])[0].id == 1
 
 
-def test_alert_events_by_ids_ordered_and_skips_unknown(repo):
-    _claimed(repo)
-    a, b, c = repo.record_alert_events([_event(key=k) for k in "abc"])
+def test_alert_events_by_ids_ordered_and_skips_unknown(repo, db_path):
+    _claimed(repo, db_path)
+    a, b, c = record_alert_events(db_path, [_event(key=k) for k in "abc"])
     assert repo.alert_events_by_ids([c.id, a.id, 9999]) == [a, c]
     assert repo.alert_events_by_ids([]) == []
 
 
-def test_record_alert_pass_commits_events_and_state_together(repo):
-    _claimed(repo)
+def test_record_alert_pass_commits_events_and_state_together(repo, db_path):
+    _claimed(repo, db_path)
     stored = repo.record_alert_pass([_event()], _state())
     assert len(stored) == 1 and stored[0].id
     assert repo.alert_state(FP) == _state()
     assert repo.alert_events(FP, limit=10) == stored
 
 
-def test_record_alert_pass_rolls_back_events_when_state_write_fails(repo):
-    _claimed(repo)
+def test_record_alert_pass_rolls_back_events_when_state_write_fails(repo, db_path):
+    _claimed(repo, db_path)
     bad = _state()
     object.__setattr__(bad, "report_interval_seconds", object())
     with pytest.raises(Exception):
@@ -787,9 +796,9 @@ def test_record_alert_pass_rolls_back_events_when_state_write_fails(repo):
     assert repo.alert_state(FP) is None
 
 
-def test_mark_offline_if_unchanged(repo):
-    _claimed(repo)
-    repo.put_alert_state(_state())
+def test_mark_offline_if_unchanged(repo, db_path):
+    _claimed(repo, db_path)
+    put_alert_state(db_path, _state())
     offline = _event(kind="offline", at=T0 + timedelta(hours=1))
     stored = repo.mark_offline_if_unchanged(FP, _state().last_report_at, offline)
     assert stored is not None and stored.kind == "offline"
@@ -800,20 +809,20 @@ def test_mark_offline_if_unchanged(repo):
     assert len(repo.alert_events(FP, limit=5)) == 1
 
 
-def test_mark_offline_if_unchanged_skips_when_report_arrived(repo):
-    _claimed(repo)
-    repo.put_alert_state(_state())
+def test_mark_offline_if_unchanged_skips_when_report_arrived(repo, db_path):
+    _claimed(repo, db_path)
+    put_alert_state(db_path, _state())
     newer = replace(_state(), last_report_at=T0 + timedelta(minutes=30))
-    repo.put_alert_state(newer)
+    put_alert_state(db_path, newer)
     offline = _event(kind="offline", at=T0 + timedelta(hours=1))
     assert repo.mark_offline_if_unchanged(FP, _state().last_report_at, offline) is None
     assert repo.alert_state(FP) == newer
     assert repo.alert_events(FP, limit=5) == []
 
 
-def test_delivery_health_follows_most_recent_attempt(repo):
-    owner, tech = _claimed(repo)
-    e = repo.record_alert_events([_event()])[0]
+def test_delivery_health_follows_most_recent_attempt(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
+    e = record_alert_events(db_path, [_event()])[0]
     assert repo.delivery_health(FP) is True
     first = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
     repo.mark_delivery(first.id, status="failed", now=T0 + timedelta(minutes=1))
@@ -835,14 +844,14 @@ def test_delivery_health_follows_most_recent_attempt(repo):
 # fleet queries
 
 
-def test_all_memberships_lists_every_grant(repo):
+def test_all_memberships_lists_every_grant(repo, db_path):
     owner, tech = _accounts(repo)
     other = repo.upsert_account_from_login("sub-x", "x@example.com", "Xan", T0)
     repo.register_machine(FP, KEY, "a", T0)
     repo.register_machine(FP_2, KEY, "b", T0)
-    repo.grant_tech(tech.id, FP_2, owner.id, T0)
-    repo.grant_tech(other.id, FP, owner.id, T0 + timedelta(hours=1))
-    repo.grant_tech(tech.id, FP, owner.id, T0)
+    grant_tech(db_path, tech.id, FP_2, owner.id, T0)
+    grant_tech(db_path, other.id, FP, owner.id, T0 + timedelta(hours=1))
+    grant_tech(db_path, tech.id, FP, owner.id, T0)
     got = repo.all_memberships()
     first, second = sorted([FP, FP_2])
     expected = {FP: [tech.id, other.id], FP_2: [tech.id]}
@@ -856,10 +865,11 @@ def test_all_memberships_lists_every_grant(repo):
     ]
 
 
-def test_alert_counts_since_groups_by_machine(repo):
+def test_alert_counts_since_groups_by_machine(repo, db_path):
     repo.register_machine(FP, KEY, "a", T0)
     repo.register_machine(FP_2, KEY, "b", T0)
-    repo.record_alert_events(
+    record_alert_events(
+        db_path,
         [
             _event(at=T0 - timedelta(hours=30)),
             _event(at=T0 - timedelta(hours=2)),
@@ -867,20 +877,21 @@ def test_alert_counts_since_groups_by_machine(repo):
             _event(kind="cleared", at=T0),
             _event(kind="offline", at=T0),
             _event(kind="online", at=T0, fp=FP_2),
-        ]
+        ],
     )
     assert repo.alert_counts_since(T0 - timedelta(hours=24)) == {FP: 3}
 
 
-def test_recent_alert_events_newest_first_with_machine(repo):
+def test_recent_alert_events_newest_first_with_machine(repo, db_path):
     repo.register_machine(FP, KEY, "alpha", T0)
     repo.register_machine(FP_2, KEY, "beta", T0)
-    repo.record_alert_events(
+    record_alert_events(
+        db_path,
         [
             _event(at=T0, fp=FP),
             _event(at=T0 + timedelta(minutes=2), fp=FP_2),
             _event(kind="cleared", at=T0 + timedelta(minutes=1), fp=FP),
-        ]
+        ],
     )
     got = repo.recent_alert_events(limit=10)
     assert [(e.fingerprint, e.kind, m.label) for e, m in got] == [
@@ -892,7 +903,7 @@ def test_recent_alert_events_newest_first_with_machine(repo):
     assert len(repo.recent_alert_events(limit=2)) == 2
 
 
-def test_purge_unclaimed_deletes_only_stale_unclaimed_and_cascades(repo):
+def test_purge_unclaimed_deletes_only_stale_unclaimed_and_cascades(repo, db_path):
     owner, _ = _accounts(repo)
     old_t = T0 - timedelta(days=10)
     cutoff = T0 - timedelta(days=7)
@@ -903,14 +914,15 @@ def test_purge_unclaimed_deletes_only_stale_unclaimed_and_cascades(repo):
     repo.touch_seen(fresh, T0)
     assert repo.claim_machine(claimed, owner.id, old_t)
     repo.record_bundle_upload(FP, "d" * 64, old_t)
-    repo.put_alert_state(
+    put_alert_state(
+        db_path,
         AlertState(
             fingerprint=FP,
             faults=(),
             last_report_at=old_t,
             report_interval_seconds=60,
             offline_since=None,
-        )
+        ),
     )
     assert repo.count_unclaimed_machines() == 3
     purged = repo.purge_unclaimed_machines(cutoff)
@@ -936,12 +948,12 @@ def test_purge_all_unclaimed_ignores_age_and_keeps_owned(repo):
     assert repo.purge_all_unclaimed_machines() == []
 
 
-def test_prune_alert_history_removes_old_settled_rows_and_keeps_the_rest(repo):
-    owner, tech = _claimed(repo)
+def test_prune_alert_history_removes_old_settled_rows_and_keeps_the_rest(repo, db_path):
+    owner, tech = _claimed(repo, db_path)
     cutoff = T0 + timedelta(days=90)
     old, new = T0 + timedelta(days=1), cutoff + timedelta(days=1)
-    e_old, e_new = repo.record_alert_events(
-        [_event(at=old, key="a"), _event(at=new, key="b")]
+    e_old, e_new = record_alert_events(
+        db_path, [_event(at=old, key="a"), _event(at=new, key="b")]
     )
     sent = repo.create_delivery(FP, owner.id, [e_old.id], "sent", old)
     repo.mark_delivery(sent.id, status="sent", now=old)
@@ -966,8 +978,8 @@ def test_prune_alert_history_removes_old_settled_rows_and_keeps_the_rest(repo):
     assert removed == 1 + 3  # one event, three deliveries
 
 
-def test_prune_alert_history_drops_old_bundle_uploads_and_invitations(repo):
-    owner, _tech = _claimed(repo)
+def test_prune_alert_history_drops_old_bundle_uploads_and_invitations(repo, db_path):
+    owner, _tech = _claimed(repo, db_path)
     cutoff = T0 + timedelta(days=90)
     old, new = T0 + timedelta(days=1), cutoff + timedelta(days=1)
     repo.record_bundle_upload(FP, "old", old)

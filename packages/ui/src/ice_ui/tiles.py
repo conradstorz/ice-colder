@@ -37,7 +37,6 @@ class TileDef:
     url: str
     icon: str
     permissions: frozenset[Permission]
-    coming_soon: bool = False
 
 
 TILES: tuple[TileDef, ...] = (
@@ -85,7 +84,6 @@ def build_tiles(perms: frozenset, lines: Mapping[str, str]) -> list[dict]:
             "icon": t.icon,
             "context": lines.get(t.title, ""),
             "enabled": bool(perms & t.permissions),
-            "coming_soon": t.coming_soon,
         }
         for t in TILES
     ]
@@ -103,7 +101,6 @@ REPORT_TILES = [
         "icon": "reports",
         "context": "Revenue, vends and uptime by day, week or month",
         "enabled": True,
-        "coming_soon": False,
     },
     {
         "title": LEVEL_REPORTS_PRODUCT.title,
@@ -111,7 +108,6 @@ REPORT_TILES = [
         "icon": "reports",
         "context": "Units and revenue per product",
         "enabled": True,
-        "coming_soon": False,
     },
     {
         "title": LEVEL_REPORTS_METHOD.title,
@@ -119,7 +115,6 @@ REPORT_TILES = [
         "icon": "reports",
         "context": "Revenue split by payment method",
         "enabled": True,
-        "coming_soon": False,
     },
     {
         "title": LEVEL_REPORTS_COLLECTIONS.title,
@@ -127,7 +122,6 @@ REPORT_TILES = [
         "icon": "reports",
         "context": "The last 50 cash collections",
         "enabled": True,
-        "coming_soon": False,
     },
 ]
 
@@ -170,7 +164,6 @@ def health_tiles(
             "icon": "health",
             "context": subsystems,
             "enabled": True,
-            "coming_soon": False,
         },
         {
             "title": "Faults",
@@ -178,7 +171,6 @@ def health_tiles(
             "icon": "health",
             "context": faults,
             "enabled": True,
-            "coming_soon": False,
         },
         {
             "title": "Availability",
@@ -186,7 +178,6 @@ def health_tiles(
             "icon": "health",
             "context": availability,
             "enabled": True,
-            "coming_soon": False,
         },
         {
             "title": "Logs",
@@ -194,6 +185,5 @@ def health_tiles(
             "icon": "health",
             "context": logs,
             "enabled": Permission.view_logs in perms,
-            "coming_soon": False,
         },
     ]
