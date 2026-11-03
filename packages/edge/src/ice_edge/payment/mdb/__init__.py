@@ -141,7 +141,7 @@ class MdbGateway:
         self._reconciler.maybe_run()
 
     def on_mqtt_reconnected(self) -> None:
-        self._reconciler.arm("mqtt_reconnect")
+        self._reconciler.arm("mqtt_reconnect", require_fresh_state=True)
         self._reconciler.maybe_run()
 
     # -- Payments ------------------------------------------------------

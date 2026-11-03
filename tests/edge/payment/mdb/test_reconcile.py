@@ -207,3 +207,27 @@ def test_mixed_boot_credits_reconcile_on_the_current_boot_part_only():
     e.edge_by_boot = lambda boot: {BOOT: 100}.get(boot, 0)
     e.rec.maybe_run()
     assert e.payouts.calls == [(50, PayoutReason.error, None)]
+
+
+def test_reconnect_arm_ignores_state_cached_before_the_disconnect():
+    # The state cached before the link dropped may not match the board any
+    # more; it must not consume the one-shot arm. The refreshed state does.
+    e = Env(board=100, edge=100)
+    e.rec.maybe_run()  # consume the initial arm
+    e.rec.arm("mqtt_reconnect", require_fresh_state=True)
+    e.rec.maybe_run()  # stale cached state: equal, would silently disarm
+    e.state, e.state_ts = mk_state(175), 20.0  # fresh state reveals excess
+    e.rec.on_state(e.state)
+    assert e.payouts.calls == [(75, PayoutReason.error, None)]
+
+
+def test_reconnect_arm_with_no_fresh_state_stays_armed():
+    e = Env(board=150, edge=100)
+    e.rec.maybe_run()
+    e.rec.arm("mqtt_reconnect", require_fresh_state=True)
+    e.rec.maybe_run()
+    e.rec.maybe_run()
+    assert len(e.payouts.calls) == 1  # only the initial arm's payout
+    e.state_ts = 20.0
+    e.rec.maybe_run()
+    assert len(e.payouts.calls) == 2

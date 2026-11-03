@@ -37,11 +37,20 @@ class Reconciler:
         self._edge_cash = edge_cash_escrow
         self._faults = faults
         self._armed = False
+        self._min_state_ts: float | None = None
         self._boot: str | None = None
 
-    def arm(self, trigger: str) -> None:
+    def arm(self, trigger: str, *, require_fresh_state: bool = False) -> None:
+        """Arm one reconciliation.
+
+        `require_fresh_state` holds the run until a payment/state arrives after
+        this call: the state cached before an MQTT disconnect can be stale, and
+        consuming the one-shot arm on it would hide a mismatch the refreshed
+        state reveals.
+        """
         logger.info(f"MDB reconciliation armed: {trigger}")
         self._armed = True
+        self._min_state_ts = self._state_ts() if require_fresh_state else None
 
     def on_state(self, state: PaymentState) -> None:
         if self._boot is not None and state.boot_id != self._boot:
@@ -55,6 +64,8 @@ class Reconciler:
         state = self._state()
         if state is None or not self._fsm_idle() or self._pay104_active():
             return
+        if self._min_state_ts is not None and self._state_ts() <= self._min_state_ts:
+            return  # still the pre-arm (possibly stale) state
         if self._intake.caught_up_to(state.boot_id) < state.seq_last:
             return
         if not self._payouts.idle:
@@ -66,6 +77,7 @@ class Reconciler:
         if done is not None and self._state_ts() <= done:
             return  # this state predates the last payout / cash_sale
         self._armed = False
+        self._min_state_ts = None
         edge, board = self._edge_cash(state.boot_id), state.escrow_cents
         if edge == board:
             return
