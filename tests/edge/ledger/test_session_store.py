@@ -515,3 +515,55 @@ def test_non_null_legacy_refund_id_still_fails_safe(tmp_path):
 
     assert loaded.error
     assert loaded.is_open()
+
+
+def _write_precents_with_pending_sale(path):
+    path.write_text(
+        json.dumps(
+            {
+                "state": "dispensing",
+                "credit_escrow": 0.0,
+                "selected_sku": "ICE-1",
+                "pending_sale_shares": {"cash": 2.5},
+                "saved_at": 100.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_unreadable_file_is_preserved_and_survives_clear(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    original = path.read_bytes()
+    store = SessionStore(path)
+
+    loaded = store.load()
+
+    assert loaded.error and "raw file kept at" in loaded.error
+    kept = [p for p in tmp_path.glob("session.unreadable.*.json")]
+    assert len(kept) == 1 and kept[0].read_bytes() == original
+    assert kept[0].name in loaded.error
+
+    assert store.clear() is True  # Discard / Clear (as Discard)
+    assert not path.exists()
+    assert kept[0].read_bytes() == original
+
+
+def test_repeated_loads_of_an_unreadable_file_keep_one_copy(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    store = SessionStore(path)
+
+    first = store.load()
+    second = store.load()
+
+    assert first.error == second.error
+    assert len(list(tmp_path.glob("session.unreadable.*.json"))) == 1
+
+
+def test_readable_file_leaves_no_preserved_copy(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(SessionSnapshot(state="idle", credit_escrow_cents=5))
+    assert store.load().error is None
+    assert not list(tmp_path.glob("session.unreadable.*"))

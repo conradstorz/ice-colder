@@ -9,6 +9,7 @@ event loop.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -171,7 +172,33 @@ class SessionStore:
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")
-            return SessionSnapshot(state="unknown", credit_escrow_cents=0, error=str(e))
+            detail = str(e)
+            kept = self._preserve_unreadable()
+            if kept is not None:
+                detail += f"; raw file kept at {kept}"
+            return SessionSnapshot(state="unknown", credit_escrow_cents=0, error=detail)
+
+    def _preserve_unreadable(self) -> Optional[Path]:
+        """Copy an unreadable snapshot beside the original, once per content.
+
+        An unreadable file may be the only record of a pending sale (for
+        example a pre-cents file, which is never converted). Clearing PAY-104
+        deletes ``session.json``; this copy is what survives for the owner.
+        The name carries a content hash so repeated loads do not pile up
+        copies and a different file never overwrites an earlier one.
+        """
+        try:
+            data = self._path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()[:8]
+            dest = self._path.with_name(
+                f"{self._path.stem}.unreadable.{digest}{self._path.suffix}"
+            )
+            if not dest.exists():
+                dest.write_bytes(data)
+            return dest
+        except OSError as oe:
+            logger.error(f"SessionStore: could not keep a copy of {self._path}: {oe}")
+            return None
 
     def clear(self) -> bool:
         """Remove the evidence file. Returns True only if it is gone afterwards."""
