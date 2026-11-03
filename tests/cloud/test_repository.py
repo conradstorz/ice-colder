@@ -473,9 +473,7 @@ def test_alert_state_put_get_replace_delete(repo, db_path):
     assert repo.alert_state(FP) is None
 
 
-def test_alert_state_skips_one_invalid_stored_fault_and_keeps_the_rest(
-    repo, db_path
-):
+def test_alert_state_skips_one_invalid_stored_fault_and_keeps_the_rest(repo, db_path):
     import json
 
     repo.register_machine(FP, KEY, "a", T0)

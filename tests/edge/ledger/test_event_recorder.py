@@ -1490,9 +1490,7 @@ class TestSalesJournalPreCentsRows:
     """A pre-cents row is not converted (spec D1) but must never be silently
     set aside: it stays in the journal so DATA-101 stays raised."""
 
-    def test_precents_row_stays_in_journal_and_is_counted(
-        self, tmp_path, journal_path
-    ):
+    def test_precents_row_stays_in_journal_and_is_counted(self, tmp_path, journal_path):
         rec = EventRecorder(db_path=str(tmp_path / "e.db"))
         legacy = {
             "ts": 1.0,
