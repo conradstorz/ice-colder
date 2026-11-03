@@ -231,3 +231,18 @@ def test_reconnect_arm_with_no_fresh_state_stays_armed():
     e.state_ts = 20.0
     e.rec.maybe_run()
     assert len(e.payouts.calls) == 2
+
+
+def test_later_arm_without_fresh_requirement_keeps_the_pending_one():
+    # A pay101_cleared / new_boot arm landing while the reconnect arm still
+    # waits for a post-reconnect state must not drop the freshness requirement.
+    e = Env(board=100, edge=100)
+    e.rec.maybe_run()  # consume the initial arm
+    e.state, e.state_ts = mk_state(175), 10.0  # cached pre-disconnect state
+    e.rec.arm("mqtt_reconnect", require_fresh_state=True)
+    e.rec.arm("pay101_cleared")
+    e.rec.maybe_run()  # stale cached state: must not reconcile
+    assert e.payouts.calls == [] and e.faults.raised == []
+    e.state_ts = 20.0  # fresh state arrives
+    e.rec.on_state(e.state)
+    assert e.payouts.calls == [(75, PayoutReason.error, None)]

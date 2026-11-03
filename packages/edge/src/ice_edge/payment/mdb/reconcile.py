@@ -50,7 +50,10 @@ class Reconciler:
         """
         logger.info(f"MDB reconciliation armed: {trigger}")
         self._armed = True
-        self._min_state_ts = self._state_ts() if require_fresh_state else None
+        if require_fresh_state:
+            self._min_state_ts = self._state_ts()
+        # Sticky: an arm without the requirement never clears a pending one;
+        # only a consumed run does.
 
     def on_state(self, state: PaymentState) -> None:
         if self._boot is not None and state.boot_id != self._boot:
