@@ -957,7 +957,12 @@ class TestRecordedSaleWithLeftoverCredit:
         text = client.get("/health/faults").text
         assert "Sale already recorded" in text
         assert "Leftover credit $2.50" in text
-        assert "the machine will pay it out" in text
+        # No unconditional refund promise: after a restart the credit is not in
+        # edge escrow, and reconciliation pays only what the board still holds
+        # (nothing if the board rebooted too).
+        assert "the machine will pay it out" not in text
+        assert "only if the board still holds it" in text
+        assert "verify the customer was repaid" in text
 
     def test_recovery_detail_forwarded_on_machine(self, leftover):
         machine, _store, _db = leftover
