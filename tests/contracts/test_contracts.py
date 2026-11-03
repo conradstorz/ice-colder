@@ -314,11 +314,7 @@ class TestTestableCommands:
     def test_actuator_commands_under_the_right_subsystem(self):
         assert TESTABLE_COMMANDS["vending"] >= {"dispense", "water_valve"}
         assert TESTABLE_COMMANDS["ice_maker"] >= {"power_cycle"}
-        assert TESTABLE_COMMANDS["mdb"] >= {
-            "bill_acceptor_test",
-            "coin_return_test",
-            "card_reader_test",
-        }
+        assert TESTABLE_COMMANDS["mdb"] >= {"device_reset", "payout"}
 
     def test_control_commands_absent_from_every_entry(self):
         assert set(TESTABLE_COMMANDS) == {"vending", "ice_maker", "mdb"}
@@ -413,9 +409,7 @@ class TestCompletionTimeouts:
         ("mdb", "ping"),
         ("mdb", "self_test"),
         ("mdb", "force_report"),
-        ("mdb", "bill_acceptor_test"),
-        ("mdb", "coin_return_test"),
-        ("mdb", "card_reader_test"),
+        ("mdb", "device_reset"),
         ("ice_maker", "ping"),
         ("ice_maker", "self_test"),
         ("ice_maker", "force_report"),
@@ -424,10 +418,10 @@ class TestCompletionTimeouts:
         ("vending", "dispense"),
         ("vending", "water_valve"),
         ("ice_maker", "power_cycle"),
-    }
-    # Control commands (never testable, or testable only from spec 2 on).
-    _LONG_RUNNING_CONTROL = {
         ("mdb", "payout"),
+    }
+    # Control commands (never testable).
+    _LONG_RUNNING_CONTROL = {
         ("mdb", "vend_request"),
     }
 

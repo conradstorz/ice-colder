@@ -170,7 +170,7 @@ def _bucket_key(dt: datetime, bucket: str) -> tuple:
 _MAX_BUCKET_KEY_RETRIES = 8
 
 
-def _cash_since(conn: sqlite3.Connection, since_ts: Optional[float]) -> float:
+def _cash_since(conn: sqlite3.Connection, since_ts: Optional[float]) -> int:
     """Sum the cash-class shares of `sales.methods` with ts > since_ts.
 
     `since_ts=None` means "all time" (the first collection ever). Mirrors
@@ -181,7 +181,7 @@ def _cash_since(conn: sqlite3.Connection, since_ts: Optional[float]) -> float:
         cursor = conn.execute("SELECT methods FROM sales")
     else:
         cursor = conn.execute("SELECT methods FROM sales WHERE ts > ?", (since_ts,))
-    total = 0.0
+    total = 0
     for (methods_json,) in cursor.fetchall():
         methods = json.loads(methods_json)
         for method, amount in methods.items():
@@ -312,7 +312,7 @@ def by_period(
 
             if sku is None:
                 revenue = conn.execute(
-                    "SELECT COALESCE(SUM(price), 0.0) FROM sales WHERE ts>=? AND ts<?",
+                    "SELECT COALESCE(SUM(price_cents), 0) FROM sales WHERE ts>=? AND ts<?",
                     (q_start, q_end),
                 ).fetchone()[0]
                 vends = conn.execute(
@@ -321,7 +321,7 @@ def by_period(
                 ).fetchone()[0]
             else:
                 revenue = conn.execute(
-                    "SELECT COALESCE(SUM(price), 0.0) FROM sales "
+                    "SELECT COALESCE(SUM(price_cents), 0) FROM sales "
                     "WHERE ts>=? AND ts<? AND sku=?",
                     (q_start, q_end, sku),
                 ).fetchone()[0]
@@ -360,13 +360,14 @@ def by_period(
                     "AND timestamp>=? AND timestamp<?",
                     (q_start, q_end),
                 ).fetchone()[0]
-                refunds = round(
-                    conn.execute(
-                        "SELECT COALESCE(SUM(value), 0.0) FROM events "
-                        "WHERE event_type='refund' AND timestamp>=? AND timestamp<?",
-                        (q_start, q_end),
-                    ).fetchone()[0],
-                    2,
+                refunds = int(
+                    round(
+                        conn.execute(
+                            "SELECT COALESCE(SUM(value), 0.0) FROM events "
+                            "WHERE event_type='refund' AND timestamp>=? AND timestamp<?",
+                            (q_start, q_end),
+                        ).fetchone()[0]
+                    )
                 )
                 covered_buckets = conn.execute(
                     "SELECT COUNT(DISTINCT CAST(timestamp / ? AS INTEGER)) FROM events "
@@ -383,10 +384,10 @@ def by_period(
             rows.append(
                 {
                     "bucket_start": current.isoformat(),
-                    "revenue": round(revenue, 2),
+                    "revenue_cents": int(revenue),
                     "vends": vends,
                     "failed_vends": failed_vends,
-                    "refunds": refunds,
+                    "refunds_cents": refunds,
                     "uptime_pct": uptime_pct,
                 }
             )
@@ -411,18 +412,18 @@ def by_product(recorder, window: tuple[float, float]) -> list[dict]:
     entries: dict[str, dict] = {}
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         sale_rows = conn.execute(
-            "SELECT sku, name, price FROM sales WHERE ts>=? AND ts<? "
+            "SELECT sku, name, price_cents FROM sales WHERE ts>=? AND ts<? "
             "ORDER BY ts ASC, id ASC",
             (start_ts, end_ts),
         ).fetchall()
-        for sku, name, price in sale_rows:
+        for sku, name, price_cents in sale_rows:
             entry = entries.setdefault(
                 sku,
                 {
                     "sku": sku,
                     "name": name,
                     "units": 0,
-                    "revenue": 0.0,
+                    "revenue_cents": 0,
                     "failed_vends": 0,
                 },
             )
@@ -430,7 +431,7 @@ def by_product(recorder, window: tuple[float, float]) -> list[dict]:
             # the latest-seen name (covers a mid-window rename).
             entry["name"] = name
             entry["units"] += 1
-            entry["revenue"] += price
+            entry["revenue_cents"] += price_cents
 
         failed_rows = conn.execute(
             "SELECT metadata FROM events WHERE event_type='vend_failed' "
@@ -453,14 +454,12 @@ def by_product(recorder, window: tuple[float, float]) -> list[dict]:
                     "sku": sku,
                     "name": sku,
                     "units": 0,
-                    "revenue": 0.0,
+                    "revenue_cents": 0,
                     "failed_vends": 1,
                 }
 
     rows_out = list(entries.values())
-    for row in rows_out:
-        row["revenue"] = round(row["revenue"], 2)
-    rows_out.sort(key=lambda r: r["revenue"], reverse=True)
+    rows_out.sort(key=lambda r: r["revenue_cents"], reverse=True)
     return rows_out
 
 
@@ -476,33 +475,34 @@ def by_method(recorder, window: tuple[float, float]) -> list[dict]:
     db_path = recorder.db_path
 
     totals: dict[str, dict] = {}
-    total_revenue = 0.0
+    total_revenue = 0
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
-            "SELECT price, methods FROM sales WHERE ts>=? AND ts<?",
+            "SELECT price_cents, methods FROM sales WHERE ts>=? AND ts<?",
             (start_ts, end_ts),
         ).fetchall()
-    for price, methods_json in rows:
-        total_revenue += price
+    for price_cents, methods_json in rows:
+        total_revenue += price_cents
         methods = json.loads(methods_json)
         for method, amount in methods.items():
             entry = totals.setdefault(
                 method,
                 {
                     "method": method,
-                    "amount": 0.0,
+                    "amount_cents": 0,
                     "count": 0,
                     "is_cash": is_cash(method),
                 },
             )
-            entry["amount"] += amount
+            entry["amount_cents"] += amount
             entry["count"] += 1
 
     result = list(totals.values())
     for entry in result:
-        entry["amount"] = round(entry["amount"], 2)
-        entry["share"] = (entry["amount"] / total_revenue) if total_revenue else 0.0
-    result.sort(key=lambda r: r["amount"], reverse=True)
+        entry["share"] = (
+            (entry["amount_cents"] / total_revenue) if total_revenue else 0.0
+        )
+    result.sort(key=lambda r: r["amount_cents"], reverse=True)
     return result
 
 
@@ -537,25 +537,25 @@ def collections(recorder, limit: int = 50) -> list[dict]:
     result: list[dict] = []
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
-            "SELECT ts, user_id, user_name, expected_cash FROM cash_collections "
+            "SELECT ts, user_id, user_name, expected_cash_cents FROM cash_collections "
             "ORDER BY ts DESC, id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        for i, (ts, user_id, user_name, expected_cash) in enumerate(rows):
+        for i, (ts, user_id, user_name, expected_cash_cents) in enumerate(rows):
             if i == 0:
-                expected_cash = round(_cash_since(conn, ts), 2)
+                expected_cash_cents = _cash_since(conn, ts)
             result.append(
                 {
                     "ts": ts,
                     "user_id": user_id,
                     "user_name": user_name,
-                    "expected_cash": expected_cash,
+                    "expected_cash_cents": expected_cash_cents,
                 }
             )
     return result
 
 
-def cash_since_last_collection(recorder) -> float:
+def cash_since_last_collection(recorder) -> int:
     """Cash-class sales since the newest collection (all time before the
     first): the figure the next collection will record as `expected_cash`.
     Synchronous; call through `asyncio.to_thread`."""
@@ -564,7 +564,7 @@ def cash_since_last_collection(recorder) -> float:
         last = conn.execute(
             "SELECT ts FROM cash_collections ORDER BY ts DESC, id DESC LIMIT 1"
         ).fetchone()
-        return round(_cash_since(conn, last[0] if last else None), 2)
+        return _cash_since(conn, last[0] if last else None)
 
 
 def summary(recorder, window: tuple[float, float]) -> dict:
@@ -580,7 +580,7 @@ def summary(recorder, window: tuple[float, float]) -> dict:
 
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         revenue = conn.execute(
-            "SELECT COALESCE(SUM(price), 0.0) FROM sales WHERE ts>=? AND ts<?",
+            "SELECT COALESCE(SUM(price_cents), 0) FROM sales WHERE ts>=? AND ts<?",
             (start_ts, end_ts),
         ).fetchone()[0]
         vends = conn.execute(
@@ -592,11 +592,15 @@ def summary(recorder, window: tuple[float, float]) -> dict:
             "AND timestamp>=? AND timestamp<?",
             (start_ts, end_ts),
         ).fetchone()[0]
-        refunds = conn.execute(
-            "SELECT COALESCE(SUM(value), 0.0) FROM events "
-            "WHERE event_type='refund' AND timestamp>=? AND timestamp<?",
-            (start_ts, end_ts),
-        ).fetchone()[0]
+        refunds = int(
+            round(
+                conn.execute(
+                    "SELECT COALESCE(SUM(value), 0.0) FROM events "
+                    "WHERE event_type='refund' AND timestamp>=? AND timestamp<?",
+                    (start_ts, end_ts),
+                ).fetchone()[0]
+            )
+        )
 
         last_collection = conn.execute(
             "SELECT ts FROM cash_collections ORDER BY ts DESC LIMIT 1"
@@ -605,12 +609,12 @@ def summary(recorder, window: tuple[float, float]) -> dict:
         cash_since_last_collection = _cash_since(conn, since_ts)
 
     return {
-        "revenue": round(revenue, 2),
+        "revenue_cents": int(revenue),
         "vends": vends,
         "failed": failed,
-        "refunds": round(refunds, 2),
+        "refunds_cents": refunds,
         "by_method": by_method(recorder, window),
-        "cash_since_last_collection": round(cash_since_last_collection, 2),
+        "cash_since_last_collection_cents": cash_since_last_collection,
     }
 
 

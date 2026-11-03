@@ -19,7 +19,6 @@ from ice_contracts.board.common import CommandAck
 from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     FaultCode,
-    PaymentRefundCommand,
     fault_for_outcome,
 )
 from ice_edge.app.machine import Machine
@@ -29,10 +28,10 @@ from ice_edge.faults.availability import Availability
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.ledger.event_recorder import EventRecorder, SaleRecordingFailed
 from ice_edge.monitoring.health_monitor import HealthMonitor
-from ice_contracts.board.mqtt_messages import PaymentEnableCommand
 from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeTaskRunner, drain_pending, settle
+from tests.payment_state_helpers import set_coin_status
 
 
 _profiles_tmp_base: Path | None = None
@@ -74,7 +73,7 @@ def two_products() -> tuple[Product, ...]:
         Product(
             sku="ICE-1",
             name="Ice Bag",
-            price=2.50,
+            price_cents=250,
             slot=0,
             kind="ice",
             button="button_ice",
@@ -82,7 +81,7 @@ def two_products() -> tuple[Product, ...]:
         Product(
             sku="WATER-1",
             name="Water",
-            price=1.00,
+            price_cents=100,
             slot=1,
             kind="water",
             button="button_water_5gal",
@@ -114,7 +113,7 @@ def make_machine(
             Product(
                 sku="ICE-1",
                 name="Ice Bag",
-                price=price,
+                price_cents=round(price * 100),
                 kind="ice",
                 button="button_ice",
             )
@@ -177,7 +176,7 @@ async def test_late_dispenser_fault_after_completed_sale_is_ignored():
     machine.attach_to_loop(asyncio.get_running_loop())
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
@@ -185,13 +184,13 @@ async def test_late_dispenser_fault_after_completed_sale_is_ignored():
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
     assert vmc.state == "idle"  # no credit left
     assert vmc.selected_product is None
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
 
     # Late/duplicate jam for the same slot arrives after completion.
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "jam"})
 
     assert vmc.state == "idle"
-    assert vmc.credit_escrow == 0.0  # no bogus refund credited
+    assert vmc.credit_escrow_cents == 0  # no bogus refund credited
 
 
 async def test_dispenser_jam_with_mismatched_slot_is_ignored():
@@ -204,7 +203,7 @@ async def test_dispenser_jam_with_mismatched_slot_is_ignored():
     vmc.outputs.set_message_callback(messages.append)
     vmc.selected_product = vmc.products[0]
     vmc.set_state("dispensing")
-    vmc.credit_escrow = 0.0
+    vmc.credit_escrow_cents = 0
 
     other_slot = vmc.products[0].slot + 1
     await vmc.on_dispenser_event(
@@ -212,7 +211,7 @@ async def test_dispenser_jam_with_mismatched_slot_is_ignored():
     )
 
     assert vmc.state == "dispensing"  # unaffected — wrong slot
-    assert vmc.credit_escrow == 0.0  # no bogus refund
+    assert vmc.credit_escrow_cents == 0  # no bogus refund
     assert messages == []
 
 
@@ -224,7 +223,7 @@ async def test_dispense_complete_with_mismatched_slot_is_ignored():
     machine.attach_to_loop(asyncio.get_running_loop())
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
@@ -244,7 +243,7 @@ async def test_dispense_complete_with_matching_slot_still_completes():
     machine.attach_to_loop(asyncio.get_running_loop())
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
@@ -269,7 +268,7 @@ async def test_dispense_complete_records_event_via_recorder():
     machine.set_event_recorder(recorder)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
@@ -309,7 +308,7 @@ async def test_dispense_complete_does_not_double_record_event():
     machine.set_event_recorder(recorder)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
@@ -330,7 +329,7 @@ async def test_dispense_complete_with_mismatched_slot_does_not_record_event():
     machine.set_event_recorder(recorder)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
@@ -376,12 +375,12 @@ async def test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle
     # assignment -- bypassing the ledger trips the divergence guard and
     # _consume_credits_fifo returns {"unknown": price}, which would prove
     # nothing about the FIFO split under test here.
-    vmc.deposit_funds(1.50, payment_method="cash_bill")
-    vmc.deposit_funds(1.00, payment_method="card")
+    vmc.deposit_funds(150, payment_method="cash_bill")
+    vmc.deposit_funds(100, payment_method="card")
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
-    assert vmc.pending_sale_shares == {"cash_bill": 1.50, "card": 1.00}
+    assert vmc.pending_sale_shares == {"cash_bill": 150, "card": 100}
 
     await vmc.on_dispenser_event(
         "hardware/dispenser",
@@ -396,15 +395,15 @@ async def test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle
 
     with sqlite3.connect(str(tmp_path / "events.db")) as conn:
         rows = conn.execute(
-            "SELECT sku, name, slot, price, methods FROM sales"
+            "SELECT sku, name, slot, price_cents, methods FROM sales"
         ).fetchall()
     assert len(rows) == 1  # exactly one row
     sku, name, slot, price, methods_json = rows[0]
     assert sku == "ICE-1"
     assert name == "Ice Bag"
     assert slot == vmc.products[0].slot
-    assert price == pytest.approx(2.50)
-    assert json.loads(methods_json) == {"cash_bill": 1.50, "card": 1.00}
+    assert price == 250
+    assert json.loads(methods_json) == {"cash_bill": 150, "card": 100}
 
 
 async def test_dispense_complete_sale_record_failure_raises_data_101_but_completes_vend():
@@ -434,7 +433,7 @@ async def test_dispense_complete_sale_record_failure_raises_data_101_but_complet
     machine.set_event_recorder(recorder)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.deposit_funds(2.50, payment_method="cash_coin")
+    vmc.deposit_funds(250, payment_method="cash_coin")
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
@@ -487,7 +486,7 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     machine.set_event_recorder(recorder)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.deposit_funds(2.50, payment_method="cash_bill")
+    vmc.deposit_funds(250, payment_method="cash_bill")
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
@@ -514,14 +513,14 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     pending = machine.pending_sale_for_recovery()
     assert pending is not None, "sale evidence was lost -- nothing to recover"
     assert pending["sku"] == "ICE-1"
-    assert pending["price"] == pytest.approx(2.50)
-    assert pending["methods"] == {"cash_bill": 2.50}
+    assert pending["price_cents"] == 250
+    assert pending["methods"] == {"cash_bill": 250}
 
     # And the on-disk file itself, read on a separate SessionStore/second
     # connection to the same path -- not vmc's own in-memory state.
     reloaded = SessionStore(store_path).load()
     assert reloaded is not None
-    assert reloaded.pending_sale_shares == {"cash_bill": 2.50}
+    assert reloaded.pending_sale_shares == {"cash_bill": 250}
 
 
 async def test_dispense_complete_records_price_from_shares_not_live_catalog_price(
@@ -558,15 +557,15 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
     machine.set_event_recorder(SaleOnlyRecorder())
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.deposit_funds(2.50, payment_method="cash_bill")
+    vmc.deposit_funds(250, payment_method="cash_bill")
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
-    assert vmc.pending_sale_shares == {"cash_bill": 2.50}
+    assert vmc.pending_sale_shares == {"cash_bill": 250}
 
     # Operator edits the catalog price mid-flight, in place -- exactly what
     # ice_edge/config/config_store.update_product does to the same live object.
-    vmc.selected_product.price = 9.99
+    vmc.selected_product.price_cents = 999
 
     await vmc.on_dispenser_event(
         "hardware/dispenser",
@@ -575,13 +574,13 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
     assert vmc.state == "idle"
 
     with sqlite3.connect(str(tmp_path / "events.db")) as conn:
-        rows = conn.execute("SELECT price, methods FROM sales").fetchall()
+        rows = conn.execute("SELECT price_cents, methods FROM sales").fetchall()
     assert len(rows) == 1
     price, methods_json = rows[0]
     methods = json.loads(methods_json)
-    assert methods == {"cash_bill": 2.50}
+    assert methods == {"cash_bill": 250}
     # The row must record what was actually charged, not the edited price.
-    assert price == pytest.approx(2.50)
+    assert price == 250
 
 
 async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credits(
@@ -600,12 +599,12 @@ async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credi
     machine.set_event_recorder(real_recorder)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
-    vmc.deposit_funds(2.50, payment_method="cash_bill")
+    vmc.deposit_funds(250, payment_method="cash_bill")
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
     # Proves the deduction genuinely happened before the failure.
-    assert vmc.pending_sale_shares == {"cash_bill": 2.50}
+    assert vmc.pending_sale_shares == {"cash_bill": 250}
 
     await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": vmc.products[0].slot, "state": "jam"}
@@ -613,10 +612,10 @@ async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credi
 
     assert vmc.state == "interacting_with_user"  # vend_failed, WATER-1 still sellable
     assert vmc.pending_sale_shares is None
-    assert vmc.credit_escrow == 2.50  # restored, not spent
+    assert vmc.credit_escrow_cents == 250  # restored, not spent
     assert len(vmc.escrow_credits) == 1
     assert vmc.escrow_credits[0].method == "cash_bill"
-    assert vmc.escrow_credits[0].amount == 2.50
+    assert vmc.escrow_credits[0].cents == 250
 
     with sqlite3.connect(str(tmp_path / "events.db")) as conn:
         count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
@@ -642,14 +641,14 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
     vmc.outputs.set_message_callback(messages.append)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
-    vmc.deposit_funds(2.50, payment_method="cash_bill")
+    vmc.deposit_funds(250, payment_method="cash_bill")
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
-    assert vmc.pending_sale_shares == {"cash_bill": 2.50}
+    assert vmc.pending_sale_shares == {"cash_bill": 250}
 
     # Operator edits the catalog price mid-flight, in place.
-    vmc.selected_product.price = 9.99
+    vmc.selected_product.price_cents = 999
 
     await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": vmc.products[0].slot, "state": "jam"}
@@ -659,10 +658,10 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
     assert vmc.pending_sale_shares is None
     # Restored total must match what was actually deducted, not the edited
     # catalog price.
-    assert vmc.credit_escrow == pytest.approx(2.50)
+    assert vmc.credit_escrow_cents == 250
     assert len(vmc.escrow_credits) == 1
     assert vmc.escrow_credits[0].method == "cash_bill"
-    assert vmc.escrow_credits[0].amount == pytest.approx(2.50)
+    assert vmc.escrow_credits[0].cents == 250
 
     # The customer message must also report what was actually taken, not
     # the edited catalog price.
@@ -675,7 +674,7 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
             "SELECT value FROM events WHERE event_type = 'vend_failed'"
         ).fetchone()
     assert row is not None
-    assert row[0] == pytest.approx(2.50)
+    assert row[0] == 250
 
 
 async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
@@ -699,8 +698,8 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
     machine.set_session_store(SessionStore(store_path))
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.deposit_funds(2.00, payment_method="cash_bill")
-    vmc.deposit_funds(0.50, payment_method="card")
+    vmc.deposit_funds(200, payment_method="cash_bill")
+    vmc.deposit_funds(50, payment_method="card")
 
     vmc.process_payment()  # persists the 'dispensing' snapshot (Task 4)
     assert vmc.state == "dispensing"
@@ -715,7 +714,7 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
 
     assert "PAY-104" in {f["code"] for f in vmc2.active_faults()}
     reloaded = SessionStore(store_path).load()
-    assert reloaded.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+    assert reloaded.pending_sale_shares == {"cash_bill": 200, "card": 50}
     assert reloaded.selected_sku == "ICE-1"
     assert reloaded.dispense_slot == vmc.products[0].slot
 
@@ -727,14 +726,14 @@ async def test_session_timeout_refunds_and_returns_to_idle():
     machine.attach_to_loop(asyncio.get_running_loop())
     messages: list[str] = []
     vmc.outputs.set_message_callback(messages.append)
-    vmc.credit_escrow = 3.00
+    seed_credit(vmc, 300)
     vmc.start_interaction()
 
     runner.fire("session_timeout")
     await asyncio.sleep(0)  # let the fire-and-forget refund publish run
 
     assert vmc.state == "idle"
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert any("Refund" in m for m in messages)
 
 
@@ -745,7 +744,7 @@ async def test_insufficient_funds_prompt_is_not_an_error_log():
     machine.attach_to_loop(asyncio.get_running_loop())
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 0.50
+    seed_credit(vmc, 50)
     records: list[tuple[str, str]] = []
     handle = logger.add(
         lambda m: records.append((m.record["level"].name, m.record["message"])),
@@ -770,12 +769,12 @@ async def test_insufficient_funds_waits_without_charging():
     vmc.outputs.set_message_callback(messages.append)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 1.00
+    seed_credit(vmc, 100)
 
     vmc.process_payment()
 
     assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == 1.00
+    assert vmc.credit_escrow_cents == 100
     assert any("Insufficient funds" in m for m in messages)
 
 
@@ -799,22 +798,23 @@ async def test_sufficient_funds_charges_and_dispenses():
     machine.attach_to_loop(asyncio.get_running_loop())
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 5.00
+    seed_credit(vmc, 500)
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
-    assert vmc.credit_escrow == 2.50
+    assert vmc.credit_escrow_cents == 250
 
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
-    assert vmc.state == "interacting_with_user"  # credit remains
+    assert vmc.state == "idle"  # change is paid at once; the sale is over
+    assert vmc.credit_escrow_cents == 0
+    assert [(p.cents, p.reason) for p in payouts(machine)] == [(250, "change")]
 
 
 async def test_dispense_complete_with_no_remaining_credit_returns_to_idle():
-    """`_post_dispense_dest`'s other branch: a completed dispense with no
-    credit left over (price deposited exactly, not more) lands in 'idle',
-    not 'interacting_with_user' -- the mirror image of
-    test_sufficient_funds_charges_and_dispenses just above, which deposits
-    more than the price and stays interacting.
+    """A completed dispense with no credit left over (price deposited
+    exactly, not more) lands in 'idle' and queues no change payout. A sale
+    always ends in 'idle' (see test_sufficient_funds_charges_and_dispenses
+    just above, which deposits more than the price and gets change).
 
     Replaces the now-stale test_dispense_timeout_fallback_completes_
     transaction, which called _finish_dispensing directly and was framed
@@ -826,15 +826,14 @@ async def test_dispense_complete_with_no_remaining_credit_returns_to_idle():
     faithful public path to this exact-escrow completion is a real
     'complete' report with price == escrow, same as
     test_dispense_complete_with_matching_slot_still_completes exercises;
-    this test is kept alongside it, under an honest name, to pin the two
-    _post_dispense_dest branches (leftover credit vs. none) as a pair.
+    this test is kept alongside it, under an honest name.
     """
     machine = make_machine(price=2.50)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
@@ -854,13 +853,13 @@ async def test_product_deleted_mid_session_cancels_sale_without_error():
     vmc.outputs.set_message_callback(messages.append)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 5.00
+    seed_credit(vmc, 500)
     vmc.products.clear()  # product deleted via the dashboard mid-session
 
     vmc.process_payment()
 
     assert vmc.state == "idle"
-    assert vmc.credit_escrow == 0.0  # refunded, same as on_reset/_expire_session
+    assert vmc.credit_escrow_cents == 0  # refunded, same as on_reset/_expire_session
     assert vmc.selected_product is None
     assert any("refund" in m.lower() for m in messages)
 
@@ -873,7 +872,7 @@ async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
     machine.attach_to_loop(asyncio.get_running_loop())
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 5.00
+    seed_credit(vmc, 500)
     vmc.products.clear()  # product deleted via the dashboard mid-session
 
     vmc.process_payment()
@@ -885,13 +884,13 @@ async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
     # a real admin re-adding a product would go through
     # reconcile_dispenser_profiles too, but this test predates dispenser
     # profiles and isn't about that.
-    new_product = Product(sku="ICE-1", name="Ice Bag 2", price=2.50, kind="ice")
+    new_product = Product(sku="ICE-1", name="Ice Bag 2", price_cents=250, kind="ice")
     vmc.products.append(new_product)
     vmc.select_product(vmc.products[0])
     assert vmc.state == "interacting_with_user"
     assert vmc.selected_product is new_product
 
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
     vmc.process_payment()
     assert vmc.state == "dispensing"
 
@@ -902,8 +901,8 @@ async def test_dispense_uses_product_slot_not_list_index(tmp_path):
     stable `slot` field, not its current position in the list."""
     cfg = ConfigModel()
     cfg.physical.products = [
-        Product(sku="ICE-1", name="Ice", price=1.0, slot=0, kind="ice"),
-        Product(sku="WATER-1", name="Water", price=1.0, slot=1, kind="water"),
+        Product(sku="ICE-1", name="Ice", price_cents=100, slot=0, kind="ice"),
+        Product(sku="WATER-1", name="Water", price_cents=100, slot=1, kind="water"),
     ]
     machine = Machine(config=cfg)
     vmc = machine.vmc
@@ -1055,7 +1054,9 @@ class TestFaultRegistry:
 def _start_dispensing(vmc: VMC, index: int = 0):
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[index]
-    vmc.credit_escrow = vmc.products[index].price
+    price = vmc.products[index].price_cents
+    vmc.escrow_credits = [Credit(method="cash_coin", cents=price, ts=0.0)]
+    vmc.credit_escrow_cents = price
     vmc.process_payment()
     assert vmc.state == "dispensing"
 
@@ -1080,7 +1081,7 @@ class TestVendOutcomes:
 
         machine.set_mqtt_client(FakeClient())
         _start_dispensing(vmc, 0)
-        price = vmc.products[0].price
+        price = vmc.products[0].price_cents
 
         await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": outcome}
@@ -1090,7 +1091,7 @@ class TestVendOutcomes:
 
         code = fault_for_outcome("bagged_ice", DispenserOutcome(outcome))
         assert vmc.state == "interacting_with_user"
-        assert vmc.credit_escrow == price
+        assert vmc.credit_escrow_cents == price
         assert vmc.selected_product is None
         assert (
             "vend_failed",
@@ -1125,10 +1126,10 @@ class TestVendOutcomes:
         await drain_pending(runner)  # the "no dispense row" negative needs this
 
         assert vmc.state == "interacting_with_user"
-        assert vmc.credit_escrow == 2.50
+        assert vmc.credit_escrow_cents == 250
         assert (
             "vend_failed",
-            2.50,
+            250,
             {"code": "PAY-102", "sku": "ICE-1", "outcome": "no_report"},
         ) in rec.events
         assert vmc.faults.lockouts == {}  # PAY-102 is vend_failed severity: no lockout
@@ -1141,7 +1142,7 @@ class TestVendOutcomes:
         cfg = ConfigModel()
         cfg.physical.dispense_timeout_seconds = 45.0
         cfg.physical.products = [
-            Product(sku="ICE-1", name="Ice", price=1.0, slot=0, kind="ice")
+            Product(sku="ICE-1", name="Ice", price_cents=100, slot=0, kind="ice")
         ]
         runner = FakeTaskRunner()
         machine = Machine(config=cfg, tasks=runner)
@@ -1188,19 +1189,19 @@ class TestCreditLedger:
         machine.attach_to_loop(asyncio.get_running_loop())
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
-        vmc.deposit_funds(2.00, payment_method="cash_bill")
-        vmc.deposit_funds(1.00, payment_method="card")
+        vmc.deposit_funds(200, payment_method="cash_bill")
+        vmc.deposit_funds(100, payment_method="card")
 
         vmc.process_payment()
 
         # Confirms the deduction branch (credit_escrow >= price) actually ran,
         # rather than the insufficient-funds branch silently passing.
         assert vmc.state == "dispensing"
-        assert vmc.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
-        assert vmc.credit_escrow == 0.50
+        assert vmc.pending_sale_shares == {"cash_bill": 200, "card": 50}
+        assert vmc.credit_escrow_cents == 50
         assert len(vmc.escrow_credits) == 1
         assert vmc.escrow_credits[0].method == "card"
-        assert vmc.escrow_credits[0].amount == 0.50
+        assert vmc.escrow_credits[0].cents == 50
         machine.cancel_pending_tasks()
 
     async def test_exact_match_consumes_one_credit_entirely(self):
@@ -1209,14 +1210,14 @@ class TestCreditLedger:
         machine.attach_to_loop(asyncio.get_running_loop())
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
-        vmc.deposit_funds(2.50, payment_method="cash_coin")
+        vmc.deposit_funds(250, payment_method="cash_coin")
 
         vmc.process_payment()
 
         assert vmc.state == "dispensing"
-        assert vmc.pending_sale_shares == {"cash_coin": 2.50}
+        assert vmc.pending_sale_shares == {"cash_coin": 250}
         assert vmc.escrow_credits == []
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         machine.cancel_pending_tasks()
 
     async def test_sale_spanning_three_credits(self):
@@ -1225,17 +1226,17 @@ class TestCreditLedger:
         machine.attach_to_loop(asyncio.get_running_loop())
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
-        vmc.deposit_funds(1.00, payment_method="cash_coin")
-        vmc.deposit_funds(1.00, payment_method="cash_coin")
-        vmc.deposit_funds(1.00, payment_method="card")
+        vmc.deposit_funds(100, payment_method="cash_coin")
+        vmc.deposit_funds(100, payment_method="cash_coin")
+        vmc.deposit_funds(100, payment_method="card")
 
         vmc.process_payment()
 
         assert vmc.state == "dispensing"
-        assert vmc.pending_sale_shares == {"cash_coin": 2.00, "card": 0.50}
+        assert vmc.pending_sale_shares == {"cash_coin": 200, "card": 50}
         assert len(vmc.escrow_credits) == 1
         assert vmc.escrow_credits[0].method == "card"
-        assert vmc.escrow_credits[0].amount == 0.50
+        assert vmc.escrow_credits[0].cents == 50
         machine.cancel_pending_tasks()
 
     async def test_vend_failed_restores_separate_credits_with_original_methods(self):
@@ -1248,23 +1249,23 @@ class TestCreditLedger:
         machine.attach_to_loop(asyncio.get_running_loop())
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
-        vmc.deposit_funds(2.00, payment_method="cash_bill")
-        vmc.deposit_funds(0.50, payment_method="card")
+        vmc.deposit_funds(200, payment_method="cash_bill")
+        vmc.deposit_funds(50, payment_method="card")
         vmc.process_payment()
         assert vmc.state == "dispensing"  # sale actually in flight
-        assert vmc.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+        assert vmc.pending_sale_shares == {"cash_bill": 200, "card": 50}
         assert vmc.escrow_credits == []  # both credits fully consumed
 
         vmc.vend_failed(code=FaultCode.PAY_102, outcome="no_report")
 
         assert vmc.state == "interacting_with_user"
-        assert vmc.credit_escrow == 2.50
+        assert vmc.credit_escrow_cents == 250
         assert vmc.pending_sale_shares is None
         assert len(vmc.escrow_credits) == 2
         assert vmc.escrow_credits[0].method == "cash_bill"
-        assert vmc.escrow_credits[0].amount == 2.00
+        assert vmc.escrow_credits[0].cents == 200
         assert vmc.escrow_credits[1].method == "card"
-        assert vmc.escrow_credits[1].amount == 0.50
+        assert vmc.escrow_credits[1].cents == 50
         machine.cancel_pending_tasks()
 
     async def test_rejected_deposit_appends_no_credit(self):
@@ -1272,11 +1273,11 @@ class TestCreditLedger:
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
 
-        vmc.deposit_funds(0.0, payment_method="cash_coin")
-        vmc.deposit_funds(-1.0, payment_method="cash_coin")
+        vmc.deposit_funds(0, payment_method="cash_coin")
+        vmc.deposit_funds(-100, payment_method="cash_coin")
 
         assert vmc.escrow_credits == []
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
 
     async def test_divergence_guard_books_unknown_and_warns(self):
         """credit_escrow mutated directly (bypassing deposit_funds, as many
@@ -1290,7 +1291,7 @@ class TestCreditLedger:
         machine.attach_to_loop(asyncio.get_running_loop())
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
-        vmc.credit_escrow = 5.00  # escrow_credits stays [] -> diverges
+        vmc.credit_escrow_cents = 500  # escrow_credits stays [] -> diverges
 
         records: list[tuple[str, str]] = []
         handle = logger.add(
@@ -1304,23 +1305,21 @@ class TestCreditLedger:
             logger.remove(handle)
 
         assert vmc.state == "dispensing"  # deduction branch ran
-        assert vmc.pending_sale_shares == {"unknown": 2.50}
-        assert vmc.credit_escrow == 2.50
+        assert vmc.pending_sale_shares == {"unknown": 250}
+        assert vmc.credit_escrow_cents == 250
         assert any(lvl == "WARNING" and "diverged" in msg for lvl, msg in records)
         machine.cancel_pending_tasks()
 
-    async def test_float_boundary_tolerance(self):
-        """CREDIT_TOLERANCE (0.005, half a cent) is used in two places; both
-        boundaries are tested here.
+    async def test_one_cent_boundaries(self):
+        """Integer cents compare exactly; both boundaries are tested here.
 
         1. The leftover-credit decision: a genuine one-cent overshoot is
-           real money and must survive as its own credit — the tolerance
-           must never be generous enough to eat an actual cent.
-        2. The divergence guard: escrow_credits and credit_escrow rounded to
-           the cent agreeing exactly is trusted; even the smallest real
-           disagreement once both sides are cent-quantized — one cent — must
-           trip the guard rather than silently attribute real money to
-           whatever methods happen to be sitting in an untrustworthy list.
+           real money and must survive as its own credit.
+        2. The divergence guard: escrow_credits and credit_escrow agreeing
+           exactly is trusted; even the smallest real disagreement -- one
+           cent -- must trip the guard rather than silently attribute real
+           money to whatever methods happen to be sitting in an
+           untrustworthy list.
         """
         # (1) $2.51 deposited, $2.50 charged -> a real $0.01 remains.
         machine = make_machine(price=2.50)
@@ -1328,14 +1327,14 @@ class TestCreditLedger:
         machine.attach_to_loop(asyncio.get_running_loop())
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
-        vmc.deposit_funds(2.51, payment_method="cash_coin")
+        vmc.deposit_funds(251, payment_method="cash_coin")
 
         vmc.process_payment()
 
         assert vmc.state == "dispensing"
-        assert vmc.pending_sale_shares == {"cash_coin": 2.50}
+        assert vmc.pending_sale_shares == {"cash_coin": 250}
         assert len(vmc.escrow_credits) == 1
-        assert vmc.escrow_credits[0].amount == 0.01
+        assert vmc.escrow_credits[0].cents == 1
         machine.cancel_pending_tasks()
 
         # (2a) Ledger and total agree exactly -> trusted, FIFO shares returned.
@@ -1344,13 +1343,13 @@ class TestCreditLedger:
         machine2.attach_to_loop(asyncio.get_running_loop())
         vmc2.set_state("interacting_with_user")
         vmc2.selected_product = vmc2.products[0]
-        vmc2.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
-        vmc2.credit_escrow = 1.00
+        vmc2.escrow_credits = [Credit(method="cash_coin", cents=100, ts=0.0)]
+        vmc2.credit_escrow_cents = 100
 
         vmc2.process_payment()
 
         assert vmc2.state == "dispensing"
-        assert vmc2.pending_sale_shares == {"cash_coin": 1.00}
+        assert vmc2.pending_sale_shares == {"cash_coin": 100}
         machine2.cancel_pending_tasks()
 
         # (2b) One cent off -> the guard trips; escrow_credits is left
@@ -1360,52 +1359,61 @@ class TestCreditLedger:
         machine3.attach_to_loop(asyncio.get_running_loop())
         vmc3.set_state("interacting_with_user")
         vmc3.selected_product = vmc3.products[0]
-        vmc3.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
-        vmc3.credit_escrow = 1.01
+        vmc3.escrow_credits = [Credit(method="cash_coin", cents=100, ts=0.0)]
+        vmc3.credit_escrow_cents = 101
 
         vmc3.process_payment()
 
         assert vmc3.state == "dispensing"
-        assert vmc3.pending_sale_shares == {"unknown": 1.00}
-        assert vmc3.escrow_credits == [Credit(method="cash_coin", amount=1.00, ts=0.0)]
+        assert vmc3.pending_sale_shares == {"unknown": 100}
+        assert vmc3.escrow_credits == [Credit(method="cash_coin", cents=100, ts=0.0)]
         machine3.cancel_pending_tasks()
 
 
 class RecordingClient:
     def __init__(self):
         self.published: list[tuple[str, object]] = []
+        self.registered: list[str] = []
 
-    def register(self, *_):
-        pass
+    def register(self, topic, *_):
+        self.registered.append(topic)
 
     async def publish(self, topic, payload, **kwargs):
         self.published.append((topic, payload))
 
-    def refund_commands(self) -> list[PaymentRefundCommand]:
-        return [p for t, p in self.published if t == "cmd/payment/refund"]
+
+def seed_credit(vmc, cents, method="cash_coin"):
+    """Put `cents` of cash credit in escrow without any of deposit_funds' side effects."""
+    vmc.escrow_credits = [
+        *vmc.escrow_credits,
+        Credit(method=method, cents=cents, ts=0.0),
+    ]
+    vmc.credit_escrow_cents += cents
+
+
+def payouts(machine):
+    """The cash payouts the MDB gateway holds (policy is never acked in unit
+    tests, so a requested payout stays queued, visible and unsent)."""
+    return [p for p in machine.gateway.pending_payouts() if p.kind == "payout"]
 
 
 class TestRefunds:
-    async def test_request_refund_publishes_command_and_zeroes_escrow(self):
+    async def test_request_refund_queues_cash_payout_and_zeroes_escrow(self):
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
-        machine.set_mqtt_client(client)
+        vmc.deposit_funds(175, "cash_coin")
         messages: list[str] = []
         vmc.outputs.set_message_callback(messages.append)
-        vmc.credit_escrow = 1.75
 
         vmc.request_refund(reason="session_timeout")
         await asyncio.sleep(0)
 
-        cmds = client.refund_commands()
-        assert len(cmds) == 1
-        assert cmds[0].amount == 1.75
-        assert cmds[0].reason == "session_timeout"
-        assert vmc.credit_escrow == 0.0
-        assert cmds[0].request_id in vmc.refunds.pending
-        # A refund isn't real until the gateway acks it — don't tell the
+        (payout,) = payouts(machine)
+        assert payout.cents == 175
+        assert payout.reason == "session_timeout"
+        assert vmc.credit_escrow_cents == 0
+        # A refund isn't real until the board confirms it — don't tell the
         # customer it's "issued" before that happens.
         assert "requested" in messages[-1]
         assert "issued" not in messages[-1]
@@ -1414,146 +1422,79 @@ class TestRefunds:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
-        machine.set_mqtt_client(client)
-        vmc.deposit_funds(1.00, payment_method="cash_coin")
-        vmc.deposit_funds(0.75, payment_method="card")
+        vmc.deposit_funds(100, payment_method="cash_coin")
+        vmc.deposit_funds(75, payment_method="card")
         assert len(vmc.escrow_credits) == 2  # confirms deposit_funds populated it
 
         vmc.request_refund(reason="cancel")
 
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
 
-    async def test_ack_ok_records_refund(self):
+    async def test_payout_paid_records_refund(self):
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
-        machine.set_mqtt_client(client)
         rec = FakeEventRecorder()
         machine.set_event_recorder(rec)
+        vmc.deposit_funds(200, "cash_coin")
         messages: list[str] = []
         vmc.outputs.set_message_callback(messages.append)
-        vmc.credit_escrow = 2.0
         vmc.request_refund(reason="cancel")
-        await asyncio.sleep(0)
-        rid = client.refund_commands()[0].request_id
+        (payout,) = payouts(machine)
 
-        await vmc.on_refund_ack(
-            "cmd/payment/refund/ack",
-            {"request_id": rid, "status": "ok", "amount_returned": 2.0},
-        )
+        vmc.on_payout_paid(payout, 200)
 
-        assert rid not in vmc.refunds.pending
-        assert ("refund", 2.0, {"request_id": rid, "reason": "cancel"}) in rec.events
-        # Only now, after the ack, may the customer be told it's issued.
+        assert (
+            "refund",
+            200,
+            {"request_id": payout.request_id, "reason": "cancel"},
+        ) in rec.events
+        # Only now, after the board confirms, may the customer be told it's issued.
         assert "issued" in messages[-1]
         assert "$2.00" in messages[-1]
 
-    async def test_ack_failed_retries_once_then_pay_103(self):
-        runner = FakeTaskRunner()
-        machine = make_machine(tasks=runner, products=two_products())
+    async def test_non_cash_credit_is_not_refunded_and_raises_pay_103(self):
+        machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
-        machine.set_mqtt_client(client)
-        rec = FakeEventRecorder()
-        machine.set_event_recorder(rec)
-        messages: list[str] = []
-        vmc.outputs.set_message_callback(messages.append)
-        vmc.credit_escrow = 2.0
+        vmc.deposit_funds(75, payment_method="card")
+
         vmc.request_refund(reason="cancel")
-        await asyncio.sleep(0)
-        rid = client.refund_commands()[0].request_id
 
-        await vmc.on_refund_ack(
-            "cmd/payment/refund/ack",
-            {"request_id": rid, "status": "failed", "detail": "changer_empty"},
-        )
-        await asyncio.sleep(0)
-        assert [c.request_id for c in client.refund_commands()] == [rid, rid]
-        assert rid in vmc.refunds.pending
-        # Still just a retry in flight — no promise made either way yet.
-        assert "issued" not in messages[-1]
-
-        await vmc.on_refund_ack(
-            "cmd/payment/refund/ack",
-            {"request_id": rid, "status": "failed", "detail": "changer_empty"},
-        )
-        await asyncio.sleep(0)
-        await drain_pending(runner)  # a stray third retry would land here
-
-        assert rid not in vmc.refunds.pending
-        assert len(client.refund_commands()) == 2
-        assert (
-            "refund_failed",
-            2.0,
-            {"request_id": rid, "reason": "cancel", "detail": "changer_empty"},
-        ) in rec.events
-        assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
-        # Final failure must tell the customer to contact support, never
-        # that the refund was issued.
-        assert "contact support" in messages[-1]
-        assert rid[:8] in messages[-1]
-        assert "issued" not in messages[-1]
-
-    async def test_no_ack_deadline_retries_then_pay_103(self):
-        runner = FakeTaskRunner()
-        machine = make_machine(tasks=runner, products=two_products())
-        vmc = machine.vmc
-        machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
-        machine.set_mqtt_client(client)
-        rec = FakeEventRecorder()
-        machine.set_event_recorder(rec)
-        vmc.credit_escrow = 3.0
-        vmc.request_refund(reason="error")
-
-        runner.fire("refund_deadline")
-        await settle()
-        runner.fire("refund_deadline")
-        await settle()
-        await drain_pending(runner)  # a stray third retry would land here
-
-        assert len(client.refund_commands()) == 2
-        assert vmc.refunds.pending == {}
-        assert any(
-            e[0] == "refund_failed" and e[2]["detail"] == "ack_timeout"
-            for e in rec.events
-        )
+        assert payouts(machine) == []
+        assert vmc.credit_escrow_cents == 0
         assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
 
-    async def test_unknown_request_id_ack_is_ignored(self):
+    async def test_mixed_credit_pays_out_only_the_cash_part(self):
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        rec = FakeEventRecorder()
-        machine.set_event_recorder(rec)
-        await vmc.on_refund_ack(
-            "cmd/payment/refund/ack",
-            {"request_id": "x" * 32, "status": "ok", "amount_returned": 1.0},
-        )
-        assert rec.events == []
+        vmc.deposit_funds(100, payment_method="cash_bill")
+        vmc.deposit_funds(75, payment_method="card")
 
-    async def test_on_error_pays_out_via_refund_command(self):
+        vmc.request_refund(reason="cancel")
+
+        (payout,) = payouts(machine)
+        assert payout.cents == 100
+        assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
+
+    async def test_on_error_pays_out_via_cash_payout(self):
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
-        machine.set_mqtt_client(client)
         messages: list[str] = []
         vmc.outputs.set_message_callback(messages.append)
         vmc.set_state("interacting_with_user")
-        vmc.credit_escrow = 1.25
+        vmc.deposit_funds(125, "cash_coin")
 
         vmc.error_occurred()
         await asyncio.sleep(0)
 
         assert vmc.state == "error"
-        assert vmc.credit_escrow == 0.0
-        cmds = client.refund_commands()
-        assert len(cmds) == 1 and cmds[0].amount == 1.25 and cmds[0].reason == "error"
+        assert vmc.credit_escrow_cents == 0
+        (payout,) = payouts(machine)
+        assert payout.cents == 125 and payout.reason == "error"
         # The refund is only requested here, not confirmed — the final
         # customer-facing message must not claim it has already happened.
         assert "requested" in messages[-1]
@@ -1567,12 +1508,10 @@ class TestRefunds:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
-        machine.set_mqtt_client(client)
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
-        vmc.deposit_funds(1.50, payment_method="cash_bill")
-        vmc.deposit_funds(1.00, payment_method="card")
+        vmc.deposit_funds(150, payment_method="cash_bill")
+        vmc.deposit_funds(100, payment_method="cash_coin")
         vmc.process_payment()
         assert vmc.state == "dispensing"
         assert vmc.pending_sale_shares
@@ -1582,12 +1521,12 @@ class TestRefunds:
 
         assert vmc.state == "error"
         assert vmc.pending_sale_shares is None
-        assert vmc.credit_escrow == 0.0  # refund took everything
-        cmds = client.refund_commands()
-        assert len(cmds) == 1 and cmds[0].amount == 2.5 and cmds[0].reason == "error"
+        assert vmc.credit_escrow_cents == 0  # refund took everything
+        (payout,) = payouts(machine)
+        assert payout.cents == 250 and payout.reason == "error"
 
         vmc.reset_state()
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
 
     async def test_on_error_without_credit_says_contact_support_only(self):
@@ -1595,46 +1534,42 @@ class TestRefunds:
         machine = make_machine(tasks=runner, products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
-        machine.set_mqtt_client(client)
         messages: list[str] = []
         vmc.outputs.set_message_callback(messages.append)
         vmc.set_state("interacting_with_user")
-        vmc.credit_escrow = 0.0
+        vmc.credit_escrow_cents = 0
 
         vmc.error_occurred()
         await asyncio.sleep(0)
         await drain_pending(runner)  # a wrongly-sent refund would land here
 
         assert vmc.state == "error"
-        assert client.refund_commands() == []
+        assert payouts(machine) == []
         assert messages[-1] == "An error has occurred. Please contact support."
 
     async def test_all_products_locked_refunds_and_idles(self):
         machine = make_machine()  # single product
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
-        machine.set_mqtt_client(client)
         _start_dispensing(vmc, 0)
 
         await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "jam"})
         await asyncio.sleep(0)
 
         assert vmc.state == "idle"
-        assert vmc.credit_escrow == 0.0
-        refunds = client.refund_commands()
-        assert len(refunds) == 1
-        assert refunds[0].amount == 2.50
-        assert refunds[0].reason == "ICE-401"
+        assert vmc.credit_escrow_cents == 0
+        (payout,) = payouts(machine)
+        assert payout.cents == 250
+        assert payout.reason == "vend_failed"
 
-    def test_refund_ack_handler_is_registered(self):
+    def test_payment_event_and_state_handlers_are_registered(self):
         machine = make_machine(products=two_products())
         client = RecordingClient()
-        topics = []
-        client.register = lambda topic, handler: topics.append(topic)
         machine.set_mqtt_client(client)
-        assert "cmd/payment/refund/ack" in topics
+        assert "payment/event" in client.registered
+        assert "payment/state" in client.registered
+        for legacy in ("payment/credit", "cmd/payment/refund/ack", "payment/status"):
+            assert legacy not in client.registered
 
 
 class TestFireAndForget:
@@ -1679,8 +1614,8 @@ class TestFireAndForget:
 def _wired_vmc(products=None, *, tasks: TaskRunner | None = None):
     cfg = ConfigModel()
     cfg.physical.products = products or [
-        Product(sku="ICE-1", name="Ice Bag", price=2.5, slot=0, kind="ice"),
-        Product(sku="WTR-1", name="Water", price=1.0, slot=1, kind="water"),
+        Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0, kind="ice"),
+        Product(sku="WTR-1", name="Water", price_cents=100, slot=1, kind="water"),
     ]
     machine = Machine(config=cfg, tasks=tasks)
     vmc = machine.vmc
@@ -1711,19 +1646,25 @@ def _all_alive(monitor: HealthMonitor, machine: Machine):
     machine.on_mqtt_connection(True)
 
 
-async def _enables(published) -> list[bool]:
-    await asyncio.sleep(0)
+def accepts(machine) -> list[bool]:
+    """Every `accept` value the machine sent the MDB board in a `set_policy`
+    command (the dispatcher is the FakeDispatcher, which records each send)."""
     return [
-        p.accept
-        for t, p in published
-        if t == "cmd/payment/enable" and isinstance(p, PaymentEnableCommand)
+        params["accept"]
+        for _subsystem, command, params in machine.command_dispatcher.sent
+        if command == "set_policy"
     ]
+
+
+async def _enables(machine) -> list[bool]:
+    await asyncio.sleep(0)
+    return accepts(machine)
 
 
 async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment():
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
@@ -1744,7 +1685,7 @@ async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment()
 async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
@@ -1768,22 +1709,17 @@ async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
     _all_alive(monitor, machine)
     machine.on_mqtt_connection(False)
     assert "COM-103" in {f["code"] for f in vmc.active_faults()}
-    before = len(await _enables(published))
+    before = len(await _enables(machine))
     machine.on_mqtt_connection(True)
     assert "COM-103" not in {f["code"] for f in vmc.active_faults()}
-    assert len(await _enables(published)) == before + 1
+    assert len(await _enables(machine)) > before
 
 
-async def test_payment_status_error_feeds_availability():
+async def test_payment_state_error_feeds_availability():
     vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    await machine.telemetry.handle_payment_status(
-        "payment/status", {"device": "card_reader", "state": "error"}
-    )
-    assert "payment_devices_ready" in avail.sale_available("ice")[1]
-    signal = monitor.get_summary()["signals"]["mdb"]["card_reader"]
-    assert signal["value"] == 0.0
-    assert signal["text"] == "error"
+    set_coin_status(avail, "error")
+    assert "cash_accepting" in avail.sale_available("ice")[1]
 
 
 async def test_hardware_io_feeds_health_signal():
@@ -1824,8 +1760,8 @@ async def test_ice_maker_non_power_event_does_not_feed_compressor_signal():
 async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     cfg = ConfigModel()
     cfg.physical.products = [
-        Product(sku="ICE-1", name="Ice Bag", price=2.5, kind="ice"),
-        Product(sku="WTR-1", name="Water", price=1.0, kind="water"),
+        Product(sku="ICE-1", name="Ice Bag", price_cents=250, kind="ice"),
+        Product(sku="WTR-1", name="Water", price_cents=100, kind="water"),
     ]
     machine = Machine(config=cfg)
     machine.attach_to_loop(asyncio.get_running_loop())
@@ -1845,9 +1781,6 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     await machine.telemetry.handle_hardware_io(
         "hardware/io/fan", {"device": "fan", "state": True}
     )
-    await machine.telemetry.handle_payment_status(
-        "payment/status", {"device": "card_reader", "state": "ready"}
-    )
     await machine.telemetry.handle_ice_maker_event(
         "ice_maker/event", {"event": "power_on"}
     )
@@ -1856,7 +1789,7 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
 async def test_select_product_refused_when_kind_unavailable_names_reason():
     vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     monitor.mark_offline("ice_maker")
     messages = []
     vmc.outputs.set_message_callback(messages.append)
@@ -1868,8 +1801,8 @@ async def test_select_product_refused_when_kind_unavailable_names_reason():
 
 async def test_deposit_while_disabled_is_escrowed_and_logged():
     vmc, monitor, avail, _, machine = _wired_vmc()
-    vmc.deposit_funds(1.0, payment_method="cash_coin")
-    assert vmc.credit_escrow == 1.0
+    vmc.deposit_funds(100, payment_method="cash_coin")
+    assert vmc.credit_escrow_cents == 100
 
 
 def _boot_with(tmp_path, snap, *, tasks: TaskRunner | None = None):
@@ -1885,7 +1818,7 @@ async def test_pay_104_on_boot_leaves_payment_enabled(tmp_path):
     rec = FakeEventRecorder()
     vmc, avail, store, machine = _boot_with(tmp_path, None)
     machine.set_event_recorder(rec)
-    store.save(SessionSnapshot(state="interacting_with_user", credit_escrow=1.25))
+    store.save(SessionSnapshot(state="interacting_with_user", credit_escrow_cents=125))
     machine.set_session_store(store)
 
     assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
@@ -1912,17 +1845,17 @@ async def test_select_product_refused_while_vending_offline_but_payment_stays_on
     """
     vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
     monitor.mark_offline("vending")
 
     assert avail.payment_enabled is True
-    vmc.deposit_funds(2.00)
+    vmc.deposit_funds(200)
     vmc.select_product(vmc.products[0])
     assert vmc.selected_product is None
-    assert vmc.credit_escrow == 2.00
+    assert vmc.credit_escrow_cents == 200
     assert vmc.state == "idle"
 
 
@@ -1934,11 +1867,11 @@ async def test_deposit_while_idle_arms_session_timeout():
     runner = FakeTaskRunner()
     vmc, monitor, avail, _, machine = _wired_vmc(tasks=runner)
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
 
     assert vmc.state == "idle"
     assert not any(c.label == "session_timeout" for c in runner.scheduled)
-    vmc.deposit_funds(2.00)
+    vmc.deposit_funds(200)
 
     assert any(c.label == "session_timeout" for c in runner.scheduled)
 
@@ -1952,26 +1885,26 @@ async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
     runner = FakeTaskRunner()
     vmc, monitor, avail, published, machine = _wired_vmc(tasks=runner)
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
     monitor.mark_offline("vending")
 
     assert avail.payment_enabled is True
-    vmc.deposit_funds(2.00)
+    vmc.deposit_funds(200)
     vmc.select_product(vmc.products[0])
     assert vmc.selected_product is None
-    assert vmc.credit_escrow == 2.00
+    assert vmc.credit_escrow_cents == 200
     assert vmc.state == "idle"
 
     runner.fire("session_timeout")
     await asyncio.sleep(0)  # let the fire-and-forget refund publish run
 
-    refund_cmds = [p for t, p in published if t == "cmd/payment/refund"]
+    refund_cmds = payouts(machine)
     assert len(refund_cmds) == 1
     assert refund_cmds[0].reason == "session_timeout"
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert vmc.state == "idle"
 
 
@@ -1985,7 +1918,7 @@ async def test_expire_session_is_a_noop_while_dispensing():
     machine.set_mqtt_client(client)
     _start_dispensing(vmc, 0)
     assert vmc.state == "dispensing"
-    escrow_before = vmc.credit_escrow
+    escrow_before = vmc.credit_escrow_cents
 
     # The session timeout is cancelled synchronously on entering
     # `dispensing` (`on_dispense_product` -> `SessionTimer.cancel`), so
@@ -1999,8 +1932,8 @@ async def test_expire_session_is_a_noop_while_dispensing():
     vmc._expire_session()
 
     assert vmc.state == "dispensing"
-    assert vmc.credit_escrow == escrow_before
-    assert client.refund_commands() == []
+    assert vmc.credit_escrow_cents == escrow_before
+    assert payouts(machine) == []
 
 
 async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
@@ -2017,36 +1950,36 @@ async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
     client = RecordingClient()
     machine.set_mqtt_client(client)
 
-    vmc.credit_escrow = 0.0
+    vmc.credit_escrow_cents = 0
     vmc.error_occurred()
     await asyncio.sleep(0)
     await drain_pending(runner)  # a wrongly-sent refund would land here
     assert vmc.state == "error"
-    assert client.refund_commands() == []  # nothing to refund yet
+    assert payouts(machine) == []  # nothing to refund yet
 
-    vmc.deposit_funds(1.50)
-    assert vmc.credit_escrow == 1.50
+    vmc.deposit_funds(150)
+    assert vmc.credit_escrow_cents == 150
     assert any(c.label == "session_timeout" for c in runner.scheduled)
 
     runner.fire("session_timeout")
     await asyncio.sleep(0)
 
-    cmds = client.refund_commands()
+    cmds = payouts(machine)
     assert len(cmds) == 1
-    assert cmds[0].amount == 1.50
+    assert cmds[0].cents == 150
     assert cmds[0].reason == "session_timeout"
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert vmc.state == "error"  # still needs an admin reset_state
 
 
 async def test_hazard_fault_still_disables_payment():
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
     assert avail.payment_enabled is False
     assert avail.payment_blocking_reasons() == ["no_critical_fault"]
-    assert (await _enables(published))[-1] is False
+    assert (await _enables(machine))[-1] is False
 
 
 async def test_clean_boot_raises_nothing(tmp_path):
@@ -2058,14 +1991,14 @@ async def test_boot_with_escrow_raises_pay_104_without_blocking(tmp_path):
     rec = FakeEventRecorder()
     vmc, avail, store, machine = _boot_with(tmp_path, None)
     machine.set_event_recorder(rec)
-    store.save(SessionSnapshot(state="interacting_with_user", credit_escrow=1.25))
+    store.save(SessionSnapshot(state="interacting_with_user", credit_escrow_cents=125))
     machine.set_session_store(store)
     assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
     assert avail.payment_enabled is True
     rows = {r["name"]: r for r in avail.table()}
     assert rows["transaction_certain"]["state"] == "fail"
     assert any(
-        e[0] == "session_uncertain" and e[2]["credit_escrow"] == 1.25
+        e[0] == "session_uncertain" and e[2]["credit_escrow_cents"] == 125
         for e in rec.events
     )
     assert store.load() is not None  # kept as evidence until cleared
@@ -2075,7 +2008,10 @@ async def test_boot_mid_dispense_raises_pay_104(tmp_path):
     vmc, avail, _, machine = _boot_with(
         tmp_path,
         SessionSnapshot(
-            state="dispensing", credit_escrow=0.0, selected_sku="ICE-1", dispense_slot=0
+            state="dispensing",
+            credit_escrow_cents=0,
+            selected_sku="ICE-1",
+            dispense_slot=0,
         ),
     )
     assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
@@ -2090,7 +2026,7 @@ async def test_boot_with_corrupt_file_raises_pay_104(tmp_path):
 async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
     vmc, avail, store, machine = _boot_with(
         tmp_path,
-        SessionSnapshot(state="interacting_with_user", credit_escrow=1.0),
+        SessionSnapshot(state="interacting_with_user", credit_escrow_cents=100),
         tasks=FakeTaskRunner(),
     )
     assert vmc.clear_fault("PAY-104", by="admin") is True
@@ -2102,7 +2038,8 @@ async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
 
 async def test_clear_pay_104_fails_closed_when_evidence_file_persists(tmp_path):
     vmc, avail, store, machine = _boot_with(
-        tmp_path, SessionSnapshot(state="interacting_with_user", credit_escrow=1.0)
+        tmp_path,
+        SessionSnapshot(state="interacting_with_user", credit_escrow_cents=100),
     )
     store.clear = lambda: False
     assert vmc.clear_fault("PAY-104", by="admin") is False
@@ -2118,15 +2055,15 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     vmc, monitor, avail, published, machine = _wired_vmc(tasks=runner)
     machine.set_session_store(store)
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
 
-    vmc.deposit_funds(2.5, payment_method="cash_bill")
+    vmc.deposit_funds(250, payment_method="cash_bill")
     await runner.drain_persistence()
     snap = store.load()
-    assert snap is not None and snap.credit_escrow == 2.5
+    assert snap is not None and snap.credit_escrow_cents == 250
 
     vmc.select_product(vmc.products[0])
     runner.fire("process_payment")
@@ -2138,7 +2075,13 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
     await runner.drain_persistence()
     assert vmc.state == "idle"
-    assert store.load() is None
+    assert vmc.credit_escrow_cents == 0
+    # The board never ran the queued cash_sale (no policy ack in a unit test):
+    # the file stays as evidence, holding that and nothing else. The paid case
+    # (file gone) is test_machine_payments' snapshot-lifecycle test.
+    snap = store.load()
+    assert snap.credit_escrow_cents == 0 and snap.pending_sale_shares is None
+    assert [p["kind"] for p in snap.pending_payouts] == ["cash_sale"]
 
 
 # --- Finding A: FSM state published after the transition, not before ---
@@ -2150,7 +2093,7 @@ async def test_error_occurred_and_reset_publish_destination_state_to_availabilit
     be published to Availability."""
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     assert avail.sale_available("water")[0] is True
 
     vmc.error_occurred()
@@ -2187,12 +2130,12 @@ async def test_drain_persistence_awaits_pending_session_write(tmp_path):
     vmc, monitor, avail, published, machine = _wired_vmc()
     machine.set_session_store(store)
 
-    vmc.deposit_funds(1.0)
+    vmc.deposit_funds(100)
     await machine.drain_persistence()
 
     snap = store.load()
     assert snap is not None
-    assert snap.credit_escrow == 1.0
+    assert snap.credit_escrow_cents == 100
 
 
 async def test_cancel_pending_tasks_never_cancels_persistence(tmp_path):
@@ -2200,7 +2143,7 @@ async def test_cancel_pending_tasks_never_cancels_persistence(tmp_path):
     vmc, monitor, avail, published, machine = _wired_vmc()
     machine.set_session_store(store)
 
-    vmc.deposit_funds(1.0)
+    vmc.deposit_funds(100)
     machine.cancel_pending_tasks()
     await machine.drain_persistence()
 
@@ -2208,7 +2151,7 @@ async def test_cancel_pending_tasks_never_cancels_persistence(tmp_path):
     assert all(not t.cancelled() for t in machine.tasks.persist)
     snap = store.load()
     assert snap is not None
-    assert snap.credit_escrow == 1.0
+    assert snap.credit_escrow_cents == 100
 
 
 # --- Finding: dispensing snapshot persisted before cmd/dispense is sent ---
@@ -2240,7 +2183,7 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
     dispatcher.send = send_and_check
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
 
     vmc.process_payment()
 
@@ -2287,14 +2230,14 @@ class TestMakeIdleForService:
         client = RecordingClient()
         machine.set_mqtt_client(client)
         vmc.set_state("dispensing")
-        vmc.credit_escrow = 1.00
+        seed_credit(vmc, 100)
 
         result = vmc.make_idle_for_service()
 
         assert result is False
         assert vmc.state == "dispensing"
-        assert vmc.credit_escrow == 1.00
-        assert client.refund_commands() == []
+        assert vmc.credit_escrow_cents == 100
+        assert payouts(machine) == []
         machine.cancel_pending_tasks()
 
     async def test_interacting_with_user_refunds_and_cancels_sale(self):
@@ -2305,18 +2248,18 @@ class TestMakeIdleForService:
         machine.set_mqtt_client(client)
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
-        vmc.credit_escrow = 1.00
+        seed_credit(vmc, 100)
 
         result = vmc.make_idle_for_service()
         await asyncio.sleep(0)  # let the fire-and-forget refund publish run
 
         assert result is True
         assert vmc.state == "idle"
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert vmc.selected_product is None
-        refunds = client.refund_commands()
+        refunds = payouts(machine)
         assert len(refunds) == 1
-        assert refunds[0].amount == 1.00
+        assert refunds[0].cents == 100
         assert refunds[0].reason == "maintenance"
         machine.cancel_pending_tasks()
 
@@ -2328,7 +2271,7 @@ class TestMakeIdleForService:
         client = RecordingClient()
         machine.set_mqtt_client(client)
         assert vmc.state == "idle"
-        vmc.deposit_funds(2.00, payment_method="cash_coin")
+        vmc.deposit_funds(200, payment_method="cash_coin")
         assert any(c.label == "session_timeout" for c in runner.scheduled)
 
         result = vmc.make_idle_for_service()
@@ -2336,11 +2279,11 @@ class TestMakeIdleForService:
 
         assert result is True
         assert vmc.state == "idle"
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert not any(c.label == "session_timeout" for c in runner.scheduled)
-        refunds = client.refund_commands()
+        refunds = payouts(machine)
         assert len(refunds) == 1
-        assert refunds[0].amount == 2.00
+        assert refunds[0].cents == 200
         assert refunds[0].reason == "maintenance"
         machine.cancel_pending_tasks()
 
@@ -2351,17 +2294,17 @@ class TestMakeIdleForService:
         client = RecordingClient()
         machine.set_mqtt_client(client)
         vmc.set_state("error")
-        vmc.credit_escrow = 1.25
+        seed_credit(vmc, 125)
 
         result = vmc.make_idle_for_service()
         await asyncio.sleep(0)
 
         assert result is True
         assert vmc.state == "error"
-        assert vmc.credit_escrow == 0.0
-        refunds = client.refund_commands()
+        assert vmc.credit_escrow_cents == 0
+        refunds = payouts(machine)
         assert len(refunds) == 1
-        assert refunds[0].amount == 1.25
+        assert refunds[0].cents == 125
         assert refunds[0].reason == "maintenance"
         machine.cancel_pending_tasks()
 
@@ -2401,7 +2344,7 @@ class TestMaintenanceLease:
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
         assert vmc.state == "idle"
-        vmc.credit_escrow = 1.00
+        seed_credit(vmc, 100)
 
         granted, reason = machine.lease.begin_maintenance("user-1", "sess-1")
 
@@ -2474,17 +2417,17 @@ class TestMaintenanceLease:
         await asyncio.sleep(0)  # let the fire-and-forget publish task run
 
         assert avail.payment_enabled is False
-        enable_cmds = [p for t, p in published if t == "cmd/payment/enable"]
-        assert enable_cmds, "expected cmd/payment/enable to have been published"
-        assert enable_cmds[-1].accept is False
+        enable_cmds = accepts(machine)
+        assert enable_cmds, "expected a set_policy command to have been published"
+        assert enable_cmds[-1] is False
 
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
         await asyncio.sleep(0)
 
         assert avail.payment_enabled is True
-        enable_cmds_after = [p for t, p in published if t == "cmd/payment/enable"]
-        assert enable_cmds_after[-1].accept is True
+        enable_cmds_after = accepts(machine)
+        assert enable_cmds_after[-1] is True
 
     async def test_credit_during_lease_is_refunded_and_escrow_stays_zero(self):
         machine = make_machine(products=two_products())
@@ -2497,29 +2440,26 @@ class TestMaintenanceLease:
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        vmc.deposit_funds(1.00, payment_method="cash_coin")
+        vmc.deposit_funds(100, payment_method="cash_coin")
         await asyncio.sleep(0)
 
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
-        refund_cmds = client.refund_commands()
+        refund_cmds = payouts(machine)
         assert len(refund_cmds) == 1
-        assert refund_cmds[0].amount == 1.00
+        assert refund_cmds[0].cents == 100
         assert refund_cmds[0].reason == "maintenance"
 
         rid = refund_cmds[0].request_id
-        await vmc.on_refund_ack(
-            "cmd/payment/refund/ack",
-            {"request_id": rid, "status": "ok", "amount_returned": 1.00},
-        )
+        vmc.on_payout_paid(refund_cmds[0], 100)
 
         assert (
             "refund",
-            1.00,
+            100,
             {"request_id": rid, "reason": "maintenance"},
         ) in rec.events
         # The money must never become spendable escrow after the hold ends.
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
 
     async def test_end_maintenance_by_non_holder_is_refused(self):
@@ -2609,9 +2549,9 @@ class TestMaintenanceLease:
         assert machine.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         assert avail.payment_enabled is True
-        enable_cmds = [p for t, p in published if t == "cmd/payment/enable"]
-        assert enable_cmds, "expected cmd/payment/enable to have been published"
-        assert enable_cmds[-1].accept is True
+        enable_cmds = accepts(machine)
+        assert enable_cmds, "expected a set_policy command to have been published"
+        assert enable_cmds[-1] is True
 
     async def test_cancelled_run_still_decrements_runs_in_flight(self):
         # Reaches machine.lease.test_run()'s `finally` via a real
@@ -2703,9 +2643,7 @@ class TestMaintenanceLease:
         assert machine.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         assert avail.payment_enabled is True
-        enable_true = [
-            p for t, p in published if t == "cmd/payment/enable" and p.accept is True
-        ]
+        enable_true = [a for a in accepts(machine) if a is True]
         assert len(enable_true) == 1, (
             "expected exactly one re-enable, not a double release"
         )
@@ -2715,9 +2653,7 @@ class TestMaintenanceLease:
         # no second enable is published.
         machine.lease.release(by="stray")
         await drain_pending(runner)  # a double publish would land here
-        enable_true_after = [
-            p for t, p in published if t == "cmd/payment/enable" and p.accept is True
-        ]
+        enable_true_after = [a for a in accepts(machine) if a is True]
         assert len(enable_true_after) == 1
 
     async def test_takeover_refused_with_run_in_flight(self):
@@ -2783,8 +2719,8 @@ def _test_run_machine(
     dispatcher, which needs a valid profile for the product being sold."""
     cfg = ConfigModel()
     cfg.physical.products = products or [
-        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice"),
-        Product(sku="WATER-1", name="Water", price=1.00, slot=1, kind="water"),
+        Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0, kind="ice"),
+        Product(sku="WATER-1", name="Water", price_cents=100, slot=1, kind="water"),
     ]
     machine = Machine(config=cfg, tasks=tasks)
     machine.attach_to_loop(asyncio.get_running_loop())
@@ -2847,20 +2783,20 @@ class TestRunTestSale:
 
         # A stray non-"test" credit during the lease is still refunded,
         # not escrowed -- Task 10's existing lease branch, unchanged.
-        vmc.deposit_funds(1.00, payment_method="cash_coin")
+        vmc.deposit_funds(100, payment_method="cash_coin")
         await asyncio.sleep(0)
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
-        assert len(client.refund_commands()) == 1
-        assert client.refund_commands()[0].reason == "maintenance"
+        assert len(payouts(machine)) == 1
+        assert payouts(machine)[0].reason == "maintenance"
 
         # run_test_sale's own "test" credit is the one exception: it must
         # fall through to the normal escrow path instead of being refunded.
-        vmc.deposit_funds(1.00, payment_method="test")
+        vmc.deposit_funds(100, payment_method="test")
         await drain_pending(runner)  # a wrongly-sent refund would land here
-        assert vmc.credit_escrow == 1.00
+        assert vmc.credit_escrow_cents == 100
         assert [c.method for c in vmc.escrow_credits] == ["test"]
-        assert len(client.refund_commands()) == 1  # no new refund
+        assert len(payouts(machine)) == 1  # no new refund
 
     async def test_dispensed_test_sale_records_test_run_not_sale_or_dispense(self):
         """Reaches on_dispenser_event's DispenserOutcome.complete
@@ -2879,7 +2815,7 @@ class TestRunTestSale:
 
         vmc.process_payment()
         assert vmc.state == "dispensing"
-        assert vmc.pending_sale_shares == {"test": 2.50}
+        assert vmc.pending_sale_shares == {"test": 250}
 
         await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
@@ -2899,9 +2835,9 @@ class TestRunTestSale:
         assert test_run_events[0][2]["sku"] == "ICE-1"
         assert test_run_events[0][2]["outcome"] == "dispensed"
 
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
-        assert client.refund_commands() == []
+        assert payouts(machine) == []
         assert (vmc.sale is not None and vmc.sale.is_test) is False
         assert vmc.pending_sale_shares is None
 
@@ -2960,13 +2896,13 @@ class TestRunTestSale:
             await task
         assert vmc.state == "dispensing"
         assert vmc.sale is not None and vmc.sale.is_test is True
-        return vmc, rec, client
+        return vmc, rec, machine
 
     async def test_cancelled_mid_dispense_completion_is_still_not_a_sale(self):
         """Copilot review, PR #48: cancelling run_test_sale mid-vend must
         not reclassify the in-flight test vend as production -- a later
         `complete` report still writes neither a sale nor a dispense row."""
-        vmc, rec, client = await self._cancel_mid_dispense()
+        vmc, rec, machine = await self._cancel_mid_dispense()
 
         await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
@@ -2975,8 +2911,8 @@ class TestRunTestSale:
         assert vmc.state == "idle"
         assert rec.sales == []
         assert not any(t == "dispense" for t, *_ in rec.events)
-        assert vmc.credit_escrow == 0.0
-        assert client.refund_commands() == []
+        assert vmc.credit_escrow_cents == 0
+        assert payouts(machine) == []
 
     async def test_cancelled_mid_dispense_failure_clears_test_credit_without_refund(
         self,
@@ -2985,13 +2921,13 @@ class TestRunTestSale:
         cancelled restores the synthetic "test" credit, which must then be
         cleared directly -- never left on the machine, never refunded for
         real."""
-        vmc, rec, client = await self._cancel_mid_dispense()
+        vmc, rec, machine = await self._cancel_mid_dispense()
 
         await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "jam"})
 
         assert vmc.state != "dispensing"
-        assert client.refund_commands() == []
-        assert vmc.credit_escrow == 0.0
+        assert payouts(machine) == []
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
         assert rec.sales == []
 
@@ -3002,7 +2938,9 @@ class TestRunTestSale:
         request_refund and publish a real cmd/payment/refund."""
         machine, vmc, rec, client = _test_run_vmc(
             products=[
-                Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice")
+                Product(
+                    sku="ICE-1", name="Ice Bag", price_cents=250, slot=0, kind="ice"
+                )
             ]
         )
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
@@ -3025,8 +2963,8 @@ class TestRunTestSale:
         }  # a real fault, real lockout
 
         assert rec.sales == []
-        assert client.refund_commands() == []  # the key assertion
-        assert vmc.credit_escrow == 0.0
+        assert payouts(machine) == []  # the key assertion
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
         assert any(t == "test_run" for t, *_ in rec.events)
         # Copilot review (PR 22, id=4128088653): on_vend_failed must not
@@ -3047,8 +2985,8 @@ class TestRunTestSale:
         """
         cfg = ConfigModel()
         cfg.physical.products = [
-            Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0),
-            Product(sku="WATER-1", name="Water", price=1.00, slot=1),
+            Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0),
+            Product(sku="WATER-1", name="Water", price_cents=100, slot=1),
         ]
         machine = Machine(config=cfg)
         vmc = machine.vmc
@@ -3079,7 +3017,7 @@ class TestRunTestSale:
         # A real (non-test) failed vend on the other SKU still moves it.
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[1]
-        vmc.deposit_funds(1.00, payment_method="cash_bill")
+        vmc.deposit_funds(100, payment_method="cash_bill")
         vmc.process_payment()
         assert vmc.state == "dispensing"
         await vmc.on_dispenser_event("hardware/dispenser", {"slot": 1, "state": "jam"})
@@ -3111,8 +3049,8 @@ class TestRunTestSale:
         assert vmc.faults.lockouts == {}  # PAY-102 (vend_failed severity) never locks
 
         assert rec.sales == []
-        assert client.refund_commands() == []
-        assert vmc.credit_escrow == 0.0
+        assert payouts(machine) == []
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
         test_run_events = [e for e in rec.events if e[0] == "test_run"]
         assert len(test_run_events) == 1
@@ -3152,9 +3090,9 @@ class TestRunTestSale:
 
         assert result.outcome == "vend_failed"
         assert result.fault_code == "PAY-102"
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
-        assert client.refund_commands() == []
+        assert payouts(machine) == []
         # The dispense_timeout timer armed by DispenseCycle.start is
         # cancelled on this (earlier, dispatcher-level) failure path too.
         assert not any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
@@ -3186,12 +3124,12 @@ class TestRunTestSale:
         assert released is True
         assert machine.maintenance_hold is None
 
-        vmc.deposit_funds(1.00, payment_method="cash_coin")
-        vmc.deposit_funds(1.50, payment_method="card")
+        vmc.deposit_funds(100, payment_method="cash_coin")
+        vmc.deposit_funds(150, payment_method="card")
         vmc.select_product(vmc.products[1])  # WATER-1, price 1.00
         vmc.process_payment()
         assert vmc.state == "dispensing"
-        assert vmc.pending_sale_shares == {"cash_coin": 1.00}
+        assert vmc.pending_sale_shares == {"cash_coin": 100}
 
         await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 1, "state": "complete"}
@@ -3200,10 +3138,12 @@ class TestRunTestSale:
         assert len(rec.sales) == 1
         sku, name, slot, price, methods = rec.sales[0]
         assert sku == "WATER-1"
-        assert price == 1.00
-        assert methods == {"cash_coin": 1.00}
-        assert vmc.credit_escrow == 1.50
-        assert [c.method for c in vmc.escrow_credits] == ["card"]
+        assert price == 100
+        assert methods == {"cash_coin": 100}
+        # The 150 left over is card money: change is cash-only, so it is taken
+        # off escrow and flagged (PAY-103 non_cash_refund) rather than paid.
+        assert vmc.credit_escrow_cents == 0
+        assert vmc.faults.has(FaultCode.PAY_103)
 
     async def test_run_test_sale_publishes_real_cmd_dispense(self):
         """Round-1 fix, minor finding 1: spec §2.3's whole point is that a
@@ -3300,7 +3240,7 @@ class TestRunTestSale:
         assert raw is not None
         assert raw.error is None
         assert raw.is_test is True
-        assert raw.pending_sale_shares == {"test": 2.50}
+        assert raw.pending_sale_shares == {"test": 250}
         assert raw.is_open() is True
 
         # Simulate the crash: nothing else on vmc1 (including run_test_sale's
@@ -3352,10 +3292,10 @@ class TestRunTestSale:
         session_store.save(
             SessionSnapshot(
                 state="dispensing",
-                credit_escrow=0.0,
+                credit_escrow_cents=0,
                 selected_sku="ICE-1",
                 dispense_slot=0,
-                pending_sale_shares={"test": 2.50},
+                pending_sale_shares={"test": 250},
                 is_test=True,
             )
         )
@@ -3391,8 +3331,8 @@ class TestRunTestSale:
         vmc.set_state("interacting_with_user")
         product = vmc.products[0]  # ICE-1, price 2.50
         vmc.selected_product = product
-        vmc.deposit_funds(2.00, payment_method="cash_bill")
-        vmc.deposit_funds(0.50, payment_method="card")
+        vmc.deposit_funds(200, payment_method="cash_bill")
+        vmc.deposit_funds(50, payment_method="card")
 
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -3401,7 +3341,7 @@ class TestRunTestSale:
         raw = SessionStore(store_path).load()
         assert raw is not None
         assert raw.is_test is False
-        assert raw.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+        assert raw.pending_sale_shares == {"cash_bill": 200, "card": 50}
 
         machine.cancel_pending_tasks()  # simulate the crash
 
@@ -3413,8 +3353,8 @@ class TestRunTestSale:
         pending = machine2.pending_sale_for_recovery()
         assert pending is not None
         assert pending["sku"] == "ICE-1"
-        assert pending["methods"] == {"cash_bill": 2.00, "card": 0.50}
-        assert pending["price"] == 2.50
+        assert pending["methods"] == {"cash_bill": 200, "card": 50}
+        assert pending["price_cents"] == 250
         machine2.cancel_pending_tasks()
 
 
@@ -3543,7 +3483,7 @@ class TestRunTestSaleRunContext:
         """
         cfg = ConfigModel()
         cfg.physical.products = [
-            Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0)
+            Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0)
         ]
         machine = Machine(config=cfg)
         vmc = machine.vmc
@@ -3614,8 +3554,8 @@ def _test_run_vmc_with_availability(products=None):
     """
     cfg = ConfigModel()
     cfg.physical.products = products or [
-        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0),
-        Product(sku="WATER-1", name="Water", price=1.00, slot=1),
+        Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0),
+        Product(sku="WATER-1", name="Water", price_cents=100, slot=1),
     ]
     machine = Machine(config=cfg)
     vmc = machine.vmc
@@ -3636,7 +3576,7 @@ def _test_run_vmc_with_availability(products=None):
     avail.set_subsystem_alive("vending", True)
     avail.set_subsystem_alive("mdb", True)
     avail.set_subsystem_alive("ice_maker", True)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     avail.set_hardware_io("bin_half_full", True)
     return machine, vmc, rec, client, avail
 
@@ -3717,20 +3657,17 @@ class TestTestSaleAvailabilityExemption:
     ):
         """Requirement 4: payment_enabled is False for the WHOLE lease --
         before, during, and after a test sale runs inside it -- and
-        cmd/payment/enable(accept=False) was actually published. The
+        set_policy(accept=False) was actually sent. The
         exemption is about the sale gate only; Availability.
         test_sale_sellable never touches payment_enabled/
         payment_blocking_reasons."""
         machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
+        machine.set_command_dispatcher(FakeDispatcher())
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
-        disables = [
-            p
-            for t, p in client.published
-            if t == "cmd/payment/enable" and p.accept is False
-        ]
+        disables = [a for a in accepts(machine) if a is False]
         assert len(disables) >= 1
 
         task = asyncio.get_running_loop().create_task(
@@ -3919,7 +3856,7 @@ class TestConcurrentTestSaleGuard:
         assert vmc.test_sale_in_progress is False
         # Cancellation still clears escrow directly (never a real refund
         # command) and the per-sale flags, same as any other exit path.
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert (vmc.sale is not None and vmc.sale.is_test) is False
 
         released = machine.lease.end_maintenance("sess-1")
@@ -4017,37 +3954,31 @@ async def _vend_with_credit(runner, credit: float, price: float = 2.50):
     machine.attach_to_loop(asyncio.get_running_loop())
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = credit
+    seed_credit(vmc, round(credit * 100))
     vmc.process_payment()
     assert vmc.state == "dispensing"
     await vmc.on_dispenser_event(
         "hardware/dispenser",
         {"slot": vmc.products[0].slot, "state": "complete"},
     )
-    return vmc
+    return vmc, machine
 
 
-async def test_leftover_credit_after_vend_is_refunded_on_session_timeout():
+async def test_overpaid_vend_pays_change_at_once_and_arms_no_timer():
     runner = FakeTaskRunner()
-    vmc = await _vend_with_credit(runner, credit=5.00, price=2.50)
-
-    assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == pytest.approx(2.50)
-    assert "session_timeout" in {c.label for c in runner.scheduled}
-
-    runner.fire("session_timeout")
-    await settle()
+    vmc, machine = await _vend_with_credit(runner, credit=5.00, price=2.50)
 
     assert vmc.state == "idle"
-    assert vmc.credit_escrow == 0.0
-    (refund,) = vmc.refunds.pending.values()
-    assert refund.amount == pytest.approx(2.50)
-    assert refund.reason == "session_timeout"
+    assert vmc.credit_escrow_cents == 0
+    assert "session_timeout" not in {c.label for c in runner.scheduled}
+    (change,) = payouts(machine)
+    assert (change.cents, change.reason) == (250, "change")
+    assert change.sale_id is not None
 
 
 async def test_exact_change_vend_arms_no_session_timer():
     runner = FakeTaskRunner()
-    vmc = await _vend_with_credit(runner, credit=2.50, price=2.50)
+    vmc, machine = await _vend_with_credit(runner, credit=2.50, price=2.50)
 
     assert vmc.state == "idle"
     assert "session_timeout" not in {c.label for c in runner.scheduled}
@@ -4084,7 +4015,7 @@ async def _second_report_during_sale_write(second_state: str):
     machine.set_event_recorder(recorder)
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
     vmc.process_payment()
     assert vmc.state == "dispensing"
 
@@ -4110,7 +4041,7 @@ async def test_duplicate_complete_during_sale_write_records_one_sale():
 
     assert len(recorder.sales) == 1
     assert vmc.state == "idle"
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
 
 
 async def test_late_jam_during_sale_write_does_not_restore_credit():
@@ -4118,7 +4049,7 @@ async def test_late_jam_during_sale_write_does_not_restore_credit():
 
     assert len(recorder.sales) == 1
     assert vmc.state == "idle"
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert not vmc.faults.lockouts
     assert not [e for e in recorder.events if e[0] == "vend_failed"]
 
@@ -4135,7 +4066,7 @@ async def _vend_held_in_sale_write(runner):
     vmc.subscribe_sale_settled(lambda sale, outcome, code: outcomes.append(outcome))
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.credit_escrow = 2.50
+    seed_credit(vmc, 250)
     return machine, recorder, outcomes
 
 
@@ -4163,7 +4094,7 @@ async def test_dispense_timeout_during_sale_write_is_ignored():
     await settle()
 
     assert len(recorder.sales) == 1
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert vmc.state == "idle"
     assert not vmc.faults.lockouts
     assert not vmc.faults.has("PAY-102")
@@ -4196,7 +4127,7 @@ async def test_dispatch_failure_during_sale_write_is_ignored():
     await settle()
 
     assert len(recorder.sales) == 1
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert vmc.state == "idle"
     assert not vmc.faults.lockouts
     assert not vmc.faults.has("PAY-102")
@@ -4219,10 +4150,9 @@ class TestOnErrorTestMoney:
         await asyncio.sleep(0)
 
         assert vmc.state == "error"
-        assert vmc.credit_escrow == 0.0
+        assert vmc.credit_escrow_cents == 0
         assert vmc.escrow_credits == []
-        assert client.refund_commands() == []
-        assert vmc.refunds.pending is None or not vmc.refunds.pending
+        assert payouts(machine) == []
         assert rec.sales == []
         vmc.end_test_sale()
 
@@ -4234,19 +4164,19 @@ class TestOnErrorTestMoney:
         machine.set_mqtt_client(client)
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
-        vmc.deposit_funds(2.50, payment_method="card")
+        vmc.deposit_funds(250, payment_method="cash_coin")
         vmc.process_payment()
         assert vmc.state == "dispensing"
         await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "error"}
         )
-        assert vmc.credit_escrow == 2.50
+        assert vmc.credit_escrow_cents == 250
 
         vmc.error_occurred()
         await asyncio.sleep(0)
 
-        cmds = client.refund_commands()
-        assert len(cmds) == 1 and cmds[0].amount == 2.5
+        cmds = payouts(machine)
+        assert len(cmds) == 1 and cmds[0].cents == 250
 
     async def test_error_from_idle_without_sale_is_quiet(self):
         machine = make_machine()
@@ -4262,4 +4192,4 @@ class TestOnErrorTestMoney:
         finally:
             logger.remove(sink)
         assert not any("returned to escrow" in m or "test credit" in m for m in lines)
-        assert client.refund_commands() == []
+        assert payouts(machine) == []

@@ -2,18 +2,13 @@
 import asyncio
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from loguru import logger
 from ice_edge.payment.payment_gateway_manager import PaymentGatewayManager
-from ice_contracts.board.mqtt_messages import (
-    PaymentEvent,
-    ButtonPress,
-)
-from ice_contracts.board.vending_machine import (
-    DispenserOutcome,
-    FaultCode,
-    PaymentRefundResult,
-)
+from ice_contracts.board.mqtt_messages import ButtonPress
+from ice_contracts.board.vending_machine import DispenserOutcome, FaultCode
 from ice_common.config_model import ConfigModel, Product
+from ice_contracts.money import format_cents
 from ice_edge.faults.availability import Availability
 from ice_edge.monitoring.inventory_manager import InventoryManager
 from ice_edge.ledger.session_store import SessionSnapshot
@@ -22,7 +17,8 @@ from ice_edge.faults.fault_service import FaultService
 from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.sale.buttons import product_for_button
 from ice_edge.sale.outputs import StatusOutputs
-from ice_edge.payment.refund_protocol import PendingRefund, RefundProtocol
+from ice_edge.payment.ports import Payments, PendingPayout
+from ice_edge.sale.payout_desk import PayoutDesk
 from ice_edge.sale.sale_context import SaleContext
 from ice_edge.sale.refusal import refusal
 from ice_edge.sale.stock import draw_stock
@@ -49,13 +45,6 @@ class VMC:
 
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
-    REFUND_ACK_TIMEOUT = 10.0  # seconds to wait for cmd/payment/refund/ack
-    REFUND_MAX_ATTEMPTS = 2  # one retry with the same request_id, then PAY-103
-
-    # Amounts within half a cent are the same money (float noise). Equals
-    # EscrowLedger.TOLERANCE; kept here because callers use VMC.CREDIT_TOLERANCE.
-    CREDIT_TOLERANCE = EscrowLedger.TOLERANCE
-
     @logger.catch()
     def __init__(
         self,
@@ -63,7 +52,7 @@ class VMC:
         *,
         tasks: TaskRunner,
         escrow: EscrowLedger,
-        refunds: RefundProtocol,
+        payments: Payments,
         faults: FaultService,
         outputs: StatusOutputs,
         gate: DispenserProfileGate,
@@ -88,13 +77,13 @@ class VMC:
 
         # The in-flight sale; None when no sale is in progress.
         self._sale: SaleContext | None = None
-        # credit_escrow must always equal the sum of escrow_credits.
+        # credit_escrow_cents must always equal the sum of escrow_credits.
         self._escrow = escrow
         # One DispenseCycle per entry into 'dispensing'; None when none is in flight.
         self._dispense_factory = dispense_factory
         self._cycle: DispenseCycle | None = None
         self.last_insufficient_message = ""
-        self.last_payment_method = "Simulated Payment"
+        self.last_payment_method = "cash_coin"
 
         self._tasks = tasks
         self._session_timer = SessionTimer(
@@ -113,7 +102,8 @@ class VMC:
         ] = []
         self._faults = faults
         self._gate = gate
-        self._refunds = refunds
+        self._payments = payments
+        self._desk = PayoutDesk(escrow, payments, journal, self.raise_fault)
         # Public so tests can override.
         self.session_timeout_seconds = 180.0  # 3 minutes
         self.dispense_timeout_seconds = (
@@ -146,12 +136,11 @@ class VMC:
         return self._snapshot(state)
 
     def _snapshot(self, state: str | None = None) -> SessionSnapshot:
-        pending = self._refunds.first_request_id()
         product = self.selected_product
         effective_state = state or self.state
         return SessionSnapshot(
             state=effective_state,
-            credit_escrow=round(self.credit_escrow, 2),
+            credit_escrow_cents=self.credit_escrow_cents,
             selected_sku=product.sku if product else None,
             dispense_slot=product.slot
             if product and effective_state == "dispensing"
@@ -162,7 +151,7 @@ class VMC:
             dispense_started_at=time.time()
             if effective_state == "dispensing"
             else None,
-            pending_refund_request_id=pending,
+            pending_payouts=[asdict(p) for p in self._payments.pending_payouts()],
             credits=self._escrow.snapshot_credits(),
             pending_sale_shares=dict(self.pending_sale_shares)
             if self.pending_sale_shares is not None
@@ -184,16 +173,16 @@ class VMC:
         return self._faults
 
     # --- Escrow ledger ---
-    # Properties over `self._escrow`; the setters replace `total` and `credits`
+    # Properties over `self._escrow`; the setters replace `total_cents` and `credits`
     # independently, so the divergence guard in `EscrowLedger.consume_fifo` still works.
 
     @property
-    def credit_escrow(self) -> float:
-        return self._escrow.total
+    def credit_escrow_cents(self) -> int:
+        return self._escrow.total_cents
 
-    @credit_escrow.setter
-    def credit_escrow(self, value: float) -> None:
-        self._escrow.total = value
+    @credit_escrow_cents.setter
+    def credit_escrow_cents(self, value: int) -> None:
+        self._escrow.total_cents = value
 
     @property
     def escrow_credits(self) -> list:
@@ -207,11 +196,6 @@ class VMC:
     def escrow(self) -> EscrowLedger:
         """The escrow ledger itself."""
         return self._escrow
-
-    @property
-    def refunds(self) -> RefundProtocol:
-        """Read-only view of the refund protocol."""
-        return self._refunds
 
     # --- In-flight sale (SaleContext) ---
     # `self._sale` is replaced wholesale at each transition. `selected_product` is
@@ -267,12 +251,6 @@ class VMC:
         return self._faults.clear_fault(key, by=by)
 
     # --- MQTT inbound handlers ---
-
-    async def on_payment_credit(self, topic: str, data: dict):
-        """Handle payment credit from MDB ESP32."""
-        event = PaymentEvent.model_validate(data)
-        self._journal.payment_received(event.amount, event.method)
-        self.deposit_funds(event.amount, payment_method=event.method)
 
     async def on_button_press(self, topic: str, data: dict):
         """Handle button press from ESP32."""
@@ -362,6 +340,8 @@ class VMC:
             self._sale = sale.with_(shares=None)
         else:
             recorded = await cycle.record()
+            if recorded and sale is not None:
+                self._desk.cash_sale(sale)
             # `False` is the PAY-104 path: shares stay as the sale's only record.
             # `cycle is self._cycle` = still this sale (reset/a new customer replace it).
             if recorded and cycle is self._cycle and self._sale is not None:
@@ -431,7 +411,7 @@ class VMC:
             "selected_product": self.selected_product.name
             if self.selected_product
             else None,
-            "credit_escrow": self.credit_escrow,
+            "credit_escrow_cents": self.credit_escrow_cents,
             "last_payment_method": self.last_payment_method,
         }
 
@@ -515,9 +495,8 @@ class VMC:
         )
 
     def complete_transaction(self) -> None:
-        # Price was already deducted from escrow; leftover credit keeps the customer.
-        dest = "interacting_with_user" if self.has_credit() else "idle"
-        self._transition("dispensing", dest, self.on_complete_transaction)
+        # Price was already deducted; leftover credit is paid out as change at once.
+        self._transition("dispensing", "idle", self.on_complete_transaction)
 
     def cancel_sale(self) -> None:
         self._transition("interacting_with_user", "idle", self.on_cancel_sale)
@@ -569,22 +548,19 @@ class VMC:
                 lambda s: self._snapshot(s) if self._outputs.session_store else None
             )
 
-    def _post_dispense_dest(self) -> str:
-        """Return the FSM destination after dispensing: continue if credit remains, else idle."""
-        return "interacting_with_user" if self.credit_escrow > 0 else "idle"
-
     @logger.catch()
     def on_complete_transaction(self):
-        self._journal.completing(self.credit_escrow)
-        dest = self._post_dispense_dest()
+        self._journal.completing(self.credit_escrow_cents)
+        had_change = self.credit_escrow_cents > 0
+        sale_id = self._sale.sale_id if self._sale is not None else None
         # Clear the selection: a stale selection would let a late duplicate dispenser fault
         # refund at the old product's price.
         self.selected_product = None
-        self._outputs.display(dest)
+        self._journal.transaction_complete()
+        if had_change:
+            self.request_refund(reason="change", sale_id=sale_id)
+        self._outputs.display("idle")
         self._outputs.refresh()
-        if self.credit_escrow > 0:
-            self._session_timer.arm()  # leftover credit must expire into a refund
-        self._journal.transaction_complete(self.credit_escrow > 0)
 
     @logger.catch()
     def on_reset(self):
@@ -621,19 +597,20 @@ class VMC:
             self._cycle.cancel()
         self._cycle = None
         shares = self.pending_sale_shares
+        pieces = self._sale.pieces if self._sale is not None else None
         if self._sale is not None:
-            self._sale = self._sale.with_(shares=None)
+            self._sale = self._sale.with_(shares=None, pieces=None)
         if shares is None:
             # Unreachable guard: consume_fifo sets the shares before dispensing.
-            price = product.price if product else 0.0
+            price = product.price_cents if product else 0
             self._journal.shares_missing(price)
-            shares = {"unknown": round(price, 2)}
+            shares = {"unknown": price}
         else:
-            # Price from the shares, not product.price: the live catalog object's
+            # Price from the shares, not product.price_cents: the live catalog object's
             # price can be edited mid-dispense.
-            price = round(sum(shares.values()), 2)
+            price = sum(shares.values())
         now = time.time()
-        self._escrow.restore(shares, now, price)
+        self._escrow.restore(shares, now, price, pieces)
         is_test = self._sale is not None and self._sale.is_test
         self.selected_product = None
         self.last_insufficient_message = ""
@@ -643,6 +620,7 @@ class VMC:
         """Run the vend_failed transition, then decide: choose again, or pay out."""
         # Captured BEFORE vend_failed: on_vend_failed clears self._sale.
         is_test = self._sale is not None and self._sale.is_test
+        sale_id = self._sale.sale_id if self._sale is not None else None
         if self._sale is not None:
             self._sale = self._sale.with_(mechanism=None, request_id=None)
         self.vend_failed(code=code, outcome=outcome)
@@ -655,7 +633,9 @@ class VMC:
             self._journal.no_sellable_products()
             # Test money never leaves via a real refund; run_test_sale clears it.
             if not is_test:
-                self.request_refund(reason=code.value)
+                self.request_refund(
+                    reason="vend_failed", detail=code.value, sale_id=sale_id
+                )
             self._session_timer.cancel()
             self.set_state("idle")
             self._outputs.state_changed(self.state)
@@ -684,7 +664,10 @@ class VMC:
         if written:
             self._journal.error_during_sale_write(self.selected_product)
         elif shares := self.pending_sale_shares:
-            self._journal.error_restored(self._escrow.restore_shares(shares))
+            restored = self._escrow.restore_shares(
+                shares, sale.pieces if sale else None
+            )
+            self._journal.error_restored(restored)
         if sale is not None:
             shares_kept = sale.shares if written else None
             sale = self._sale = sale.with_(
@@ -692,7 +675,7 @@ class VMC:
             )
             if sale.is_test:  # never refund test money
                 self._journal.test_credit_cleared_on_error(self._escrow.take_all())
-        if had_credit := self.credit_escrow > 0:
+        if had_credit := self.credit_escrow_cents > 0:
             self.request_refund(reason="error")
         self._outputs.display("error")
         self._outputs.refresh()
@@ -702,35 +685,44 @@ class VMC:
             self._sale = sale.with_(settled=True)
 
     # --- Business Logic Methods ---
-    def _refund_maintenance_deposit(self, amount, payment_method) -> None:
+    def _refund_maintenance_deposit(
+        self, cents: int, payment_method, event_id: str | None
+    ) -> None:
         """Send a coin that raced the payment-disable command straight back.
 
         Trust boundary: `payment_method` is a raw MQTT string, so a spoofed "test"
         can sit in escrow during a lease, but it cannot skip the sales table:
         recording is gated on `sale.is_test`, which only `run_test_sale` sets.
         """
-        self._journal.deposit_during_maintenance(amount)
-        self._escrow.deposit(payment_method, amount, time.time())
+        self._journal.deposit_during_maintenance(cents)
+        self._escrow.deposit(payment_method, cents, time.time(), event_id)
         self.last_payment_method = payment_method
         self.request_refund(reason="maintenance")
 
-    @logger.catch()
-    def deposit_funds(self, amount, payment_method="Simulated Payment"):
-        logger.debug(f"Depositing funds: amount={amount:.2f}, method={payment_method}")
-        if amount <= 0:
-            self._journal.deposit_ignored(amount)
+    def deposit_funds(self, cents: int, payment_method="cash_coin", *, event_id=None):
+        """Credit escrow. Not wrapped in `logger.catch`: the MDB intake acks a
+        payment event only if this returns, so a failure must propagate (the
+        board then replays the event). Everything after the credit itself is
+        best-effort (`_after_deposit`) and can never undo or repeat it."""
+        logger.debug(f"Depositing funds: cents={cents}, method={payment_method}")
+        if cents <= 0:
+            self._journal.deposit_ignored(cents)
             return
         if self._in_maintenance() and payment_method != "test":
-            self._refund_maintenance_deposit(amount, payment_method)
+            self._refund_maintenance_deposit(cents, payment_method, event_id)
             return
+        self._escrow.deposit(payment_method, cents, time.time(), event_id)
+        self.last_payment_method = payment_method
+        self._after_deposit(cents, payment_method)
+
+    @logger.catch()
+    def _after_deposit(self, cents: int, payment_method) -> None:
         availability = self._availability()
         if availability and not availability.payment_enabled:
             self._journal.deposit_while_payment_disabled(
-                amount, availability.payment_blocking_reasons()
+                cents, availability.payment_blocking_reasons()
             )
-        self._escrow.deposit(payment_method, amount, time.time())
-        self.last_payment_method = payment_method
-        self._journal.deposited(amount, payment_method, self.credit_escrow)
+        self._journal.deposited(cents, payment_method, self.credit_escrow_cents)
         # Arm on every deposit, not only in interacting_with_user: credit can arrive
         # while idle (before any press, or while a soft fault refuses selections) and
         # would otherwise never be refunded (see _expire_session's idle branch).
@@ -738,47 +730,48 @@ class VMC:
         self._outputs.state_changed(self.state)
         self._outputs.refresh()
         self.send_customer_message(
-            f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}."
+            f"{format_cents(cents)} deposited. "
+            f"Current balance: {format_cents(self.credit_escrow_cents)}."
         )
 
     @logger.catch()
-    def request_refund(self, reason: str = "admin"):
-        """Pay the customer back: publish a refund command and await its ack.
+    def request_refund(
+        self,
+        reason: str = "admin",
+        *,
+        detail: str | None = None,
+        sale_id: str | None = None,
+    ):
+        """Pay the customer back: queue a cash payout on the MDB board.
 
-        This is the ONLY path that sends money out. Restoring a price to
-        escrow after a failed vend is not a refund and does not come here.
+        The ONLY path that sends money out (see `PayoutDesk.refund`);
+        restoring a price to escrow after a failed vend is not a refund.
         """
-        logger.debug(f"Requesting refund with current credit: {self.credit_escrow:.2f}")
-        if self.credit_escrow <= 0:
+        logger.debug(f"Requesting refund, credit cents: {self.credit_escrow_cents}")
+        if self.credit_escrow_cents <= 0:
             self.send_customer_message("No funds to refund.")
             return
-        amount = self._escrow.take_all()
-        pending = self._refunds.begin(amount, reason)
-        self._journal.refund_requested(
-            amount, self.last_payment_method, reason, pending.request_id
-        )
+        self._desk.refund(reason, detail, sale_id, self.last_payment_method)
         self._outputs.refresh()
 
-    async def on_refund_ack(self, topic: str, data: dict):
-        """Payment gateway acknowledged (or refused) a refund command."""
-        result = PaymentRefundResult.model_validate(data)
-        self._refunds.handle_ack(result)
+    def on_payment_lever(self) -> None:
+        """The customer pressed the coin-return lever: refund, unless a vend is running."""
+        if (
+            self.state == "dispensing"
+            or self._escrow.is_empty
+            or (self.sale is not None and self.sale.is_test)
+        ):
+            # A test sale's "test" credit is not cash: refunding it would
+            # raise PAY-103 (non_cash_refund).
+            logger.info(f"Coin-return lever ignored (state={self.state})")
+            return
+        self.request_refund(reason="customer")
 
-    def _refund_confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
-        self._outputs.persist()
+    def on_payout_paid(self, item: PendingPayout, paid_cents: int) -> None:
+        """The board confirmed (all or part of) a payout; the queue persists itself."""
         self._journal.refund_confirmed(
-            pending.request_id,
-            pending.reason,
-            amount_returned,
-            self.last_payment_method,
+            item.request_id, item.reason, paid_cents, self.last_payment_method
         )
-
-    def _refund_failed(self, pending: PendingRefund, detail: str) -> None:
-        self._outputs.persist()
-        self._journal.refund_failed(
-            pending.request_id, pending.reason, pending.amount, detail
-        )
-        self.raise_fault(FaultCode.PAY_103, outcome=detail)
 
     # --- Maintenance lease support ---
 
@@ -797,11 +790,11 @@ class VMC:
             self.request_refund(reason="maintenance")
             self.cancel_sale()
         elif self.state == "idle":
-            if not self._escrow.is_empty_within_tolerance:
+            if not self._escrow.is_empty:
                 self.request_refund(reason="maintenance")
             self._session_timer.cancel()
         elif self.state == "error":
-            if not self._escrow.is_empty_within_tolerance:
+            if not self._escrow.is_empty:
                 self.request_refund(reason="maintenance")
         return True
 
@@ -831,7 +824,7 @@ class VMC:
             self._sale = SaleContext(
                 product=product, is_test=True, started_at=time.time()
             )
-            self.deposit_funds(round(product.price, 2), payment_method="test")
+            self.deposit_funds(product.price_cents, payment_method="test")
             self.select_product(product)
         except BaseException:
             self._escrow.take_all()
@@ -855,9 +848,9 @@ class VMC:
         self._test_sale_in_progress = False
 
     @logger.catch()
-    def initiate_virtual_payment(self, amount):
+    def initiate_virtual_payment(self, amount_cents: int):
         """Show the next virtual-payment gateway's QR code to the customer."""
-        prompt = self.payment_gateway_manager.next_payment_prompt(amount)
+        prompt = self.payment_gateway_manager.next_payment_prompt(amount_cents)
         if prompt is None:
             self.send_customer_message("Virtual payment is currently unavailable.")
             return
@@ -897,7 +890,7 @@ class VMC:
             self.start_interaction()
             self._payment_retry.arm()
         elif self.state == "interacting_with_user":
-            self.initiate_virtual_payment(self.selected_product.price)
+            self.initiate_virtual_payment(self.selected_product.price_cents)
             self._payment_retry.arm()
         self._outputs.refresh()
 
@@ -925,15 +918,15 @@ class VMC:
                 self._outputs.refresh()
             return
 
-        price = self.selected_product.price if self.selected_product else 0
-        if self.credit_escrow >= price:
-            self._journal.payment_sufficient(
-                self.credit_escrow, price, self.selected_product
-            )
-            self._sale = self._sale.with_(shares=self._escrow.consume_fifo(price))
-            self.credit_escrow -= price
+        price = self.selected_product.price_cents
+        escrow = self.credit_escrow_cents
+        if escrow >= price:
+            self._journal.payment_sufficient(escrow, price, self.selected_product)
+            shares, pieces = self._escrow.consume_fifo_pieces(price)
+            self._sale = self._sale.with_(shares=shares, pieces=tuple(pieces))
+            self.credit_escrow_cents -= price
             logger.debug(
-                f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f} "
+                f"Deducted price from escrow. New escrow cents: {self.credit_escrow_cents} "
                 f"(shares: {self.pending_sale_shares})"
             )
             self.dispense_product()
@@ -941,13 +934,11 @@ class VMC:
             self._outputs.refresh()
             self.last_insufficient_message = ""
         else:
-            required = price - self.credit_escrow
-            message = (
-                f"Insufficient funds. Please insert an additional ${required:.2f}."
-            )
+            required = price - escrow
+            message = f"Insufficient funds. Please insert an additional {format_cents(required)}."
             if message != self.last_insufficient_message:
                 self._journal.payment_insufficient(
-                    self.credit_escrow, price, self.selected_product, required, message
+                    escrow, price, self.selected_product, required, message
                 )
                 self.last_insufficient_message = message
             self._payment_retry.arm(5.0)
@@ -966,9 +957,9 @@ class VMC:
         state = self.state
         if state == "dispensing":
             return
-        if state != "interacting_with_user" and self.credit_escrow <= 0:
+        if state != "interacting_with_user" and self.credit_escrow_cents <= 0:
             return
-        self._journal.session_timeout(self.credit_escrow, state)
+        self._journal.session_timeout(self.credit_escrow_cents, state)
         self.request_refund(reason="session_timeout")
         self._drop_sale()
         if state == "interacting_with_user":

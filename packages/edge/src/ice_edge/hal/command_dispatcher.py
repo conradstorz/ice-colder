@@ -58,7 +58,7 @@ from ice_contracts.board.vending_machine import DispenserOutcome
 # and never resolves a completion-wait.
 _DISPENSE_TERMINAL_STATES = frozenset(o.value for o in DispenserOutcome)
 
-# Bound on _early_completions (see CommandDispatcher._resolve_completion),
+# Bound on _early_completions (see CommandDispatcher.complete),
 # mirroring the simulators' own IDEMPOTENCY_CACHE_SIZE.
 _EARLY_COMPLETIONS_MAX = 32
 
@@ -92,6 +92,13 @@ class CommandTimeout(Exception):
             f"No ack from subsystem={subsystem!r} for command={command!r} "
             "after all attempts"
         )
+
+
+class CommandNotSent(CommandTimeout):
+    """Subclass of ``CommandTimeout`` raised when nothing was published at all
+    (broker disconnected, or no dispatcher attached yet): the subsystem
+    provably never saw the command, so a caller may treat a retry as a first
+    send. Existing ``except CommandTimeout`` handlers keep working."""
 
 
 class CompletionTimeout(Exception):
@@ -155,7 +162,7 @@ class CommandDispatcher:
         # vending simulator's ice_bin_empty fault path, which has no
         # `await asyncio.sleep` on its abort branch at all) can complete
         # inside that gap. Bounded like the simulators' own idempotency
-        # cache; see _resolve_completion.
+        # cache; see complete.
         self._early_completions: OrderedDict[str, CommandAck] = OrderedDict()
         self._mqtt.register("cmd/+/ack", self._on_ack)
         self._mqtt.register("hardware/dispenser", self._on_dispenser_report)
@@ -183,7 +190,7 @@ class CommandDispatcher:
         # only starts listening for completion after the accept ack has
         # already resolved self._pending and popped it.
         if ack.phase == "completed":
-            self._resolve_completion(ack.request_id, ack)
+            self.complete(ack.request_id, ack)
 
     async def _on_dispenser_report(self, topic_suffix: str, payload: dict) -> None:
         """Completion signal for the command-channel `dispense` (completion
@@ -195,7 +202,7 @@ class CommandDispatcher:
         `CommandDispatcher.send()`, never `send_and_await_completion()` --
         it never awaits completion, only the accepted ack -- so nothing is
         ever listening in `self._pending_completions` for that
-        `request_id` when its terminal report arrives. `_resolve_completion`
+        `request_id` when its terminal report arrives. `complete`
         stashes it in `self._early_completions` (bounded, oldest evicted
         first) instead, where it simply ages out unread; this handler is a
         pure addition alongside the VMC's own, pre-existing
@@ -227,9 +234,14 @@ class CommandDispatcher:
             detail=detail,
             phase="completed",
         )
-        self._resolve_completion(request_id, ack)
+        self.complete(request_id, ack)
 
-    def _resolve_completion(self, request_id: str, ack: CommandAck) -> None:
+    def complete(self, request_id: str, result: CommandAck) -> None:
+        """Resolve a pending send_and_await_completion for request_id, or
+        buffer the result (bounded) if nobody is waiting yet. Public so
+        out-of-band completions (e.g. payment payout_result events) can
+        resolve a wait."""
+        ack = result
         future = self._pending_completions.get(request_id)
         if future is not None and not future.done():
             future.set_result(ack)
@@ -271,7 +283,7 @@ class CommandDispatcher:
                 f"CommandDispatcher: broker not connected; refusing to send "
                 f"{command!r} to {subsystem!r}"
             )
-            raise CommandTimeout(subsystem, command)
+            raise CommandNotSent(subsystem, command)
 
         request_id = request_id or uuid.uuid4().hex
         cmd = SubsystemCommand(

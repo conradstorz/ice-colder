@@ -25,9 +25,6 @@ from ice_contracts.board.mqtt_messages import (
     DisplayCommand,
     DisplayMode,
     DispenserStatus,
-    PaymentEnableCommand,
-    PaymentEvent,
-    PaymentStatus,
     SensorReading,
     SubsystemHeartbeat,
     VMCAlert,
@@ -46,11 +43,6 @@ class TestInboundSchemas:
         assert r.unit == "C"
         assert isinstance(r.timestamp, datetime)
 
-    def test_payment_event_required_fields(self):
-        e = PaymentEvent(amount=1.25, method="cash")
-        assert e.amount == 1.25
-        assert e.method == "cash"
-
     def test_button_press_defaults(self):
         b = ButtonPress(button="button_ice")
         assert b.action == "pressed"
@@ -59,10 +51,6 @@ class TestInboundSchemas:
         d = DispenserStatus(slot=0, state="complete")
         assert d.slot == 0
         assert d.state == "complete"
-
-    def test_payment_status(self):
-        p = PaymentStatus(device="coin_acceptor", state="ready")
-        assert p.device == "coin_acceptor"
 
     def test_heartbeat_defaults(self):
         h = SubsystemHeartbeat(subsystem="mdb")
@@ -77,10 +65,6 @@ class TestOutboundSchemas:
         assert c.slot == 3
         assert c.mechanism == "bagged_ice"
 
-    def test_payment_enable_command(self):
-        c = PaymentEnableCommand(accept=True)
-        assert c.accept is True
-
     def test_display_command_modes(self):
         for mode in DisplayMode:
             c = DisplayCommand(mode=mode)
@@ -90,7 +74,7 @@ class TestOutboundSchemas:
 class TestStatusSchemas:
     def test_vmc_status_defaults(self):
         s = VMCStatus(state="idle", version="t")
-        assert s.credit_escrow == 0.0
+        assert s.credit_escrow_cents == 0
         assert s.selected_product is None
         assert s.uptime_seconds == 0
 
@@ -104,14 +88,14 @@ class TestStatusSchemas:
         s = VMCStatus(
             state="dispensing",
             version="t",
-            credit_escrow=2.50,
+            credit_escrow_cents=250,
             selected_product="Ice 10lb",
             uptime_seconds=300,
         )
         data = s.model_dump()
         s2 = VMCStatus.model_validate(data)
         assert s2.state == "dispensing"
-        assert s2.credit_escrow == 2.50
+        assert s2.credit_escrow_cents == 250
 
 
 # ── Topic matching tests ──────────────────────────────────────
@@ -421,12 +405,22 @@ def _make_machine():
     return Machine(config=config)
 
 
+def _coin_event(cents, seq=1, boot="boot-0001"):
+    return {
+        "event_id": f"evt-{boot}-{seq:04d}",
+        "boot_id": boot,
+        "seq": seq,
+        "ts": "2026-10-30T12:00:00Z",
+        "event": {"kind": "coin_accepted", "cents": cents, "routed": "tubes"},
+    }
+
+
 class TestVMCMQTTWiring:
     def test_set_mqtt_client_registers_handlers(self):
         machine = _make_machine()
         mock_client = MagicMock()
         machine.set_mqtt_client(mock_client)
-        assert mock_client.register.call_count == 12
+        assert mock_client.register.call_count == 11
 
     def test_publish_status_without_client_does_nothing(self):
         machine = _make_machine()
@@ -449,17 +443,16 @@ class TestVMCMQTTWiring:
         machine.attach_to_loop(loop)
         vmc.start_interaction()
 
-        await vmc.on_payment_credit(
-            "payment/credit", {"amount": 2.50, "method": "card"}
-        )
-        assert vmc.credit_escrow == 2.50
-        assert vmc.last_payment_method == "card"
+        await machine.gateway.intake.handle("payment/event", _coin_event(250))
+        assert vmc.credit_escrow_cents == 250
+        assert vmc.last_payment_method == "cash_coin"
+        assert vmc.escrow_credits[0].event_id == "evt-boot-0001-0001"
 
     @pytest.mark.asyncio
     async def test_handle_mqtt_button_selects_product(self):
         config = ConfigModel()
         config.physical.products = [
-            Product(sku="T-1", name="Test", price=1.0, button="button_ice")
+            Product(sku="T-1", name="Test", price_cents=100, button="button_ice")
         ]
         machine = Machine(config=config)
         vmc = machine.vmc

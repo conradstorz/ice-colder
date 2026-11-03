@@ -100,7 +100,7 @@ async def update_placement(
     # change through, regardless of what a hostile form body contains
     # (part 1's a2b8829).
     slot_ok = update_product(
-        context.config, sku, product.name, product.price, slot=slot, kind=None
+        context.config, sku, product.name, product.price_cents, slot=slot, kind=None
     )
     if not slot_ok:
         # update_product returns False when the requested slot is

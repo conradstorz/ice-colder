@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
+from ice_contracts.money import format_cents
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
@@ -34,7 +35,7 @@ async def products_list(request: Request):
         {
             "sku": p.sku,
             "name": p.name,
-            "price": p.price,
+            "price_cents": p.price_cents,
             "slot": p.slot,
             "kind": p.kind,
             "count": _inventory_count(p.sku),
@@ -69,7 +70,7 @@ async def product_detail(request: Request, sku: str):
             "title": "Catalog",
             "url": f"/products/{sku}/catalog",
             "icon": "products",
-            "context": f"${product.price:.2f} · {product.kind}",
+            "context": f"{format_cents(product.price_cents)} · {product.kind}",
             "enabled": Permission.edit_catalog in perms,
             "coming_soon": False,
         },

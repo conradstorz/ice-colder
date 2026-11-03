@@ -86,7 +86,7 @@ def _latest_cash_collection_row(db_path: str):
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.execute(
-            "SELECT id, ts, expected_cash FROM cash_collections "
+            "SELECT id, ts, expected_cash_cents FROM cash_collections "
             "ORDER BY id DESC LIMIT 1"
         )
         return cursor.fetchone()
@@ -215,19 +215,19 @@ async def collect_confirm(
     recorder or an unreadable database degrades to wording without a
     figure rather than failing the confirm."""
     is_confirming = confirming != "false"
-    expected_cash = None
+    expected_cash_cents = None
     if is_confirming and context.event_recorder:
         try:
-            expected_cash = await asyncio.to_thread(
+            expected_cash_cents = await asyncio.to_thread(
                 reports.cash_since_last_collection, context.event_recorder
             )
         except sqlite3.Error:
-            expected_cash = None
+            expected_cash_cents = None
     return templates.TemplateResponse(
         request,
         "partials/collect_cash_button.html",
         context.template_context(
-            request, confirming=is_confirming, expected_cash=expected_cash
+            request, confirming=is_confirming, expected_cash_cents=expected_cash_cents
         ),
     )
 
@@ -316,7 +316,7 @@ async def collect_cash(request: Request):
             detail="Cash collection was not recorded (writer thread not running)",
         )
 
-    _row_id, ts, expected_cash = row
+    _row_id, ts, expected_cash_cents = row
 
     # Format the recorded time as a human-readable string.
     recorded_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
@@ -327,6 +327,6 @@ async def collect_cash(request: Request):
         context.template_context(
             request,
             recorded_time=recorded_time,
-            expected_cash=expected_cash,
+            expected_cash_cents=expected_cash_cents,
         ),
     )

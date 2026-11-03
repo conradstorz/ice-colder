@@ -77,7 +77,20 @@ from ice_contracts.board.common import ChannelDescriptor, _utc_now
 # could not be written; KPIs and history may be incomplete) and DATA-106
 # (inventory counts could not be saved; stock levels revert on restart).
 # Both alert-class, not payment-blocking.
-CONTRACT_VERSION = "2.3.0"
+#
+# 2.3.0 -> 2.4.0 (2026-10-30): minor bump, additive. VMCStatus gains
+# credit_escrow_cents (integer cents); the float credit_escrow stays,
+# deprecated, and is removed in 3.0.0.
+#
+# 2.4.0 -> 3.0.0 (2026-10-30): major bump, breaking. The legacy payment
+# models and topics are removed: PaymentEvent, PaymentStatus,
+# PaymentEnableCommand, PaymentRefundCommand, PaymentRefundResult,
+# RefundStatus and VMCStatus.credit_escrow (the deprecated dollar float);
+# the topics payment/credit, payment/status, cmd/payment/enable,
+# cmd/payment/refund and cmd/payment/refund/ack. Payments are
+# ice_contracts.board.payment. The vending board no longer advertises the
+# payment/enable command.
+CONTRACT_VERSION = "3.0.0"
 
 
 class DispenserOutcome(str, Enum):
@@ -498,49 +511,6 @@ def fault_for_outcome(mechanism: str, outcome: DispenserOutcome) -> FaultCode:
         raise KeyError(
             f"no fault mapped for mechanism {mechanism!r}, outcome {outcome!r}"
         ) from None
-
-
-class RefundStatus(str, Enum):
-    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3)."""
-
-    ok = "ok"
-    failed = "failed"
-    unsupported = "unsupported"
-
-
-class PaymentRefundCommand(BaseModel):
-    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
-
-    VMC -> payment gateway, published on cmd/payment/refund (QoS 1)."""
-
-    request_id: str = Field(
-        ...,
-        min_length=8,
-        max_length=64,
-        description="Opaque correlation key, unique per refund; UUID4 hex by the VMC",
-    )
-    amount: float = Field(..., gt=0, description="Amount to pay out, USD")
-    reason: str = Field(
-        ...,
-        description="A FaultCode value, or 'session_timeout', 'cancel', 'error', 'admin'",
-    )
-    timestamp: datetime = Field(default_factory=_utc_now)
-
-
-class PaymentRefundResult(BaseModel):
-    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
-
-    Payment gateway -> VMC, published on cmd/payment/refund/ack (QoS 1).
-
-    Exactly one per command; a repeated request_id is answered with the
-    previously computed result and never paid twice.
-    """
-
-    request_id: str = Field(..., description="Echoed from the command")
-    status: RefundStatus
-    amount_returned: float = Field(0.0, ge=0, description="Amount actually paid out")
-    detail: Optional[str] = Field(None, description="e.g. 'changer_empty'")
-    timestamp: datetime = Field(default_factory=_utc_now)
 
 
 class SubsystemCapabilities(BaseModel):

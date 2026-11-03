@@ -2,12 +2,13 @@
 and owns the service wiring.
 
 `StatusOutputs`, `FaultRegistry`/`FaultService`, `EscrowLedger`,
-`RefundProtocol`, `SessionRecovery`, `TelemetryRouter`, `MaintenanceLease`
+`MdbGateway`, `SessionRecovery`, `TelemetryRouter`, `MaintenanceLease`
 and `DispenserProfileGate` were each carved off the VMC god object in turn
 (see `CLAUDE.md`'s "FSM Core" section); `Machine` builds every one of them
 *itself*, in the order below, then builds the `VMC` and hands most of them
 in (`escrow`, `refunds`, `faults`, `outputs`, `gate` -- all required
-keyword-only `VMC.__init__` parameters) so the VMC stores and uses the exact
+keyword-only `VMC.__init__` parameters; `payments` is a forwarder onto the
+`MdbGateway`, which is built after the VMC) so the VMC stores and uses the exact
 same objects rather than building its own. `lease` is the one exception: the
 VMC never holds a reference to the `MaintenanceLease` collaborator at all,
 only the `in_maintenance` boolean callable built from it below. `recovery`
@@ -22,11 +23,10 @@ after construction, via `Machine.set_availability`/`set_inventory_manager`.
 A handful of closures a collaborator needs are irreducibly about the live
 VMC's FSM state or its own private methods -- the FSM's current state
 (`outputs.fsm_state`, `faults.fsm_state`), a full session snapshot
-(`outputs.snapshot`, which reads `self.state`/`self.credit_escrow`/
-`self.selected_product`/the in-flight sale), and the refund protocol's
-terminal callbacks (`refunds.on_confirmed`/`on_failed`, which are VMC's own
-`_refund_confirmed`/`_refund_failed` -- transaction-log lines, event-recorder
-rows, and the customer-facing message) and the maintenance lease's grant/
+(`outputs.snapshot`, which reads `self.state`/`self.credit_escrow_cents`/
+`self.selected_product`/the in-flight sale), the MDB gateway's deposit,
+lever and paid callbacks (the VMC's `deposit_funds`, `on_payment_lever`,
+`on_payout_paid`) and the maintenance lease's grant/
 release callbacks (`lease.on_granted`/`on_released`, which raise/clear
 SVC-102 through the VMC's own `raise_fault`/`clear_fault`). `Machine` builds
 every one of these collaborators *before* `self._vmc` exists (the `VMC(...)`
@@ -48,10 +48,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import asdict
+from typing import Any
 
 from loguru import logger
 
 from ice_common.config_model import ConfigModel
+from ice_contracts.money import format_cents
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.hal import mqtt_inbound
 from ice_edge.vend.dispense_cycle import DispenseCycle
@@ -64,7 +66,16 @@ from ice_edge.faults.input_faults import InputFaults
 from ice_edge.monitoring.health_telemetry import HealthTelemetry
 from ice_edge.sale.maintenance_lease import MaintenanceHold, MaintenanceLease
 from ice_edge.sale.outputs import StatusOutputs
-from ice_edge.payment.refund_protocol import RefundProtocol
+from ice_contracts.board.payment import (
+    PAYMENT_EVENT_ACK_TOPIC,
+    PaymentEventAck,
+)
+from ice_edge.hal.command_dispatcher import CommandNotSent
+from ice_edge.ledger import payment_cursor
+from ice_edge.ledger.payment_cursor import PaymentCursorStore
+from ice_edge.faults.fault_service import FaultChange
+from ice_edge.payment.mdb import MdbGateway
+from ice_edge.payment.ports import Payments, PendingPayout, cash_cents, cash_share
 from ice_edge.sale.sale_journal import SaleJournal
 from ice_edge.ledger.session_recovery import (
     SALE_MATCH_MARGIN_SECONDS,
@@ -88,6 +99,62 @@ from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 # later in main().
 _txn_log = logger.bind(transaction=True)
 
+#: Failure sources that keep DATA-104 raised; it clears only when none remains.
+_SNAPSHOT_SOURCE = "snapshot"
+_CURSOR_SOURCE = "cursor"
+
+
+class _LateDispatcher:
+    """The ``cmd/mdb`` dispatcher handed to the gateway before the real
+    `CommandDispatcher` exists (`set_command_dispatcher` attaches it later).
+    With none attached a send reads as an unanswered command, which every
+    gateway caller already handles by retrying."""
+
+    def __init__(self, get: Callable[[], Any]) -> None:
+        self._get = get
+
+    def _live(self, command: str) -> Any:
+        dispatcher = self._get()
+        if dispatcher is None:
+            raise CommandNotSent("mdb", command)
+        return dispatcher
+
+    async def send(self, subsystem, command, params=None, request_id=None):
+        return await self._live(command).send(
+            subsystem, command, params, request_id=request_id
+        )
+
+    async def send_and_await_completion(
+        self, subsystem, command, params=None, request_id=None
+    ):
+        return await self._live(command).send_and_await_completion(
+            subsystem, command, params, request_id=request_id
+        )
+
+    def complete(self, request_id, ack) -> None:
+        dispatcher = self._get()
+        if dispatcher is not None:
+            dispatcher.complete(request_id, ack)
+
+
+class _GatewayPayments:
+    """`Payments` forwarder: the VMC is built before the gateway it pays through."""
+
+    def __init__(self, get: Callable[[], Payments]) -> None:
+        self._get = get
+
+    def pay_out(self, cents, reason, sale_id) -> None:
+        self._get().pay_out(cents, reason, sale_id)
+
+    def cash_sale(self, cents, sale_id) -> None:
+        self._get().cash_sale(cents, sale_id)
+
+    def pending_payouts(self) -> list[PendingPayout]:
+        return self._get().pending_payouts()
+
+    def board_boot_id(self) -> str | None:
+        return self._get().board_boot_id()
+
 
 class Machine:
     """Builds the VMC and every collaborator; owns the service wiring that
@@ -96,8 +163,24 @@ class Machine:
     *a: self.vmc.<method>(*a)` pattern.
     """
 
-    def __init__(self, config: ConfigModel, *, tasks: TaskRunner | None = None) -> None:
+    def __init__(
+        self,
+        config: ConfigModel,
+        *,
+        tasks: TaskRunner | None = None,
+        payments: Payments | None = None,
+        payment_cursor_store: PaymentCursorStore | None = None,
+    ) -> None:
+        """`payments` replaces the MDB gateway as the VMC's payout path (a
+        seam for tests; the gateway is built and wired regardless)."""
         self._config = config
+        # True while session.json is crash evidence the operator must see
+        # (an uncertain boot snapshot, or a sale recorded nowhere durable).
+        # A runtime PAY-104 (escrow mismatch, cash_sale outcome) does not
+        # set it: persistence continues and clearing never deletes the file.
+        self._evidence_held = False
+        self._data104_sources: set[str] = set()
+        self._mdb_alive = False
         self._tasks = tasks if tasks is not None else TaskRunner()
         self._escrow = EscrowLedger()
         self._registry = FaultRegistry(self._product_name)
@@ -115,10 +198,11 @@ class Machine:
         self._outputs = StatusOutputs(
             snapshot=lambda state: self.vmc.snapshot(state),
             fsm_state=lambda: self.vmc.state,
-            credit_escrow=lambda: self._escrow.total,
+            credit_escrow_cents=lambda: self._escrow.total_cents,
             selected_product=lambda: self.vmc.selected_product,
-            pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
+            evidence_held=lambda: self._evidence_held,
             tasks=self._tasks,
+            on_evidence_released=self._release_evidence,
             on_persist_failed=self._raise_session_unsaved,
             on_persist_ok=self._clear_session_unsaved,
         )
@@ -142,14 +226,6 @@ class Machine:
             ),
             fsm_state=lambda: self.vmc.state,
         )
-        self._refunds = RefundProtocol(
-            publish=self._outputs.publish_refund,
-            schedule=self._tasks.schedule,
-            on_confirmed=lambda *a: self.vmc._refund_confirmed(*a),
-            on_failed=lambda *a: self.vmc._refund_failed(*a),
-            ack_timeout=lambda: self.vmc.REFUND_ACK_TIMEOUT,
-            max_attempts=lambda: self.vmc.REFUND_MAX_ATTEMPTS,
-        )
         self._gate = DispenserProfileGate(
             products=lambda: self._config.products,
             is_locked=self._faults.is_locked,
@@ -167,13 +243,13 @@ class Machine:
             takeover_idle=lambda: self.lease.MAINTENANCE_TAKEOVER_IDLE_SECONDS,
             sweep_seconds=lambda: self.lease.STANDBY_SWEEP_SECONDS,
             fsm_state=lambda: self.vmc.state,
-            escrow_is_empty=lambda: self.escrow.is_empty_within_tolerance,
+            escrow_is_empty=lambda: self.escrow.is_empty,
             make_idle_for_service=lambda: self.vmc.make_idle_for_service(),
         )
         self._recovery = SessionRecovery(
             store=lambda: self._outputs.session_store,
             product_name=self._product_name,
-            pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
+            evidence_held=lambda: self._evidence_held,
             sale_recorded=self._sale_recorded,
             match_window_seconds=lambda: (
                 self._config.physical.dispense_timeout_seconds
@@ -193,9 +269,6 @@ class Machine:
         )
         self._faults.subscribe_fault_change(self._ice_policy.on_fault_change)
         self._telemetry.subscribe_hardware_io(self._health_telemetry.on_hardware_io)
-        self._telemetry.subscribe_payment_status(
-            self._health_telemetry.on_payment_status
-        )
         self._telemetry.subscribe_sensor(self._health_telemetry.on_sensor)
         self._telemetry.subscribe_heartbeat(self._health_telemetry.on_heartbeat)
         self._telemetry.subscribe_ice_maker_event(
@@ -238,16 +311,23 @@ class Machine:
                 else None
             ),
             tasks=self._tasks,
+            hold_evidence=self._hold_evidence,
             timeout_seconds=lambda: self.vmc.dispense_timeout_seconds,
             on_failed=self.vmc.on_dispense_failed,
             on_request_id=self.vmc.note_dispense_request,
         )
 
+        self._payments: Payments = payments or _GatewayPayments(lambda: self._gateway)
+        # Recovered sales whose cash_sale this process already queued (a retried
+        # "Record as sale" must not tell the board twice).
+        self._recovered_cash_sales: set[tuple] = set()
+        # The uncertain boot snapshot, held read-only until PAY-104 resolves.
+        self._boot_snapshot: SessionSnapshot | None = None
         self._vmc = VMC(
             config,
             tasks=self._tasks,
             escrow=self._escrow,
-            refunds=self._refunds,
+            payments=self._payments,
             faults=self._faults,
             outputs=self._outputs,
             gate=self._gate,
@@ -269,6 +349,107 @@ class Machine:
             recorder=lambda: self.event_recorder,
             tasks=self._tasks,
         )
+
+        self._gateway = self._build_gateway(
+            payment_cursor_store or PaymentCursorStore(payment_cursor.CURSOR_PATH)
+        )
+        self._faults.subscribe_fault_change(self._on_fault_change)
+        self._vmc.subscribe_state_change(self._on_fsm_state)
+
+    def _build_gateway(self, cursor: PaymentCursorStore) -> MdbGateway:
+        """Wire the MDB gateway's callables; every one is read lazily, so the
+        VMC and the late-attached services may follow."""
+
+        def record_event(kind: str, cents: int, metadata: dict | None) -> None:
+            if self._event_recorder is not None:
+                self._event_recorder.record(kind, value=cents, metadata=metadata)
+
+        def deposit(cents: int, method: str, event_id: str) -> None:
+            self._journal.payment_received(cents, method)
+            self._vmc.deposit_funds(cents, method, event_id=event_id)
+
+        def payment_enabled() -> bool:
+            availability = self._outputs.availability
+            return availability is not None and availability.payment_enabled
+
+        return MdbGateway(
+            dispatcher=_LateDispatcher(lambda: self._command_dispatcher),
+            config=lambda: self._config.payment.mdb.policy,
+            payment_enabled=payment_enabled,
+            tasks=self._tasks,
+            faults=self._faults,
+            board_alive=lambda: self._mdb_alive,
+            availability=lambda: self._outputs.availability,
+            deposit=deposit,
+            persist_session=self._persist_session,
+            on_lever=lambda: self._vmc.on_payment_lever(),
+            message=self._outputs.message,
+            journal=self._journal.payment_event,
+            record_event=record_event,
+            on_paid=lambda item, paid: self._vmc.on_payout_paid(item, paid),
+            on_changed=self._outputs.persist,
+            on_cursor_saved=lambda ok: self._set_data104_source(_CURSOR_SOURCE, not ok),
+            fsm_idle=lambda: self._vmc.state == "idle",
+            pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
+            edge_cash_escrow=lambda boot: cash_cents(self._escrow.credits, boot),
+            publish_ack=self._publish_event_ack,
+            cursor=cursor,
+        )
+
+    async def _persist_session(self) -> None:
+        """Await the live snapshot to disk through the guarded save path, so a
+        deposit is on disk before its payment event is acked."""
+        await self._outputs.save_snapshot_async(self._vmc.snapshot())
+
+    def _publish_event_ack(self, ack: PaymentEventAck) -> None:
+        client = self._outputs.mqtt
+        if client is None or self._tasks.loop is None:
+            # Checked before publish() is called: no coroutine is created that
+            # nothing would ever await.
+            logger.warning("No MQTT client or event loop; payment event ack not sent")
+            return
+        self._tasks.fire_and_forget(client.publish(PAYMENT_EVENT_ACK_TOPIC, ack))
+
+    def _on_fault_change(self, change: FaultChange) -> None:
+        if change.action == "cleared" and change.code is FaultCode.PAY_104:
+            # Whatever path resolved PAY-104 (Record as sale, Discard, Clear):
+            # re-queue the boot snapshot's unconfirmed payouts / cash_sales
+            # (same request_ids; the board dedupes) BEFORE reconciliation is
+            # released, so the queue is non-idle when it evaluates and the
+            # sale's price is never paid out as an excess.
+            self._requeue_boot_payouts()
+        if change.action == "cleared" and change.code is FaultCode.PAY_101:
+            self._gateway.on_pay101_cleared()
+        else:
+            self._gateway.reconciler.maybe_run()
+
+    def _requeue_boot_payouts(self) -> None:
+        snap, self._boot_snapshot = self._boot_snapshot, None
+        if snap is None or not snap.pending_payouts:
+            return
+        items = []
+        for d in snap.pending_payouts:
+            try:
+                items.append(PendingPayout(**d))
+            except TypeError:
+                logger.error(f"dropping malformed pending payout {d!r}")
+                self._faults.raise_fault(
+                    FaultCode.PAY_103, outcome=f"invalid_pending:{d.get('request_id')}"
+                )
+        self._gateway.seed_payouts(items)
+
+    def _on_fsm_state(self, _state: str) -> None:
+        self._gateway.reconciler.maybe_run()
+
+    def _on_liveness(self, subsystem, alive: bool) -> None:
+        """Health-monitor liveness: remember the MDB board's, then fault on it."""
+        if subsystem == "mdb":
+            self._mdb_alive = alive
+        self._faults.on_subsystem_liveness(subsystem, alive)
+        if subsystem == "mdb" and alive:
+            # The policy may have been acked before the first heartbeat, with
+            # no PAY-101 ever raised to clear: resume any queued payout now.
+            self._gateway.on_pay101_cleared()
 
     def _product_name(self, sku: str | None) -> str | None:
         """Shared by the fault registry and session recovery, reading the
@@ -301,8 +482,9 @@ class Machine:
         return self._outputs
 
     @property
-    def refunds(self) -> RefundProtocol:
-        return self._refunds
+    def gateway(self) -> MdbGateway:
+        """The MDB payment gateway (payouts, policy, event intake)."""
+        return self._gateway
 
     @property
     def gate(self) -> DispenserProfileGate:
@@ -382,24 +564,35 @@ class Machine:
         """
         self._tasks.cancel_pending()
         self._vmc.cancel_timers()
-        self._refunds.cancel_all()
         logger.debug("Machine: all pending tasks cancelled.")
 
     async def drain_persistence(self, timeout: float = 3.0) -> None:
         """Await in-flight session/inventory writes so shutdown never cancels them."""
         await self._tasks.drain_persistence(timeout=timeout)
 
+    def _set_data104_source(self, source: str, failing: bool) -> None:
+        """DATA-104 (machine-scope, never payment-blocking) has two failure
+        sources, the session snapshot and the payment cursor. It is raised
+        (once) while any source fails and cleared `by="auto"` only when none
+        does, so neither source can clear the other's alert."""
+        if failing:
+            self._data104_sources.add(source)
+            if not self._faults.has(FaultCode.DATA_104):
+                self._faults.raise_fault(FaultCode.DATA_104)
+            return
+        was_failing = bool(self._data104_sources)
+        self._data104_sources.discard(source)
+        if was_failing and not self._data104_sources:
+            if self._faults.has(FaultCode.DATA_104):
+                self._faults.clear_fault(FaultCode.DATA_104.value, by="auto")
+
     def _raise_session_unsaved(self) -> None:
-        """``StatusOutputs`` could not write the session snapshot: raise
-        DATA-104 (machine-scope, never payment-blocking) once."""
-        if not self._faults.has(FaultCode.DATA_104):
-            self._faults.raise_fault(FaultCode.DATA_104)
+        """``StatusOutputs`` could not write the session snapshot."""
+        self._set_data104_source(_SNAPSHOT_SOURCE, True)
 
     def _clear_session_unsaved(self) -> None:
-        """A later write succeeded. Nothing else raises DATA-104, so a
-        plain clear-if-active is correct."""
-        if self._faults.has(FaultCode.DATA_104):
-            self._faults.clear_fault(FaultCode.DATA_104.value, by="auto")
+        """A later snapshot write succeeded."""
+        self._set_data104_source(_SNAPSHOT_SOURCE, False)
 
     def _on_loop(self, fn) -> None:
         """Run `fn` on the attached event loop from any thread; directly when
@@ -439,32 +632,38 @@ class Machine:
         # truth for which topics map to which handler, as (topic, owner,
         # method) triples -- owner "vmc" resolves against self.vmc, owner
         # "telemetry" against self._telemetry.
+        owners = {
+            "vmc": self._vmc,
+            "payments": self._gateway,
+            "telemetry": self._telemetry,
+        }
         for topic, owner, name in mqtt_inbound.SUBSCRIPTIONS:
-            target = self._vmc if owner == "vmc" else self._telemetry
-            client.register(topic, getattr(target, name))
+            handler = owners[owner]
+            for part in name.split("."):  # e.g. "intake.handle"
+                handler = getattr(handler, part)
+            client.register(topic, handler)
         logger.debug("Machine registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor) -> None:
         """Attach a HealthMonitor; its liveness transitions become COM/PAY faults."""
         self._outputs.attach_health(monitor)
-        monitor.set_liveness_callback(self._faults.on_subsystem_liveness)
+        monitor.set_liveness_callback(self._on_liveness)
         logger.debug("Machine attached health monitor.")
 
     def set_availability(self, availability: Availability) -> None:
-        """Attach the permissive table; it publishes cmd/payment/enable through us."""
+        """Attach the permissive table; it publishes the payment policy through us."""
         self._outputs.attach_availability(availability)
         for unsubscribe in self._unsubscribe_availability:
             unsubscribe()
         self._unsubscribe_availability = [
             self._telemetry.subscribe_hardware_io(availability.set_hardware_io),
-            self._telemetry.subscribe_payment_status(availability.set_payment_device),
             self._telemetry.subscribe_capabilities(
                 availability.on_vending_capabilities
             ),
         ]
         availability.set_fsm_state(self._vmc.state)
         availability.set_active_faults(self._faults.active_faults())
-        availability.set_publisher(self._outputs.publish_payment_enable)
+        availability.set_publisher(self._gateway.policy.on_payment_enabled_changed)
         logger.debug("Machine attached availability.")
 
     def set_display_controller(self, controller: DisplayController) -> None:
@@ -511,6 +710,10 @@ class Machine:
             )
         self._outputs.attach_session_store(store)
         decision = self._recovery.evaluate_at_boot()
+        if decision.snapshot is not None:
+            # A deposit that reached session.json but not the cursor before a
+            # crash is replayed by the board; seeding keeps it from crediting twice.
+            self._gateway.intake.seed(c.event_id for c in decision.snapshot.credits)
         if decision.kind == "discard_test":
             logger.warning(
                 "SessionStore: discarding a test-sale snapshot found at "
@@ -519,7 +722,10 @@ class Machine:
                 "real money, so no PAY-104 is raised."
             )
         elif decision.kind == "uncertain":
+            self._boot_snapshot = decision.snapshot
             self._flag_uncertain_session(decision.snapshot)
+        elif decision.kind == "closed" and decision.snapshot.pending_sale_shares:
+            self._recover_closed_cash_sale(decision.snapshot)
         logger.debug("Machine attached session store.")
 
     def set_command_dispatcher(self, dispatcher) -> None:
@@ -540,18 +746,49 @@ class Machine:
 
     def on_mqtt_connection(self, connected: bool) -> None:
         """Connection-state callback from MQTTClient (chained after the
-        health monitor) -- delegates to `self._faults.on_mqtt_connection`."""
+        health monitor): the fault service, then the MDB gateway."""
         self._faults.on_mqtt_connection(connected)
+        if connected:
+            self._gateway.policy.on_connected()
+            self._gateway.on_mqtt_reconnected()
+        else:
+            self._gateway.policy.on_disconnected()
 
     def _sale_recorded(
-        self, sku: str, since_ts: float, methods: dict, window_seconds: float
+        self, sku: str, since_ts: float, methods: dict[str, int], window_seconds: float
     ) -> bool:
         recorder = self._event_recorder
         if recorder is None:
             return False
         return recorder.sale_recorded_since(
-            sku, since_ts, methods, window_seconds=window_seconds
+            sku,
+            since_ts,
+            methods,
+            window_seconds=window_seconds,
         )
+
+    def _recover_closed_cash_sale(self, snap: SessionSnapshot) -> None:
+        """The crash fell after the sales row was written but before the
+        sale's cash_sale was queued (a closed snapshot holds no pending
+        payouts, so none was). Tell the board the cash share left its escrow,
+        queued here -- before edge-start reconciliation can evaluate -- so it
+        is not paid back out as an excess. The snapshot carries no event ids,
+        so the full cash share is sent; if the board rebooted meanwhile the
+        board clamps it and PAY-104 is raised (visible, moves no money)."""
+        cents = cash_share(snap.pending_sale_shares)
+        if cents <= 0:
+            return
+        logger.warning(
+            f"Recovering the cash_sale of an already-recorded sale at boot: "
+            f"{format_cents(cents)} (sku={snap.selected_sku!r})"
+        )
+        self._payments.cash_sale(cents, None)
+
+    def _hold_evidence(self) -> None:
+        self._evidence_held = True
+
+    def _release_evidence(self) -> None:
+        self._evidence_held = False
 
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
         """Side effects of an 'uncertain' boot decision other than
@@ -559,15 +796,22 @@ class Machine:
         evaluate_at_boot` already performs for the other two decision
         kinds) -- mirrors `VMC._flag_uncertain_session` exactly."""
         detail = snap.error or (
-            f"state={snap.state} escrow=${snap.credit_escrow:.2f} "
-            f"sku={snap.selected_sku} refund={snap.pending_refund_request_id}"
+            f"state={snap.state} escrow={format_cents(snap.credit_escrow_cents)} "
+            f"sku={snap.selected_sku} payouts={len(snap.pending_payouts)}"
         )
+        if (
+            snap.pending_refund_request_id
+        ):  # legacy snapshot written before the MDB cutover
+            detail += f" refund={snap.pending_refund_request_id}"
         logger.error(f"Transaction uncertain after restart: {detail}")
         _txn_log.error(f"RESTART WITH OPEN SESSION: {detail}")
         if self._event_recorder:
             self._event_recorder.record(
-                "session_uncertain", value=snap.credit_escrow, metadata=asdict(snap)
+                "session_uncertain",
+                value=snap.credit_escrow_cents,
+                metadata=asdict(snap),
             )
+        self._hold_evidence()
         availability = self._outputs.availability
         if availability:
             availability.set_transaction_certain(False)
@@ -580,6 +824,18 @@ class Machine:
 
     def pending_sale_for_recovery(self) -> dict | None:
         return self._recovery.pending_sale_for_recovery()
+
+    def send_recovered_cash_sale(self, pending: dict) -> bool:
+        """After "Record as sale": tell the board the pending sale's cash share
+        left its escrow (`cash_sale(cash share, None)`). Once per sale per
+        process; returns whether a command was queued."""
+        key = (pending["sku"], pending["saved_at"])
+        cents = cash_share(pending["methods"])
+        if cents <= 0 or key in self._recovered_cash_sales:
+            return False
+        self._payments.cash_sale(cents, None)
+        self._recovered_cash_sales.add(key)
+        return True
 
     def pending_sale_already_recorded(self, pending: dict) -> bool:
         return self._recovery.pending_sale_already_recorded(pending)

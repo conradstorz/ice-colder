@@ -191,7 +191,7 @@ async def test_run_test_sale_refuses_without_profile(tmp_path):
     with pytest.raises(RuntimeError, match="CFG-101"):
         await machine.test_sales.run_test_sale("X")
 
-    assert vmc.credit_escrow == 0
+    assert vmc.credit_escrow_cents == 0
 
 
 def test_clearing_another_fault_relocks_profileless_product_with_cfg101(tmp_path):
@@ -356,7 +356,7 @@ def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1), *, tasks=None):
 def _start_sale(vmc, product) -> None:
     vmc.set_state("interacting_with_user")
     vmc.selected_product = product
-    vmc.credit_escrow = product.price
+    vmc.credit_escrow_cents = product.price_cents
     vmc.process_payment()
     assert vmc.state == "dispensing"
 
@@ -389,13 +389,13 @@ async def test_no_ack_fails_vend_immediately_with_pay102(tmp_path):
     machine.set_event_recorder(rec)
     dispatcher.fail_with = CommandTimeout("vending", "dispense")
     product = vmc.products[0]
-    price = product.price
+    price = product.price_cents
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)
 
     assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == price
+    assert vmc.credit_escrow_cents == price
     # PAY-102 is vend_failed severity (never a lockout or a persisted
     # machine fault, so it never shows in active_faults()) -- proven here
     # via the vend_failed event it drives, matching the convention already
@@ -409,7 +409,7 @@ async def test_rejected_ack_fails_vend(tmp_path):
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     product = vmc.products[0]
-    price = product.price
+    price = product.price_cents
 
     async def send_rejected(subsystem, command, params=None, request_id=None):
         dispatcher.sent.append((subsystem, command, params or {}))
@@ -421,7 +421,7 @@ async def test_rejected_ack_fails_vend(tmp_path):
     await asyncio.sleep(0)
 
     assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == price
+    assert vmc.credit_escrow_cents == price
     assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
 
 
@@ -476,7 +476,7 @@ async def test_stale_report_with_other_request_id_is_ignored(tmp_path, caplog):
     assert vmc.sale is not None and vmc.sale.request_id == in_flight_id
     assert rec.sales == []
     assert not vmc.faults.lockouts and not vmc.faults.machine_faults
-    assert not vmc.refunds.pending
+    assert machine.gateway.pending_payouts() == []
     # The one observable of "classified as ignored": a warning naming both
     # the stale id and the in-flight id.
     assert any(
@@ -586,7 +586,7 @@ async def test_success_cancels_dispense_timeout_before_record_awaits(tmp_path):
     assert live_during_record == [False]
     await drain_pending(runner)  # a refund publish would be fire-and-forget
     assert vmc.state == "idle"
-    assert vmc.credit_escrow == 0
+    assert vmc.credit_escrow_cents == 0
     assert not vmc.faults.lockouts
     assert not any(e[0] == "vend_failed" for e in rec.events)
     assert not any(topic == "cmd/payment/refund" for topic, *_ in client.published)
@@ -626,7 +626,7 @@ async def test_door_open_on_water_fill_fails_vend_with_error_mapping(tmp_path):
     machine.set_event_recorder(rec)
     avail = Availability()
     product = vmc.products[1]  # W-1, water_fill
-    price = product.price
+    price = product.price_cents
     _start_sale(vmc, product)
     machine.set_availability(avail)  # after payment: a bare one is not sellable
     await asyncio.sleep(0)
@@ -636,7 +636,7 @@ async def test_door_open_on_water_fill_fails_vend_with_error_mapping(tmp_path):
     )
 
     assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == price
+    assert vmc.credit_escrow_cents == price
     assert len(rec.sales) == 0
     assert any(e[0] == "vend_failed" and e[2]["code"] == "ICE-302" for e in rec.events)
     assert "ICE-402" not in {f["code"] for f in vmc.active_faults()}
@@ -754,14 +754,14 @@ async def test_unexpected_dispatch_error_fails_vend_immediately(tmp_path):
     machine.set_event_recorder(rec)
     dispatcher.fail_with = ValueError("boom")
     product = vmc.products[0]
-    price = product.price
+    price = product.price_cents
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)
     await drain_pending(machine.tasks)  # the negative below must not be vacuous
 
     assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == price
+    assert vmc.credit_escrow_cents == price
     assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
     assert not any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
 
@@ -785,14 +785,14 @@ async def test_snapshot_save_failure_fails_vend_immediately(tmp_path):
     machine.set_event_recorder(rec)
     machine.set_session_store(FakeSessionStore())
     product = vmc.products[0]
-    price = product.price
+    price = product.price_cents
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)
     await drain_pending(machine.tasks)  # the negatives below must not be vacuous
 
     assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow == price
+    assert vmc.credit_escrow_cents == price
     assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
     # M5 (whole-branch review): a snapshot-save failure is reported with
     # its own outcome string, distinct from a dispatch failure's "no_ack".
@@ -834,14 +834,14 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
     product_b = vmc.products[1]  # W-1
     _start_sale(vmc, product_b)
     await asyncio.sleep(0)  # let B's own dispatch run (and succeed)
-    escrow_before = vmc.credit_escrow
+    escrow_before = vmc.credit_escrow_cents
 
     # A's delayed CommandTimeout finally arrives.
     gate.set()
     await drain_pending(machine.tasks)  # A's CommandTimeout has been fully handled
 
     assert vmc.state == "dispensing"
-    assert vmc.credit_escrow == escrow_before
+    assert vmc.credit_escrow_cents == escrow_before
     assert not any(
         e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events
     )
@@ -892,7 +892,7 @@ async def test_on_dispense_failed_ignores_a_stale_cycle(tmp_path):
     await vmc.on_dispense_failed(stale, FaultCode.PAY_102, "no_ack")
 
     assert vmc.state == "dispensing"
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert vmc.faults.lockouts == {}
 
     # Settle the real sale through the real hardware report.

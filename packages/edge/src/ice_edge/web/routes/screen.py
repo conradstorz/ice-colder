@@ -24,8 +24,10 @@ def _screen_context(request: Request) -> dict:
     status = (
         context.vmc_instance.get_status()
         if context.vmc_instance
-        else {"state": "unknown", "credit_escrow": 0.0}
+        else {"state": "unknown", "credit_escrow_cents": 0}
     )
+    # Permanent: /screen is pinned to dollar floats (partials/screen_body.html).
+    status = {**status, "credit_escrow": status["credit_escrow_cents"] / 100}
     faults = context.vmc_instance.active_faults() if context.vmc_instance else []
     health = (
         context.health_monitor.get_summary()
@@ -79,7 +81,7 @@ async def screen_body(request: Request):
     ctx = _screen_context(request)
     if context.event_recorder:
         summary = await asyncio.to_thread(context.event_recorder.get_summary, 24)
-        ctx["money_24h"] = summary["money_in"]
+        ctx["money_24h"] = summary["money_in_cents"] / 100
         ctx["vends_24h"] = summary["products_out"]
     else:
         ctx["money_24h"] = None

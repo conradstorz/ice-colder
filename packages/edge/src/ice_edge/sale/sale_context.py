@@ -34,6 +34,9 @@ Fields, and who sets them:
   between methods (CLAUDE.md's FIFO method attribution invariant). ``None``
   until payment is processed, and cleared once the sale is recorded or has
   failed.
+- ``pieces``: the escrow credits (with their board ``event_id``) that
+  ``shares`` was consumed from; lets the cash_sale count only the board's
+  current-boot cash and a failed vend restore the same event ids.
 - ``is_test``: true only for ``TestSaleRunner.run_test_sale``'s simulated sale. Lives on
   the sale, never derived from the maintenance lease, so a lease release or
   idle-timeout mid-run cannot flip a test sale into a production one.
@@ -45,6 +48,8 @@ Fields, and who sets them:
   racing the dispatcher's own ack is still verifiable.
 - ``settled``: set by ``VMC.on_error`` once it has fired the ``"error"`` settled
   outcome, so a repeated error does not settle the same sale again.
+- ``sale_id``: a uuid4 hex minted with the context. Sent to the MDB board on
+  the sale's ``cash_sale`` and change/``vend_failed`` payouts and logged.
 - ``started_at``: wall-clock time the sale began (``select_product``, or the
   seed ``run_test_sale`` builds).
 """
@@ -52,20 +57,24 @@ Fields, and who sets them:
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 
 from ice_common.config_model import Product
+from ice_edge.ledger.session_store import Credit
 
 
 @dataclass(frozen=True)
 class SaleContext:
     product: Product
     shares: dict[str, float] | None = None
+    pieces: tuple[Credit, ...] | None = None
     is_test: bool = False
     mechanism: str | None = None
     request_id: str | None = None
     started_at: float = 0.0
     settled: bool = False
+    sale_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def with_(self, **changes) -> "SaleContext":
         """Return a new ``SaleContext`` with ``changes`` applied, leaving

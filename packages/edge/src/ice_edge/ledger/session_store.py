@@ -21,6 +21,7 @@ from typing import Optional
 from loguru import logger
 
 from ice_common.paths import DATA_DIR
+from ice_contracts.money import dollars_to_cents
 
 SESSION_PATH = DATA_DIR / "session.json"
 
@@ -44,14 +45,18 @@ class Credit:
     """
 
     method: str
-    amount: float
+    cents: int
     ts: float
+    # The board's payment event id for a credit that arrived as one; lets a
+    # restarted edge dedupe a replayed event it already credited. A file
+    # written before this field existed loads with None.
+    event_id: Optional[str] = None
 
 
 @dataclass
 class SessionSnapshot:
     state: str
-    credit_escrow: float
+    credit_escrow_cents: int
     selected_sku: Optional[str] = None
     dispense_slot: Optional[int] = None
     # The dispense mechanism in flight ("bagged_ice"/"water_fill"), set from
@@ -61,9 +66,14 @@ class SessionSnapshot:
     # all -- still loads via SessionSnapshot(**raw).
     dispense_mechanism: Optional[str] = None
     dispense_started_at: Optional[float] = None
+    # Legacy (pre-MDB-cutover) field: read so an old file still loads and
+    # still counts as open; never written with a value any more.
     pending_refund_request_id: Optional[str] = None
+    # Queued or in-flight ``payout`` / ``cash_sale`` commands (PendingPayout
+    # as dicts): money owed to the customer that the board has not confirmed.
+    pending_payouts: list[dict] = field(default_factory=list)
     credits: list[Credit] = field(default_factory=list)
-    pending_sale_shares: Optional[dict[str, float]] = None
+    pending_sale_shares: Optional[dict[str, int]] = None
     # True only for TestSaleRunner.run_test_sale's simulated sale (system-tests design
     # §2.3/§6), set from the sale's own self._sale_is_test at the moment
     # VMC._snapshot() is built -- never derived from the maintenance lease,
@@ -86,11 +96,30 @@ class SessionSnapshot:
         """True when money or a vend was in flight (or we cannot tell)."""
         return (
             bool(self.error)
-            or self.credit_escrow > 0
+            or self.credit_escrow_cents > 0
             or self.state == "dispensing"
             or bool(self.pending_sale_shares)
             or self.pending_refund_request_id is not None
+            or bool(self.pending_payouts)
         )
+
+
+def _convert_legacy_dollars(raw: dict) -> None:
+    """Rewrite a pre-cents snapshot dict in place: dollar floats to int cents."""
+    if "credit_escrow" in raw:
+        raw["credit_escrow_cents"] = dollars_to_cents(raw.pop("credit_escrow"))
+    if raw.get("credits") is not None:
+        raw["credits"] = [
+            {
+                "method": c["method"],
+                "cents": dollars_to_cents(c["amount"]),
+                "ts": c["ts"],
+            }
+            for c in raw["credits"]
+        ]
+    shares = raw.get("pending_sale_shares")
+    if shares is not None:
+        raw["pending_sale_shares"] = {k: dollars_to_cents(v) for k, v in shares.items()}
 
 
 class SessionStore:
@@ -108,7 +137,7 @@ class SessionStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_name(self._path.name + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(asdict(snap), f)
+            json.dump({**asdict(snap), "units": "cents"}, f)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, self._path)
@@ -123,6 +152,11 @@ class SessionStore:
             # SessionSnapshot(**raw) already handles via default_factory=list
             # — only rehydrate when the key is actually present.
             raw_credits = raw.get("credits")
+            if raw.pop("units", None) != "cents":
+                # A file written before money moved to integer cents carries
+                # dollar floats under the legacy keys; convert once on load.
+                _convert_legacy_dollars(raw)
+                raw_credits = raw.get("credits")
             if raw_credits is not None:
                 raw["credits"] = [Credit(**c) for c in raw_credits]
             # saved_at is money-load-bearing (PAY-104 recovery keys on the
@@ -155,7 +189,7 @@ class SessionStore:
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")
-            return SessionSnapshot(state="unknown", credit_escrow=0.0, error=str(e))
+            return SessionSnapshot(state="unknown", credit_escrow_cents=0, error=str(e))
 
     def clear(self) -> bool:
         """Remove the evidence file. Returns True only if it is gone afterwards."""

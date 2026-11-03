@@ -1,7 +1,8 @@
-"""Permissive truth table and payment/enable publishing."""
+"""Permissive truth table and payment-policy publishing."""
 
 from ice_common.config_model import Product
 from ice_edge.faults.availability import Availability
+from tests.payment_state_helpers import set_coin_status
 
 
 class Recorder:
@@ -17,7 +18,7 @@ def _all_good(avail: Availability) -> None:
     avail.set_subsystem_alive("vending", True)
     avail.set_subsystem_alive("mdb", True)
     avail.set_subsystem_alive("ice_maker", True)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     avail.set_fsm_state("idle")
     avail.set_hardware_io("bin_half_full", True)
 
@@ -155,10 +156,10 @@ def test_service_door_open_blocks_and_closing_restores():
 def test_payment_device_error_blocks_the_sale_not_payment():
     a, _ = _avail()
     _all_good(a)
-    a.set_payment_device("card_reader", "error")
-    assert "payment_devices_ready" in a.sale_available("ice")[1]
+    set_coin_status(a, "error")
+    assert "cash_accepting" in a.sale_available("ice")[1]
     assert a.payment_enabled is True
-    a.set_payment_device("card_reader", "ready")
+    set_coin_status(a, "ready")
     assert a.sale_available("ice")[0] is True
 
 
@@ -224,7 +225,9 @@ def test_gate_is_exported_on_every_row():
     assert rows["vending_alive"]["gate"] == "fulfillment"
     assert rows["mqtt_connected"]["gate"] == "fulfillment"
     assert rows["payment_alive"]["gate"] == "fulfillment"
-    assert rows["payment_devices_ready"]["gate"] == "fulfillment"
+    assert rows["cash_accepting"]["gate"] == "fulfillment"
+    assert rows["payment_coin_ready"]["gate"] == "alert"
+    assert rows["payment_bill_ready"]["gate"] == "alert"
     assert rows["ice_maker_alive"]["gate"] == "fulfillment"
     assert rows["ice_available"]["gate"] == "fulfillment"
     assert rows["fsm_ok"]["gate"] == "fulfillment"
@@ -282,8 +285,8 @@ def test_every_fulfillment_row_blocks_the_sale_but_not_payment():
         ("vending_alive", lambda a: a.set_subsystem_alive("vending", False)),
         ("payment_alive", lambda a: a.set_subsystem_alive("mdb", False)),
         (
-            "payment_devices_ready",
-            lambda a: a.set_payment_device("card_reader", "error"),
+            "cash_accepting",
+            lambda a: set_coin_status(a, "error"),
         ),
         ("fsm_ok", lambda a: a.set_fsm_state("error")),
     ]
@@ -378,7 +381,7 @@ def test_command_inhibited_all_good_nothing_is_inhibited():
     _all_good(a)
     assert a.command_inhibited("dispense") is False
     assert a.command_inhibited("water_valve") is False
-    assert a.command_inhibited("payment/enable") is False
+    assert a.command_inhibited("set_policy") is False
     assert a.command_inhibited("ping") is False
     assert a.command_inhibited("refund") is False
 
@@ -399,7 +402,7 @@ def test_command_inhibited_vending_loss_blocks_sales_but_not_payment():
     a.set_subsystem_alive("vending", False)
     assert a.command_inhibited("dispense") is True
     assert a.command_inhibited("water_valve") is True
-    assert a.command_inhibited("payment/enable") is False
+    assert a.command_inhibited("set_policy") is False
 
 
 def test_command_inhibited_machine_critical_fault_inhibits_all_three():
@@ -408,15 +411,15 @@ def test_command_inhibited_machine_critical_fault_inhibits_all_three():
     a.set_active_faults([_machine_fault("WTR-103")])
     assert a.command_inhibited("dispense") is True
     assert a.command_inhibited("water_valve") is True
-    assert a.command_inhibited("payment/enable") is True
+    assert a.command_inhibited("set_policy") is True
 
 
 def test_command_inhibited_payment_device_error_blocks_sale_not_payment():
     a, _ = _avail()
     _all_good(a)
-    a.set_payment_device("card_reader", "error")
+    set_coin_status(a, "error")
     assert a.command_inhibited("dispense") is True
-    assert a.command_inhibited("payment/enable") is False
+    assert a.command_inhibited("set_policy") is False
 
 
 def test_payment_blocking_faults_has_seven_members_including_svc_102():
@@ -589,7 +592,7 @@ def test_no_bin_sensor_makes_ice_sellable_with_detail():
     a2.set_subsystem_alive("vending", True)
     a2.set_subsystem_alive("mdb", True)
     a2.set_subsystem_alive("ice_maker", True)
-    a2.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(a2, "ready")
     a2.set_fsm_state("idle")
     a2.on_vending_capabilities("vending", {}, _vending_caps("service_door"))
     assert a2.bin_instrumented is False

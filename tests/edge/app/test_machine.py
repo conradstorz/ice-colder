@@ -87,7 +87,7 @@ class TestConstruction:
         assert machine.escrow is not None
         assert machine.faults is not None
         assert machine.outputs is not None
-        assert machine.refunds is not None
+        assert machine.gateway is not None
         assert machine.gate is not None
         assert machine.lease is not None
         assert machine.recovery is not None
@@ -118,9 +118,12 @@ class TestConstruction:
         machine = Machine(ConfigModel())
         assert machine.vmc.outputs is machine.outputs
 
-    def test_vmc_and_machine_share_the_same_refund_protocol(self):
+    def test_vmc_pays_out_through_the_machines_gateway(self):
         machine = Machine(ConfigModel())
-        assert machine.vmc.refunds is machine.refunds
+        machine.vmc.deposit_funds(100, payment_method="cash_coin")
+        machine.vmc.request_refund(reason="cancel")
+        (payout,) = machine.gateway.pending_payouts()
+        assert (payout.kind, payout.cents, payout.reason) == ("payout", 100, "cancel")
 
     def test_vmc_and_machine_share_the_same_dispenser_gate(self):
         """Task 6 removed VMC's own public `gate` property (routes/tests
@@ -166,23 +169,29 @@ class TestConstruction:
         state at all -- every cross-referencing closure is deferred."""
         machine = Machine(ConfigModel())
         assert machine.faults.active_faults() == []
-        assert machine.escrow.total == 0.0
+        assert machine.escrow.total_cents == 0.0
 
 
 class TestSetMqttClient:
-    def test_registers_the_twelve_topics_in_order_to_bound_methods(self):
+    def test_registers_every_topic_in_order_to_bound_methods(self):
         machine = Machine(ConfigModel())
         mqtt = RecordingMqtt()
         machine.set_mqtt_client(mqtt)
 
         assert machine.mqtt_client is mqtt
-        assert len(mqtt.registered) == 12
+        assert len(mqtt.registered) == len(SUBSCRIPTIONS) == 11
         for (topic, handler), (expected_topic, owner, name) in zip(
             mqtt.registered, SUBSCRIPTIONS
         ):
             assert topic == expected_topic
-            target = machine.vmc if owner == "vmc" else machine.telemetry
-            assert handler == getattr(target, name)
+            target = {
+                "vmc": machine.vmc,
+                "telemetry": machine.telemetry,
+                "payments": machine.gateway,
+            }[owner]
+            for part in name.split("."):
+                target = getattr(target, part)
+            assert handler == target
 
 
 class TestSetAvailability:
@@ -194,13 +203,15 @@ class TestSetAvailability:
         assert machine.availability is av
         assert av.states == [machine.vmc.state]
         assert av.active_faults_calls == [[]]
-        assert av.publisher == machine.outputs.publish_payment_enable
+        assert av.publisher == machine.gateway.policy.on_payment_enabled_changed
 
 
 class TestSetSessionStore:
     def test_open_production_snapshot_raises_pay104(self):
         machine = Machine(ConfigModel())
-        snap = SessionSnapshot(state="dispensing", credit_escrow=1.5, is_test=False)
+        snap = SessionSnapshot(
+            state="dispensing", credit_escrow_cents=150, is_test=False
+        )
         store = FakeSessionStore(snapshot=snap)
 
         machine.set_session_store(store)
@@ -210,7 +221,9 @@ class TestSetSessionStore:
 
     def test_test_snapshot_logs_and_clears_without_pay104(self):
         machine = Machine(ConfigModel())
-        snap = SessionSnapshot(state="dispensing", credit_escrow=1.5, is_test=True)
+        snap = SessionSnapshot(
+            state="dispensing", credit_escrow_cents=150, is_test=True
+        )
         store = FakeSessionStore(snapshot=snap)
 
         machine.set_session_store(store)
@@ -223,9 +236,9 @@ class TestBootAlreadyRecordedSale:
     def _snapshot(self, saved_at):
         return SessionSnapshot(
             state="dispensing",
-            credit_escrow=0.0,
+            credit_escrow_cents=0,
             selected_sku="ICE-1",
-            pending_sale_shares={"cash": 2.50},
+            pending_sale_shares={"cash": 250},
             saved_at=saved_at,
         )
 
@@ -234,9 +247,7 @@ class TestBootAlreadyRecordedSale:
         store = SessionStore(tmp_path / "session.json")
         saved_at = time.time()
         store.save(self._snapshot(saved_at))
-        recorder.record_sale(
-            "ICE-1", "Ice", 1, 2.50, {"cash": 2.50}, ts=saved_at + 0.05
-        )
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=saved_at + 0.05)
         machine = Machine(ConfigModel())
         machine.set_event_recorder(recorder)
 
@@ -251,7 +262,7 @@ class TestBootAlreadyRecordedSale:
         store = SessionStore(tmp_path / "session.json")
         saved_at = time.time()
         store.save(self._snapshot(saved_at))
-        recorder.record_sale("ICE-1", "Ice", 1, 2.50, {"cash": 2.50}, ts=saved_at + 700)
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=saved_at + 700)
         config = ConfigModel()
         config.physical.dispense_timeout_seconds = timeout
         machine = Machine(config)
@@ -322,14 +333,14 @@ class TestSessionSnapshotFault:
         store = FailingSaveStore()
         machine.set_session_store(store)
 
-        machine.vmc.deposit_funds(1.0, payment_method="cash")
+        machine.vmc.deposit_funds(100, payment_method="cash")
         await settle()
 
         assert machine.faults.has(FaultCode.DATA_104)
         assert availability.payment_enabled
 
         store.broken = False
-        machine.vmc.deposit_funds(1.0, payment_method="cash")
+        machine.vmc.deposit_funds(100, payment_method="cash")
         await settle()
 
         assert not machine.faults.has(FaultCode.DATA_104)
@@ -341,23 +352,12 @@ class TestCancelPendingTasks:
     def test_cancels_session_timeout(self):
         runner = FakeTaskRunner()
         machine = Machine(ConfigModel(), tasks=runner)
-        machine.vmc.deposit_funds(1.0, payment_method="cash")
+        machine.vmc.deposit_funds(100, payment_method="cash")
         assert any(c.label == "session_timeout" for c in runner.scheduled)
 
         machine.cancel_pending_tasks()
 
         assert not any(c.label == "session_timeout" for c in runner.scheduled)
-
-    def test_cancels_refund_deadline(self):
-        runner = FakeTaskRunner()
-        machine = Machine(ConfigModel(), tasks=runner)
-        machine.vmc.deposit_funds(1.0, payment_method="cash")
-        machine.vmc.request_refund(reason="test")
-        assert any(c.label == "refund_deadline" for c in runner.scheduled)
-
-        machine.cancel_pending_tasks()
-
-        assert not any(c.label == "refund_deadline" for c in runner.scheduled)
 
     async def test_cancels_dispense_timeout(self, tmp_path):
         """Task 8: the dispense-timeout timer is now armed inside
@@ -370,7 +370,7 @@ class TestCancelPendingTasks:
         now never reaches a dispatch at all (CFG-101 fails the vend
         immediately instead), so a profile is wired here to exercise the
         real path this timer actually guards."""
-        product = Product(sku="A", price=0.0, slot=1, kind="ice")
+        product = Product(sku="A", price_cents=0, slot=1, kind="ice")
         runner = FakeTaskRunner()
         machine = Machine(_config(product), tasks=runner)
         machine.attach_to_loop(asyncio.get_running_loop())
@@ -406,7 +406,9 @@ def _caps(subsystem: str = "vending") -> dict:
 
 class TestTelemetryWiring:
     async def test_bin_half_full_true_clears_ice101_lockout(self):
-        machine = Machine(_config(Product(sku="A", price=1.0, slot=1, kind="ice")))
+        machine = Machine(
+            _config(Product(sku="A", price_cents=100, slot=1, kind="ice"))
+        )
         machine.faults.raise_fault(FaultCode.ICE_101, sku="A")
         assert machine.faults.is_locked("A") is FaultCode.ICE_101
 
@@ -417,7 +419,9 @@ class TestTelemetryWiring:
         assert machine.faults.is_locked("A") is None
 
     async def test_bin_half_full_false_keeps_lockout(self):
-        machine = Machine(_config(Product(sku="A", price=1.0, slot=1, kind="ice")))
+        machine = Machine(
+            _config(Product(sku="A", price_cents=100, slot=1, kind="ice"))
+        )
         machine.faults.raise_fault(FaultCode.ICE_101, sku="A")
 
         await machine.telemetry.handle_hardware_io(
@@ -467,18 +471,14 @@ class TestTelemetryWiring:
         machine.telemetry.subscribe_capabilities(lambda s, d, c: probe.append((s, d)))
         assert probe == [("vending", doc)]
 
-    async def test_set_availability_routes_hardware_io_and_payment_status(self):
+    async def test_set_availability_routes_hardware_io(self):
         machine = Machine(ConfigModel())
         av = FakeAvailability()
         machine.set_availability(av)
         await machine.telemetry.handle_hardware_io(
             "hardware/io/door", {"device": "door", "state": True}
         )
-        await machine.telemetry.handle_payment_status(
-            "payment/status", {"device": "coin_acceptor", "state": "ready"}
-        )
         assert av.hardware_io == [("door", True)]
-        assert av.payment_devices == [("coin_acceptor", "ready")]
 
     async def test_set_availability_twice_leaves_one_subscribed(self):
         machine = Machine(ConfigModel())
@@ -598,7 +598,7 @@ class TestDataWriteFaults:
                 Product(
                     sku="X",
                     name="X",
-                    price=1.0,
+                    price_cents=100,
                     track_inventory=True,
                     inventory_count=3,
                 )

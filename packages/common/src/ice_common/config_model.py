@@ -46,6 +46,7 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     SecretStr,
+    StrictInt,
     Field,
     field_validator,
     model_validator,
@@ -53,6 +54,7 @@ from pydantic import (
 from loguru import logger
 
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
+from ice_contracts.money import MAX_PRICE_CENTS, Cents, PositiveCents, dollars_to_cents
 
 
 # 1) First, an enum of supported communication channels
@@ -115,7 +117,7 @@ class Product(BaseModel):
     image_url: Optional[str] = Field(
         "https://example.com/image.jpg", description="URL to product image"
     )
-    price: float = Field(1.00, description="Price in USD")
+    price_cents: Cents = Field(100, description="Price in US cents")
     track_inventory: bool = Field(False, description="Whether to track inventory")
     inventory_count: int = Field(
         0, description="Starting inventory count (seeds inventory.json on first run)"
@@ -144,6 +146,38 @@ class Product(BaseModel):
             "other (gated by every permissive)"
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_price(cls, data: Any) -> Any:
+        """Accept a legacy dollar `price` (float) and turn it into `price_cents`."""
+        if not isinstance(data, dict) or "price" not in data:
+            return data
+        data = dict(data)
+        legacy = data.pop("price")
+        sku = data.get("sku", "SAMPLE-SKU")
+        if "price_cents" in data:
+            logger.warning(
+                f"Product {sku!r} has both price and price_cents; "
+                "price_cents kept, legacy price ignored."
+            )
+            return data
+        data["price_cents"] = dollars_to_cents(legacy)  # ValueError -> validation error
+        logger.warning(
+            f"Product {sku!r}: legacy dollar price {legacy!r} converted to "
+            f"{data['price_cents']} cents; it will be saved as price_cents."
+        )
+        return data
+
+    @field_validator("price_cents")
+    @classmethod
+    def _warn_high_price(cls, value: int) -> int:
+        if value > MAX_PRICE_CENTS:
+            logger.warning(
+                f"Product price of {value} cents is above the {MAX_PRICE_CENTS} "
+                "cent limit; kept as is. Correct it when convenient."
+            )
+        return value
 
     @field_validator("name", mode="before")
     @classmethod
@@ -304,6 +338,29 @@ class MDBDevice(BaseModel):
     )
 
 
+class MdbPolicyConfig(BaseModel):
+    """Acceptance policy sent to the MDB board (payment contract SetPolicyParams)."""
+
+    coin_enabled: List[PositiveCents] = Field(
+        default_factory=lambda: [5, 10, 25, 100],
+        description="Coin denominations to accept, in cents",
+    )
+    bill_enabled: List[PositiveCents] = Field(
+        default_factory=lambda: [100, 500, 1000, 2000],
+        description="Bill denominations to accept, in cents",
+    )
+    max_escrow_cents: PositiveCents = Field(2000, description="Escrow cap in cents")
+    change_threshold_cents: Cents = Field(
+        500, description="Bills above this are refused when change is low"
+    )
+    edge_timeout_s: StrictInt = Field(
+        30, ge=5, le=120, description="Board fail-safe timeout on edge silence"
+    )
+    return_bill_on_lever: bool = Field(
+        True, description="Return an escrowed bill when the lever is pressed"
+    )
+
+
 class MDBDevicesConfig(BaseModel):
     """
     MDB bus polling and device list
@@ -312,6 +369,9 @@ class MDBDevicesConfig(BaseModel):
     polling_interval: float = Field(0.5, description="Polling interval in seconds")
     devices: List[MDBDevice] = Field(
         default_factory=list, description="List of MDB devices on the bus"
+    )
+    policy: MdbPolicyConfig = Field(
+        default_factory=MdbPolicyConfig, description="MDB acceptance policy"
     )
 
 

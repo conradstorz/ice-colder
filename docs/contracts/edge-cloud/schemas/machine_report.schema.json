@@ -368,7 +368,7 @@
     "KpiAverage": {
       "additionalProperties": false,
       "properties": {
-        "money_in": {
+        "money_in_cents": {
           "anyOf": [
             {
               "type": "number"
@@ -377,7 +377,7 @@
               "type": "null"
             }
           ],
-          "title": "Money In"
+          "title": "Money In Cents"
         },
         "products_out": {
           "anyOf": [
@@ -414,7 +414,7 @@
         }
       },
       "required": [
-        "money_in",
+        "money_in_cents",
         "products_out",
         "errors",
         "uptime_pct"
@@ -456,9 +456,10 @@
     "KpiWindow": {
       "additionalProperties": false,
       "properties": {
-        "money_in": {
-          "title": "Money In",
-          "type": "number"
+        "money_in_cents": {
+          "minimum": 0,
+          "title": "Money In Cents",
+          "type": "integer"
         },
         "products_out": {
           "title": "Products Out",
@@ -478,7 +479,7 @@
         }
       },
       "required": [
-        "money_in",
+        "money_in_cents",
         "products_out",
         "vends_failed",
         "errors",
@@ -494,13 +495,15 @@
           "title": "Sku",
           "type": "string"
         },
-        "price": {
-          "title": "Price",
-          "type": "number"
+        "price_cents": {
+          "minimum": 0,
+          "title": "Price Cents",
+          "type": "integer"
         },
         "methods": {
           "additionalProperties": {
-            "type": "number"
+            "minimum": 0,
+            "type": "integer"
           },
           "title": "Methods",
           "type": "object"
@@ -508,7 +511,7 @@
       },
       "required": [
         "sku",
-        "price",
+        "price_cents",
         "methods"
       ],
       "title": "PendingSaleView",
@@ -533,9 +536,10 @@
           ],
           "title": "Selected Product"
         },
-        "credit_escrow": {
-          "title": "Credit Escrow",
-          "type": "number"
+        "credit_escrow_cents": {
+          "minimum": 0,
+          "title": "Credit Escrow Cents",
+          "type": "integer"
         },
         "last_payment_method": {
           "anyOf": [
@@ -552,7 +556,7 @@
       "required": [
         "state",
         "selected_product",
-        "credit_escrow",
+        "credit_escrow_cents",
         "last_payment_method"
       ],
       "title": "StatusView",
@@ -585,7 +589,8 @@
       "enum": [
         "0.2.0",
         "0.3.0",
-        "0.4.0"
+        "0.4.0",
+        "1.0.0"
       ],
       "title": "Contract",
       "type": "string"

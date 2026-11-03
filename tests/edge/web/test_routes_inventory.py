@@ -17,7 +17,7 @@ from ice_edge.web import context
 def _add_tracked(wired, sku, *, name="Tracked Item", slot=1, count=5):
     """Add a product to config and register it as a tracked SKU at *count*."""
     cfg, _vmc, inv, _store = wired
-    added = add_product(cfg, sku, name, 1.00, slot=slot, kind="other")
+    added = add_product(cfg, sku, name, 100, slot=slot, kind="other")
     assert added, (
         f"add_product refused SKU={sku!r} at slot={slot} (likely a slot "
         "collision with another product added by this test) -- fix the "
@@ -29,7 +29,7 @@ def _add_tracked(wired, sku, *, name="Tracked Item", slot=1, count=5):
 def _add_untracked(wired, sku, *, name="Untracked Item", slot=2):
     """Add a product to config and register it as an untracked SKU."""
     cfg, _vmc, inv, _store = wired
-    add_product(cfg, sku, name, 1.00, slot=slot, kind="other")
+    add_product(cfg, sku, name, 100, slot=slot, kind="other")
     inv.add_sku(sku, 0, tracked=False)
 
 
@@ -126,7 +126,7 @@ class TestInventoryRows:
         """No InventoryManager wired -> treat nothing as tracked and
         render the page rather than failing (brief resolution 4)."""
         cfg, _vmc, _inv, _store = wired
-        add_product(cfg, "NOMGR-1", "No Manager Item", 1.00, slot=1, kind="other")
+        add_product(cfg, "NOMGR-1", "No Manager Item", 100, slot=1, kind="other")
         worker = login_as(Role.owner)
         context.set_inventory_manager(None)
         resp = worker.get("/inventory")

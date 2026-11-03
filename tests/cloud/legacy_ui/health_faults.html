@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Faults · Vending Machine{% endblock %}
+{% block body %}
+{# `oob` is only ever true when routes/health/faults.py's POST /health/faults/{key}/clear
+   renders this same block standalone (Template.blocks["body"]) to refresh the
+   whole list out-of-band after a clear -- the ordinary page GET always passes
+   oob=False, since marking this div hx-swap-oob on a normal (boosted or full)
+   page load would make htmx divert it out of the main-content swap entirely,
+   leaving `main` rendered without its fault list. #}
+{# Refresh re-gets this level (inherits <body>'s hx-target="main"), like
+   health_logs.html: COM-10x faults auto-clear, so an operator needs a way to
+   re-read the list. Skipped in the oob render (it is not part of #fault-list).
+   No fetched-at stamp: this template is shared with the cloud portal and
+   tests/cloud/test_ui_parity.py needs byte-identical <main> output. #}
+{% if not oob %}
+<div class="flex justify-end mb-3">
+  <button hx-get="/health/faults"
+          class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Refresh</button>
+</div>
+{% endif %}
+{% if faults %}
+<p class="text-sm text-gray-600 mb-2">Safety blocks sales and payment, fulfillment blocks just the one product, alert blocks nothing.</p>
+{% endif %}
+<div id="fault-list" class="space-y-2"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {% if faults %}
+    {% for f in faults %}
+    <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+      <span class="font-mono text-xs px-1.5 py-0.5 rounded
+        {% if f.severity == 'critical' %}bg-red-100 text-red-700
+        {% elif f.severity == 'lockout' %}bg-orange-100 text-orange-700
+        {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }}</span>
+      <span class="text-sm text-gray-700">{{ f.description }}</span>
+      <span class="text-xs text-gray-400">{{ f.product or "machine" }}</span>
+      <span class="text-xs px-1.5 py-0.5 rounded
+        {% if f.gate == 'safety' %}bg-red-50 text-red-600
+        {% elif f.gate == 'fulfillment' %}bg-gray-100 text-gray-600
+        {% else %}bg-gray-50 text-gray-400{% endif %}">{{ f.gate }}</span>
+      {% if f.since_seconds is not none %}
+      <span class="text-xs text-gray-500">{{ f.since_seconds|humanize_seconds }} ago</span>
+      {% endif %}
+      {% if f.pending_sale %}
+      {# Task 14: PAY-104's snapshot carries a pending sale -- show what it
+         recorded (SKU, price, method shares) so the operator can decide
+         whether to record it or discard it, rather than clearing blind. #}
+      <div class="w-full flex flex-wrap items-center gap-3 text-xs text-gray-500">
+        <span class="font-mono">{{ f.pending_sale.sku }}</span>
+        <span>${{ "%.2f"|format(f.pending_sale.price) }}</span>
+        {% for method, amount in f.pending_sale.methods.items() %}
+        <span>{{ method }}: ${{ "%.2f"|format(amount) }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if f.recovery_detail %}
+      {# M11: PAY-104 snapshot detail. No "Refund leftover" action on purpose:
+         after a restart the credit is no longer in escrow and the edge has no
+         refund path for money it does not hold, so the operator refunds at the
+         payment device. Renders nothing when the field is absent (the cloud
+         renders this template from a stored report that has no such field). #}
+      {% set d = f.recovery_detail %}
+      {% if d.sale_recorded or d.credit_escrow > 0.005 or d.pending_refund_request_id or d.error %}
+      <div class="w-full flex flex-wrap items-center gap-3 text-xs text-gray-500">
+        {% if d.sale_recorded %}<span>Sale already recorded</span>{% endif %}
+        {% if d.credit_escrow > 0.005 %}<span>Leftover credit ${{ "%.2f"|format(d.credit_escrow) }}</span>{% endif %}
+        {% if d.pending_refund_request_id %}<span>Refund {{ d.pending_refund_request_id }} unconfirmed</span>{% endif %}
+        {% if d.error %}<span>Snapshot error: {{ d.error }}</span>{% endif %}
+      </div>
+      {% endif %}
+      {% endif %}
+      {% if can_clear %}
+      <div class="ml-auto flex gap-2">
+        {% if f.pending_sale %}
+        <div>
+          {% set target = "#record-sale-" ~ f.dom_key %}
+          {% set confirm_url = "/health/faults/PAY-104/record-sale/confirm" %}
+          {% set post_url = "/health/faults/PAY-104/record-sale" %}
+          {% set label = "Record sale" %}
+          {% set confirm_label = "Confirm" %}
+          {% set confirming = false %}
+          {% include "partials/confirm_button.html" with context %}
+        </div>
+        <div>
+          {% set target = "#discard-" ~ f.dom_key %}
+          {% set confirm_url = "/health/faults/PAY-104/discard/confirm" %}
+          {% set post_url = "/health/faults/PAY-104/discard" %}
+          {% set label = "Discard" %}
+          {% set confirm_label = "Confirm" %}
+          {% set confirming = false %}
+          {% include "partials/confirm_button.html" with context %}
+        </div>
+        {% else %}
+        {% set target = "#clear-" ~ f.dom_key %}
+        {% set confirm_url = "/health/faults/" ~ f.key ~ "/clear/confirm" %}
+        {% set post_url = "/health/faults/" ~ f.key ~ "/clear" %}
+        {% set label = "Clear" %}
+        {% set confirm_label = "Confirm" %}
+        {% set confirming = false %}
+        {% include "partials/confirm_button.html" with context %}
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+  <p class="text-sm text-gray-400">No active faults</p>
+  {% endif %}
+</div>
+{% endblock %}

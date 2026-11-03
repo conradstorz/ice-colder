@@ -28,6 +28,15 @@ def _subsystem_summary() -> dict[str, dict]:
     return subsystem_rows(context.health_monitor)
 
 
+def _payment_state(name: str):
+    """The MDB board's retained `payment/state` (None until it publishes, or
+    for any other board)."""
+    machine = context.machine_instance
+    if name != "mdb" or machine is None:
+        return None
+    return machine.gateway.state
+
+
 def _window_context(name: str) -> dict:
     """One board's live view model (subsystem-windows design §4.6): the
     row from `_subsystem_summary()`, its signals, the live `Availability`
@@ -92,6 +101,7 @@ async def subsystem_detail(request: Request, name: str):
             name=name,
             row=row,
             window=_window_context(name),
+            payment_state=_payment_state(name),
         ),
     )
 
@@ -113,5 +123,10 @@ async def subsystem_live(request: Request, name: str):
     return templates.TemplateResponse(
         request,
         "partials/subsystem_live.html",
-        context.template_context(request, name=name, window=_window_context(name)),
+        context.template_context(
+            request,
+            name=name,
+            window=_window_context(name),
+            payment_state=_payment_state(name),
+        ),
     )

@@ -34,7 +34,6 @@ from ice_contracts.board.ice_maker_monitor import ChannelReading, CommandAck
 from ice_contracts.board.mqtt_messages import (
     HardwareIO,
     IceMakerEvent,
-    PaymentStatus,
 )
 from ice_contracts.board.vending_machine import SubsystemCapabilities
 
@@ -50,7 +49,6 @@ class TelemetryRouter:
         # Distinct rejected names already warned about (bounded).
         self._reported_bad_names: set[str] = set()
         self._hardware_io: Subscribers[[str, bool]] = Subscribers()
-        self._payment_status: Subscribers[[str, str]] = Subscribers()
         self._sensor: Subscribers[[str, float]] = Subscribers()
         self._heartbeat: Subscribers[[str, dict, bool]] = Subscribers()
         self._ice_maker_event: Subscribers[[IceMakerEvent]] = Subscribers()
@@ -65,11 +63,6 @@ class TelemetryRouter:
         self, cb: Callable[[str, bool], None]
     ) -> Callable[[], None]:
         return self._hardware_io.subscribe(cb)
-
-    def subscribe_payment_status(
-        self, cb: Callable[[str, str], None]
-    ) -> Callable[[], None]:
-        return self._payment_status.subscribe(cb)
 
     def subscribe_sensor(self, cb: Callable[[str, float], None]) -> Callable[[], None]:
         return self._sensor.subscribe(cb)
@@ -133,14 +126,6 @@ class TelemetryRouter:
             return
         logger.debug(f"MQTT hardware IO: {hw.device}={hw.state}")
         self._hardware_io.publish(hw.device, hw.state)
-
-    async def handle_payment_status(self, topic: str, data: dict) -> None:
-        """MDB device readiness; any device in error/offline blocks payment."""
-        status = PaymentStatus.model_validate(data)
-        if not self._name_ok(status.device, "payment device"):
-            return
-        logger.debug(f"MQTT payment status: {status.device}={status.state}")
-        self._payment_status.publish(status.device, status.state)
 
     async def handle_sensor(self, topic: str, data: dict) -> None:
         """Handle temperature/sensor reading from ESP32."""
@@ -221,15 +206,17 @@ class TelemetryRouter:
         )
 
 
-#: (topic_pattern, owner, method_name) triples. `owner` is `"vmc"` for the four
-#: sale-driving handlers that stay on the VMC (`on_payment_credit`,
-#: `on_button_press`, `on_dispenser_event`, `on_refund_ack`) and `"telemetry"`
-#: for the rest, whose `method_name` is the `TelemetryRouter`'s own `handle_*`
+#: (topic_pattern, owner, method_name) triples. `owner` is `"vmc"` for the two
+#: sale-driving handlers that stay on the VMC (`on_button_press`,
+#: `on_dispenser_event`), `"payments"` for the MDB gateway (`method_name` is a
+#: dotted path from the gateway, e.g. `intake.handle`) and `"telemetry"` for
+#: the rest, whose `method_name` is the `TelemetryRouter`'s own `handle_*`
 #: name. `Machine.set_mqtt_client` (ice_edge/app/machine.py) is the sole loop
 #: over this table, resolving each triple against the VMC or its
 #: `TelemetryRouter` depending on `owner`.
 SUBSCRIPTIONS: tuple[tuple[str, str, str], ...] = (
-    ("payment/credit", "vmc", "on_payment_credit"),
+    ("payment/event", "payments", "intake.handle"),
+    ("payment/state", "payments", "state_consumer.handle"),
     ("hardware/buttons", "vmc", "on_button_press"),
     ("hardware/dispenser", "vmc", "on_dispenser_event"),
     ("sensors/temp/+", "telemetry", "handle_sensor"),
@@ -239,6 +226,4 @@ SUBSCRIPTIONS: tuple[tuple[str, str, str], ...] = (
     ("telemetry/ice_maker/+", "telemetry", "handle_telemetry"),
     ("cmd/ice_maker/ack", "telemetry", "handle_command_ack"),
     ("hardware/io/+", "telemetry", "handle_hardware_io"),
-    ("cmd/payment/refund/ack", "vmc", "on_refund_ack"),
-    ("payment/status", "telemetry", "handle_payment_status"),
 )

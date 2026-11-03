@@ -16,10 +16,10 @@ no-op or a logged warning -- with no sink attached at all, exactly as the
 VMC is usable before ``main.py`` finishes wiring MQTT/health/availability/
 session store/display onto it.
 
-``snapshot``/``credit_escrow``/``selected_product``/``fsm_state``/
-``pay104_active`` are callables read at call time, not snapshotted at
+``snapshot``/``credit_escrow_cents``/``selected_product``/``fsm_state``/
+``evidence_held`` are callables read at call time, not snapshotted at
 construction, mirroring the pattern already used for
-``RefundProtocol.ack_timeout``/``max_attempts``: the live VMC's state
+the dispense timeout lookups: the live VMC's state
 changes between construction and any given call, so this class must
 always see the current value.
 """
@@ -33,11 +33,10 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from ice_common.config_model import Product
-from ice_contracts.board.vending_machine import PaymentRefundCommand
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.customer_ui.display_controller import DisplayController
 from ice_edge.monitoring.health_monitor import HealthMonitor
-from ice_contracts.board.mqtt_messages import PaymentEnableCommand, VMCAlert, VMCStatus
+from ice_contracts.board.mqtt_messages import VMCAlert, VMCStatus
 from ice_common.build_info import BUILD_INFO
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
@@ -60,19 +59,21 @@ class StatusOutputs:
         self,
         *,
         snapshot: Callable[[str | None], SessionSnapshot],
-        credit_escrow: Callable[[], float],
+        credit_escrow_cents: Callable[[], int],
         selected_product: Callable[[], Product | None],
         fsm_state: Callable[[], str],
-        pay104_active: Callable[[], bool],
+        evidence_held: Callable[[], bool],
         tasks: TaskRunner,
         on_persist_failed: Callable[[], None] | None = None,
         on_persist_ok: Callable[[], None] | None = None,
+        on_evidence_released: Callable[[], None] | None = None,
     ) -> None:
         self._snapshot = snapshot
-        self._credit_escrow = credit_escrow
+        self._credit_escrow_cents = credit_escrow_cents
         self._selected_product = selected_product
         self._fsm_state = fsm_state
-        self._pay104_active = pay104_active
+        self._evidence_held = evidence_held
+        self._on_evidence_released = on_evidence_released
         self._tasks = tasks
         self._on_persist_failed = on_persist_failed
         self._on_persist_ok = on_persist_ok
@@ -161,7 +162,7 @@ class StatusOutputs:
         product = self._selected_product()
         status = VMCStatus(
             state=state,
-            credit_escrow=self._credit_escrow(),
+            credit_escrow_cents=self._credit_escrow_cents(),
             selected_product=product.name if product else None,
             uptime_seconds=self.uptime_seconds,
             version=BUILD_INFO.commit_short,
@@ -170,11 +171,11 @@ class StatusOutputs:
 
     def persist(self, state: str | None = None) -> None:
         """Save the live session, or remove the file once nothing is in
-        flight. A no-op without a session store; while PAY-104 is active
-        the evidence file is left untouched for the operator."""
+        flight. A no-op without a session store; while evidence is held
+        the file is left untouched for the operator (an uncertain boot snapshot or an unrecorded sale; a runtime PAY-104 holds nothing)."""
         if self._session_store is None:
             return
-        if self._pay104_active():
+        if self._evidence_held():
             return
         snap = self._snapshot(state)
         store = self._session_store
@@ -224,7 +225,7 @@ class StatusOutputs:
             return
         if self._session_store is None:
             return
-        if self._pay104_active():
+        if self._evidence_held():
             return
         try:
             await self._session_store.save_async(snap)
@@ -234,11 +235,16 @@ class StatusOutputs:
         self._notify(self._on_persist_ok)
 
     def clear_session_evidence(self) -> bool:
-        """Remove the session evidence file. Returns ``True`` without a
-        store (nothing to clear), else the store's own answer."""
-        if self._session_store is None:
+        """Remove the held evidence file (PAY-104 resolution). Returns
+        ``True`` without a store or when no evidence is held (the live
+        session file is not evidence and is left alone), else the store's
+        own answer; the hold is released only when the removal worked."""
+        if self._session_store is None or not self._evidence_held():
             return True
-        return self._session_store.clear()
+        if not self._session_store.clear():
+            return False
+        self._notify(self._on_evidence_released)
+        return True
 
     # --- customer-facing display / UI ---
 
@@ -268,7 +274,7 @@ class StatusOutputs:
         logged and does not propagate out of this call."""
         if self.update_callback:
             self.update_callback(
-                self._fsm_state(), self._selected_product(), self._credit_escrow()
+                self._fsm_state(), self._selected_product(), self._credit_escrow_cents()
             )
 
     def show_qr(self, image) -> None:
@@ -277,26 +283,6 @@ class StatusOutputs:
             self.qrcode_callback(image)
 
     # --- MQTT publishes ---
-
-    def publish_payment_enable(self, accept: bool) -> None:
-        """Sync publisher handed to Availability (fire-and-forget on the loop)."""
-        if self._mqtt is None:
-            logger.warning("No MQTT client; payment/enable not sent")
-            return
-        self._tasks.fire_and_forget(
-            self._mqtt.publish(
-                "cmd/payment/enable", PaymentEnableCommand(accept=accept)
-            )
-        )
-
-    def publish_refund(self, cmd: PaymentRefundCommand) -> None:
-        """Publish closure handed to RefundProtocol. Reads the attached
-        client at call time, not construction time -- it is still absent
-        when this class is built and only attached later."""
-        if self._mqtt is None:
-            logger.warning("No MQTT client; refund command not sent")
-            return
-        self._tasks.fire_and_forget(self._mqtt.publish("cmd/payment/refund", cmd))
 
     def publish_alert(self, alert: VMCAlert) -> None:
         """Publish an alert raised by the fault registry. Silently skipped

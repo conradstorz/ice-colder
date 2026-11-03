@@ -3,6 +3,8 @@ import asyncio
 import qrcode
 from loguru import logger
 
+from ice_contracts.money import cents_to_dollar_text, format_cents
+
 
 class BaseGateway:
     def __init__(self, config):
@@ -17,13 +19,11 @@ class BaseGateway:
         await asyncio.sleep(0.5)
         logger.debug(f"{self.__class__.__name__}: No new payments found.")
 
-    def generate_payment_url(self, amount: float) -> str:
+    def generate_payment_url(self, amount_cents: int) -> str:
         """
         Create a dummy payment URL for the gateway.
         """
-        return (
-            f"https://{self.__class__.__name__.lower()}.example.com/pay?amount={amount}"
-        )
+        return f"https://{self.__class__.__name__.lower()}.example.com/pay?amount={cents_to_dollar_text(amount_cents)}"
 
     def generate_qr_code(self, payment_url: str):
         """
@@ -72,7 +72,7 @@ class PaymentGatewayManager:
                 await gateway.monitor_incoming()
             await asyncio.sleep(5)  # Poll every 5 seconds
 
-    def generate_qr_code(self, gateway_name: str, amount: float):
+    def generate_qr_code(self, gateway_name: str, amount_cents: int):
         """
         Generate a QR code image for a payment request using the specified gateway.
         """
@@ -82,12 +82,12 @@ class PaymentGatewayManager:
             )
             return None
         gateway = self.gateways[gateway_name]
-        payment_url = gateway.generate_payment_url(amount)
+        payment_url = gateway.generate_payment_url(amount_cents)
         logger.info(f"PaymentGatewayManager: Generating QR code for URL: {payment_url}")
         img = gateway.generate_qr_code(payment_url)
         return img
 
-    def next_payment_prompt(self, amount: float) -> tuple[str, object] | None:
+    def next_payment_prompt(self, amount_cents: int) -> tuple[str, object] | None:
         """Return the (gateway name, QR image) for the current virtual
         payment gateway, then cycle to the next one. ``None`` when no
         gateways are configured at all.
@@ -109,12 +109,12 @@ class PaymentGatewayManager:
 
         current_gateway = gateways[self.virtual_payment_index % len(gateways)]
         logger.info(
-            f"Initiating virtual payment via {current_gateway} for amount ${amount:.2f}"
+            f"Initiating virtual payment via {current_gateway} for amount {format_cents(amount_cents)}"
         )
-        payment_url = self.gateways[current_gateway].generate_payment_url(amount)
+        payment_url = self.gateways[current_gateway].generate_payment_url(amount_cents)
         logger.debug(f"Generated payment URL: {payment_url}")
 
-        qr_image = self.generate_qr_code(current_gateway, amount)
+        qr_image = self.generate_qr_code(current_gateway, amount_cents)
         self.virtual_payment_index = (self.virtual_payment_index + 1) % len(gateways)
         return current_gateway, qr_image
 
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         # Start monitoring accounts in the background
         asyncio.create_task(manager.monitor_accounts())
         # Generate a QR code for a $2.50 payment via Stripe
-        qr_img = manager.generate_qr_code("stripe", 2.50)
+        qr_img = manager.generate_qr_code("stripe", 250)
         # For demonstration, save the QR code image to a BytesIO stream and display it
         img_bytes = io.BytesIO()
         qr_img.save(img_bytes, format="PNG")

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
+from ice_contracts.money import format_cents
 from ice_contracts.board.vending_machine import (
     FaultCode,
 )
@@ -191,7 +192,7 @@ async def pay104_record_sale(request: Request):
                 pending["sku"],
                 pending["name"],
                 pending["slot"],
-                pending["price"],
+                pending["price_cents"],
                 pending["methods"],
                 ts=pending["saved_at"],
                 idempotent=True,
@@ -205,11 +206,29 @@ async def pay104_record_sale(request: Request):
             )
             vmc.raise_fault(
                 FaultCode.DATA_101,
-                outcome=f"sku={pending['sku']} price=${pending['price']:.2f}",
+                outcome=f"sku={pending['sku']} price={format_cents(pending['price_cents'])}",
             )
             raise HTTPException(
                 status_code=500,
                 detail="Could not record the sale; PAY-104 left active for retry",
+            ) from None
+        # Tell the board the sale's cash left its escrow before PAY-104 clears
+        # (clearing releases the armed reconciliation, which would otherwise
+        # pay the sale's price out as leftover). Once per sale per process.
+        # If it cannot be queued, PAY-104 and the evidence stay held: a retry
+        # re-runs the idempotent insert above and queues the cash_sale.
+        try:
+            machine.send_recovered_cash_sale(pending)
+        except Exception:
+            logger.exception("PAY-104 record-sale: cash_sale could not be queued")
+            vmc.raise_fault(FaultCode.PAY_103, outcome="cash_sale_not_queued")
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Sale recorded, but the board could not be told its cash "
+                    "left escrow; PAY-104 left active -- retry (the sale will "
+                    "not be recorded twice)"
+                ),
             ) from None
         if not vmc.clear_fault(FaultCode.PAY_104.value, by="admin"):
             # The sale is recorded and must never be recorded again --
@@ -237,7 +256,7 @@ async def pay104_record_sale(request: Request):
             vmc.raise_fault(
                 FaultCode.DATA_101,
                 outcome=(
-                    f"sku={pending['sku']} price=${pending['price']:.2f}; "
+                    f"sku={pending['sku']} price={format_cents(pending['price_cents'])}; "
                     "PAY-104 recovery marker could not be written"
                 ),
             )

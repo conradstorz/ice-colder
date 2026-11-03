@@ -1,9 +1,9 @@
-"""Escrow ledger: the FIFO credit ledger behind ``VMC.credit_escrow``.
+"""Escrow ledger: the FIFO credit ledger behind ``VMC.credit_escrow_cents``.
 
 Extracted from ``ice_edge.sale.vmc.VMC`` as the second step in breaking up the
 VMC god object, following the same pattern as ``ice_edge/faults/fault_registry.py``'s
 ``FaultRegistry`` (see ``CLAUDE.md``'s "FSM Core" section). ``EscrowLedger``
-owns ``total`` (the authoritative escrow amount) and ``credits`` (the FIFO
+owns ``total_cents`` (the authoritative escrow amount) and ``credits`` (the FIFO
 list of ``Credit``) plus the pure bookkeeping to deposit, consume-FIFO,
 restore, and empty them -- including the divergence-guard warning. It knows
 nothing about MQTT, the FSM, refund commands, or sale recording; those side
@@ -18,121 +18,166 @@ import time
 
 from loguru import logger
 
+from ice_contracts.money import format_cents
+
 from ice_edge.ledger.session_store import Credit
 
 
 class EscrowLedger:
-    """FIFO ledger of credit held in escrow for the customer.
+    """FIFO ledger of credit held in escrow for the customer, in integer cents.
 
-    Invariant, to the cent: ``round(total, 2) == round(sum(c.amount for c in
-    credits), 2)`` whenever no sale is in flight. ``total`` is a running
-    float sum, so it may carry sub-cent residue (0.1 + 0.2 leaves
-    0.30000000000000004); compare it rounded, never with ``==``. Every
-    method here that changes one side changes the other, with two
-    exceptions: ``consume_fifo`` deliberately changes only ``credits`` and
-    leaves the caller to subtract the price from ``total`` (see its
-    docstring), and a caller poking ``total``/``credits`` directly -- the
-    divergence guard in ``consume_fifo`` exists for exactly that case.
+    Invariant, exactly: ``total_cents == sum(c.cents for c in credits)``
+    whenever no sale is in flight. Every method here that changes one side
+    changes the other, with two exceptions: ``consume_fifo`` deliberately
+    changes only ``credits`` and leaves the caller to subtract the price from
+    ``total_cents`` (see its docstring), and a caller poking
+    ``total_cents``/``credits`` directly -- the divergence guard in
+    ``consume_fifo`` exists for exactly that case.
     """
 
-    # Amounts within this many dollars of each other are the same money for
-    # ledger purposes -- see VMC.CREDIT_TOLERANCE, which equals this.
-    TOLERANCE = 0.005
-
     def __init__(self) -> None:
-        self.total: float = 0.0
+        self.total_cents: int = 0
         self.credits: list[Credit] = []
 
     @property
     def has_credit(self) -> bool:
         """Whether there is any credit left in escrow."""
-        return self.total > 0
+        return self.total_cents > 0
 
     @property
-    def is_empty_within_tolerance(self) -> bool:
-        """Whether the remaining total is within tolerance of zero."""
-        return self.total <= self.TOLERANCE
+    def is_empty(self) -> bool:
+        """Whether nothing is left in escrow."""
+        return self.total_cents <= 0
 
-    def deposit(self, method: str, amount: float, ts: float) -> None:
+    def deposit(
+        self, method: str, cents: int, ts: float, event_id: str | None = None
+    ) -> None:
         """Add a credit: bump the total and append it to the FIFO list."""
-        self.total += amount
-        self.credits.append(Credit(method=method, amount=amount, ts=ts))
+        self.total_cents += cents
+        self.credits.append(
+            Credit(method=method, cents=cents, ts=ts, event_id=event_id)
+        )
 
-    def consume_fifo(self, price: float) -> dict[str, float]:
-        """Consume credits FIFO for `price`, returning consumed shares.
+    def consume_fifo(self, price_cents: int) -> dict[str, int]:
+        """`consume_fifo_pieces` without the pieces."""
+        return self.consume_fifo_pieces(price_cents)[0]
+
+    def consume_fifo_pieces(
+        self, price_cents: int
+    ) -> tuple[dict[str, int], list[Credit]]:
+        """Consume credits FIFO for `price_cents`, returning consumed shares.
 
         Mutates `credits` in place: fully-consumed credits are removed, a
         partially-consumed credit shrinks in place (same method, reduced
         amount), and untouched credits are left exactly as they were. The
-        returned dict sums each raw method string to the amount of it that
+        returned dict sums each raw method string to the cents of it that
         was spent -- the method breakdown the caller records for the sale,
         and what a failed vend re-credits via `restore` below, so it must
         never be re-derived from anything but the credits actually consumed
         here.
 
-        This method does NOT subtract `price` from `total` -- the caller
-        does that itself (see `VMC.process_payment`), mirroring the split
-        that existed before this extraction.
+        This method does NOT subtract the price from `total_cents` -- the
+        caller does that itself (see `VMC.process_payment`).
 
-        Divergence guard: `credits` is supposed to sum to `total` at all
+        Divergence guard: `credits` is supposed to sum to `total_cents` at all
         times (every path that changes one changes the other). If it does
-        not -- a bug elsewhere, e.g. `total` mutated directly without going
-        through `deposit` -- the ledger cannot be trusted to attribute this
-        sale correctly, so no credit is touched and the whole price is
+        not -- a bug elsewhere, e.g. `total_cents` mutated directly without
+        going through `deposit` -- the ledger cannot be trusted to attribute
+        this sale correctly, so no credit is touched and the whole price is
         booked to the single method "unknown" instead of silently
         misattributing it to whatever methods happen to be in the (wrong)
         list. This is a bug guard, not an expected path.
-        """
-        ledger_total = round(sum(c.amount for c in self.credits), 2)
-        if abs(ledger_total - round(self.total, 2)) > self.TOLERANCE:
-            logger.warning(
-                f"escrow_credits total (${ledger_total:.2f}) diverged from "
-                f"credit_escrow (${self.total:.2f}); booking "
-                f"${price:.2f} to 'unknown' rather than misattribute it"
-            )
-            return {"unknown": round(price, 2)}
 
-        remaining = round(price, 2)
-        shares: dict[str, float] = {}
+        Also returns the consumed pieces, one `Credit` per (partial) credit
+        taken, carrying its `event_id`: a sale can tell which board boot its
+        cash came from, and a failed vend can restore the same ids.
+        """
+        ledger_total = sum(c.cents for c in self.credits)
+        if ledger_total != self.total_cents:
+            logger.warning(
+                f"escrow_credits total ({format_cents(ledger_total)}) diverged from "
+                f"credit_escrow ({format_cents(self.total_cents)}); booking "
+                f"{format_cents(price_cents)} to 'unknown' rather than misattribute it"
+            )
+            return {"unknown": price_cents}, []
+
+        remaining = price_cents
+        shares: dict[str, int] = {}
+        pieces: list[Credit] = []
         kept: list[Credit] = []
         for credit in self.credits:
-            if remaining <= self.TOLERANCE:
+            if remaining <= 0:
                 kept.append(credit)
                 continue
-            take = round(min(credit.amount, remaining), 2)
-            shares[credit.method] = round(shares.get(credit.method, 0.0) + take, 2)
-            remaining = round(remaining - take, 2)
-            leftover = round(credit.amount - take, 2)
-            if leftover > self.TOLERANCE:
-                kept.append(Credit(method=credit.method, amount=leftover, ts=credit.ts))
+            take = min(credit.cents, remaining)
+            shares[credit.method] = shares.get(credit.method, 0) + take
+            remaining -= take
+            pieces.append(
+                Credit(
+                    method=credit.method,
+                    cents=take,
+                    ts=credit.ts,
+                    event_id=credit.event_id,
+                )
+            )
+            leftover = credit.cents - take
+            if leftover > 0:
+                kept.append(
+                    Credit(
+                        method=credit.method,
+                        cents=leftover,
+                        ts=credit.ts,
+                        event_id=credit.event_id,
+                    )
+                )
         self.credits = kept
-        return shares
+        return shares, pieces
 
-    def restore(self, shares: dict[str, float], ts: float, price: float) -> None:
-        """Re-credit `price` as separate Credits, one per (method, amount)
+    def restore(
+        self,
+        shares: dict[str, int],
+        ts: float,
+        price_cents: int,
+        pieces: list[Credit] | tuple[Credit, ...] | None = None,
+    ) -> None:
+        """Re-credit `price_cents` as separate Credits, one per (method, cents)
         share, in the same order, all stamped with `ts`.
 
-        A zero-amount share is skipped (it contributes nothing to add), but
-        `price` is still added to `total` in full -- matching
+        A zero-cent share is skipped (it contributes nothing to add), but
+        `price_cents` is still added to `total_cents` in full -- matching
         `VMC.on_vend_failed`'s pre-extraction behavior exactly.
-        """
-        self.total += price
-        for method, amount in shares.items():
-            if amount > 0:
-                self.credits.append(Credit(method=method, amount=amount, ts=ts))
 
-    def restore_shares(self, shares: dict[str, float]) -> float:
-        """`restore` for a whole sale's shares; returns the rounded amount restored."""
-        price = round(sum(shares.values()), 2)
-        self.restore(shares, time.time(), price)
+        ``pieces`` (from `consume_fifo_pieces`) are restored instead, each
+        keeping its `event_id`, when they sum to exactly the shares.
+        """
+        self.total_cents += price_cents
+        if pieces and sum(c.cents for c in pieces) == sum(shares.values()):
+            for c in pieces:
+                if c.cents > 0:
+                    self.credits.append(
+                        Credit(c.method, c.cents, ts, event_id=c.event_id)
+                    )
+            return
+        for method, cents in shares.items():
+            if cents > 0:
+                self.credits.append(Credit(method=method, cents=cents, ts=ts))
+
+    def restore_shares(
+        self,
+        shares: dict[str, int],
+        pieces: list[Credit] | tuple[Credit, ...] | None = None,
+    ) -> int:
+        """`restore` for a whole sale's shares; returns the cents restored."""
+        price = sum(shares.values())
+        self.restore(shares, time.time(), price, pieces)
         return price
 
-    def take_all(self) -> float:
-        """Zero both total and credits, returning the previous rounded total."""
-        amount = round(self.total, 2)
-        self.total = 0.0
+    def take_all(self) -> int:
+        """Zero both total and credits, returning the previous total in cents."""
+        cents = self.total_cents
+        self.total_cents = 0
         self.credits = []
-        return amount
+        return cents
 
     def snapshot_credits(self) -> list[Credit]:
         """A shallow copy of the current credits list, for session snapshots."""

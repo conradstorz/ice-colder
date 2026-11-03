@@ -1,6 +1,6 @@
 """`FakeTaskRunner`: a drop-in for `ice_edge.supervisor.task_runner.TaskRunner` that
 lets a test fire a timer by the label the VMC (or one of its extracted
-collaborators, `RefundProtocol`/`MaintenanceLease`) armed it with, instead of
+collaborators, `MaintenanceLease`) armed it with, instead of
 reaching into a private per-timer task handle on the VMC (VMC public
 surface design, section 2).
 
@@ -44,6 +44,7 @@ from ice_edge.supervisor.task_runner import TaskRunner
 from tests.async_helpers import patch_module_sleep, settle  # noqa: F401  (re-exported)
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from ice_edge.ledger.session_store import SessionSnapshot
+from ice_edge.payment.ports import PendingPayout
 
 
 @dataclass
@@ -185,6 +186,46 @@ async def drain_pending(runner: FakeTaskRunner) -> None:
         await asyncio.gather(*live, return_exceptions=True)
 
 
+class FakePayments:
+    """A `Payments` that records what the sale FSM asked of the MDB board.
+
+    ``payouts`` holds ``(cents, reason, sale_id)`` and ``cash_sales`` holds
+    ``(cents, sale_id)``; ``pending_payouts()`` reports every request not yet
+    ``complete()``d, as the real queue does.
+    """
+
+    def __init__(self) -> None:
+        self.payouts: list[tuple[int, str, str | None]] = []
+        self.cash_sales: list[tuple[int, str | None]] = []
+        self._pending: list[PendingPayout] = []
+        # The board's current boot id; None = unknown (all cash counts).
+        self.boot_id: str | None = None
+
+    def board_boot_id(self) -> str | None:
+        return self.boot_id
+
+    def pay_out(self, cents, reason, sale_id) -> None:
+        value = getattr(reason, "value", reason)
+        self.payouts.append((cents, value, sale_id))
+        self._pending.append(
+            PendingPayout(f"p{len(self.payouts):07d}", "payout", cents, value, sale_id)
+        )
+
+    def cash_sale(self, cents, sale_id) -> None:
+        self.cash_sales.append((cents, sale_id))
+        self._pending.append(
+            PendingPayout(
+                f"c{len(self.cash_sales):07d}", "cash_sale", cents, None, sale_id
+            )
+        )
+
+    def pending_payouts(self) -> list[PendingPayout]:
+        return list(self._pending)
+
+    def complete(self) -> None:
+        self._pending.clear()
+
+
 class FakeMqtt:
     """Records every publish() call as `(topic, payload, retain)`.
     `register` is accepted and ignored: `StatusOutputs`/`FaultService`
@@ -266,14 +307,10 @@ class FakeAvailability:
         self.transaction_certain: list[bool] = []
         self.publisher = None
         self.hardware_io: list[tuple[str, bool]] = []
-        self.payment_devices: list[tuple[str, str]] = []
         self.capabilities: list[tuple] = []
 
     def set_hardware_io(self, device: str, state: bool) -> None:
         self.hardware_io.append((device, state))
-
-    def set_payment_device(self, device: str, state: str) -> None:
-        self.payment_devices.append((device, state))
 
     def on_vending_capabilities(self, subsystem, data, caps) -> None:
         self.capabilities.append((subsystem, data, caps))

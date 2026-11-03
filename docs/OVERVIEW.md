@@ -94,7 +94,7 @@ publishes goes through one outbound channel, and every timer is labelled so test
 → [VMC as the sale FSM](superpowers/specs/2026-10-10-vmc-sale-fsm-core-design.md) ·
 [VMC public surface](superpowers/specs/2026-10-09-vmc-public-surface-design.md) ·
 [VMC diet (collaborator extraction)](superpowers/specs/2026-10-12-vmc-diet-design.md) ·
-[CLAUDE.md — FSM Core](../CLAUDE.md#fsm-core-packagesedgesrcice_edgesalevmcpy-packagesedgesrcice_edgeappmachinepy)
+[CLAUDE.md — FSM Core](../packages/edge/CLAUDE.md#fsm-core-packagesedgesrcice_edgesalevmcpy-packagesedgesrcice_edgeappmachinepy)
 
 ### Money: escrow, refunds and durable sales
 
@@ -159,7 +159,7 @@ parent. Every control gives instant press/busy feedback and a click sound.
 [Dashboard v2 program plan](superpowers/plans/2026-09-25-dashboard-v2-program.md) ·
 [Touch feedback](superpowers/specs/2026-09-30-touch-feedback-design.md) ·
 [First-run startup and product lifecycle](superpowers/specs/2026-09-12-first-run-startup-design.md) ·
-[CLAUDE.md — Web Dashboard](../CLAUDE.md#web-dashboard-ice_edgeweb) (every URL and its permission) ·
+[CLAUDE.md — Web Dashboard](../packages/edge/src/ice_edge/web/CLAUDE.md#web-dashboard-ice_edgeweb) (every URL and its permission) ·
 [README — Using the Dashboard](../README.md#using-the-dashboard)
 
 ### Roles, access and remote exposure
@@ -210,7 +210,7 @@ Machines authenticate with an Ed25519 key per request, people with Google sign-i
 
 → [Cloud monitoring server](superpowers/specs/2026-10-13-cloud-monitoring-server-design.md) ·
 [Edge-cloud contract](contracts/edge-cloud/CONTRACT.md) ·
-[CLAUDE.md — Cloud](../CLAUDE.md#cloud-ice_cloud) ·
+[CLAUDE.md — Cloud](../packages/cloud/CLAUDE.md#cloud-ice_cloud) ·
 [Deploying the cloud server](deploying-the-cloud-server.md) ·
 [Running a virtual fleet](running-a-virtual-fleet.md)
 
@@ -261,8 +261,8 @@ CI (ruff, pytest, headless-Chrome browser tests) runs on every push; `main` publ
 `ghcr.io/conradstorz/ice-colder`, which Watchtower rolls out to the simulation host.
 
 → [README — Running](../README.md#running) ·
-[CLAUDE.md — Docker](../CLAUDE.md#docker) ·
-[CLAUDE.md — Configuration](../CLAUDE.md#configuration-packagescommonsrcice_commonconfig_modelpy-configjson)
+[CLAUDE.md — Docker](../docker/CLAUDE.md#docker) ·
+[CLAUDE.md — Configuration](../packages/edge/CLAUDE.md#configuration-packagescommonsrcice_commonconfig_modelpy-configjson)
 
 ## Developing and testing
 

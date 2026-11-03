@@ -16,7 +16,7 @@ def test_round_trip(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     snap = SessionSnapshot(
         state="dispensing",
-        credit_escrow=0.0,
+        credit_escrow_cents=0,
         selected_sku="ICE-1",
         dispense_slot=2,
         dispense_started_at=123.0,
@@ -34,15 +34,15 @@ def test_round_trip_with_credits_and_pending_shares(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     snap = SessionSnapshot(
         state="dispensing",
-        credit_escrow=0.50,
+        credit_escrow_cents=50,
         selected_sku="ICE-1",
         dispense_slot=2,
         dispense_started_at=123.0,
         credits=[
-            Credit(method="cash_bill", amount=2.00, ts=10.0),
-            Credit(method="card", amount=0.50, ts=20.0),
+            Credit(method="cash_bill", cents=200, ts=10.0),
+            Credit(method="card", cents=50, ts=20.0),
         ],
-        pending_sale_shares={"cash_bill": 2.00, "card": 0.50},
+        pending_sale_shares={"cash_bill": 200, "card": 50},
     )
 
     store.save(snap)
@@ -51,13 +51,13 @@ def test_round_trip_with_credits_and_pending_shares(tmp_path):
     assert loaded == snap
     assert all(isinstance(c, Credit) for c in loaded.credits)
     assert loaded.credits[0].method == "cash_bill"
-    assert loaded.credits[1].amount == 0.50
-    assert loaded.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+    assert loaded.credits[1].cents == 50
+    assert loaded.pending_sale_shares == {"cash_bill": 200, "card": 50}
 
 
 def test_round_trip_with_empty_credits_and_none_shares(tmp_path):
     store = SessionStore(tmp_path / "session.json")
-    snap = SessionSnapshot(state="idle", credit_escrow=0.0)
+    snap = SessionSnapshot(state="idle", credit_escrow_cents=0)
 
     store.save(snap)
     loaded = store.load()
@@ -87,7 +87,7 @@ def test_old_file_with_no_credits_key_still_loads_with_defaults(tmp_path):
     loaded = SessionStore(path).load()
 
     assert loaded.error is None
-    assert loaded.credit_escrow == 1.25
+    assert loaded.credit_escrow_cents == 125
     assert loaded.credits == []
     assert loaded.pending_sale_shares is None
 
@@ -117,7 +117,7 @@ def test_old_file_with_no_is_test_key_defaults_to_production(tmp_path):
 
     assert loaded.error is None
     assert loaded.is_test is False
-    assert loaded.pending_sale_shares == {"cash_bill": 2.50}
+    assert loaded.pending_sale_shares == {"cash_bill": 250}
     assert loaded.is_open() is True
 
 
@@ -152,7 +152,7 @@ def test_dispense_mechanism_round_trips(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     snap = SessionSnapshot(
         state="dispensing",
-        credit_escrow=0.0,
+        credit_escrow_cents=0,
         selected_sku="ICE-1",
         dispense_slot=2,
         dispense_mechanism="bagged_ice",
@@ -170,7 +170,7 @@ def test_load_missing_returns_none(tmp_path):
 
 def test_clear_removes_file_and_is_idempotent(tmp_path):
     store = SessionStore(tmp_path / "session.json")
-    store.save(SessionSnapshot(state="idle", credit_escrow=1.0))
+    store.save(SessionSnapshot(state="idle", credit_escrow_cents=100))
     store.clear()
     store.clear()
     assert store.load() is None
@@ -183,7 +183,7 @@ def test_clear_returns_true_on_missing_file(tmp_path):
 
 def test_clear_returns_false_when_unlink_raises(tmp_path, monkeypatch):
     store = SessionStore(tmp_path / "session.json")
-    store.save(SessionSnapshot(state="idle", credit_escrow=1.0))
+    store.save(SessionSnapshot(state="idle", credit_escrow_cents=100))
 
     def boom(self, missing_ok=False):
         raise OSError("permission denied")
@@ -202,15 +202,15 @@ def test_corrupt_file_is_an_open_session_with_error(tmp_path):
 
 
 def test_is_open_rules():
-    assert SessionSnapshot(state="idle", credit_escrow=0.0).is_open() is False
+    assert SessionSnapshot(state="idle", credit_escrow_cents=0).is_open() is False
     assert (
-        SessionSnapshot(state="interacting_with_user", credit_escrow=0.25).is_open()
+        SessionSnapshot(state="interacting_with_user", credit_escrow_cents=25).is_open()
         is True
     )
-    assert SessionSnapshot(state="dispensing", credit_escrow=0.0).is_open() is True
+    assert SessionSnapshot(state="dispensing", credit_escrow_cents=0).is_open() is True
     assert (
         SessionSnapshot(
-            state="idle", credit_escrow=0.0, pending_refund_request_id="abc"
+            state="idle", credit_escrow_cents=0, pending_refund_request_id="abc"
         ).is_open()
         is True
     )
@@ -218,9 +218,12 @@ def test_is_open_rules():
 
 async def test_save_async_writes_in_order(tmp_path):
     store = SessionStore(tmp_path / "session.json")
-    await store.save_async(SessionSnapshot(state="idle", credit_escrow=1.0))
-    await store.save_async(SessionSnapshot(state="idle", credit_escrow=2.0))
-    assert json.loads((tmp_path / "session.json").read_text())["credit_escrow"] == 2.0
+    await store.save_async(SessionSnapshot(state="idle", credit_escrow_cents=100))
+    await store.save_async(SessionSnapshot(state="idle", credit_escrow_cents=200))
+    assert (
+        json.loads((tmp_path / "session.json").read_text())["credit_escrow_cents"]
+        == 200
+    )
     await store.clear_async()
     assert store.load() is None
 
@@ -234,7 +237,7 @@ def test_saved_at_survives_round_trip_across_a_process_boundary(tmp_path):
     path = tmp_path / "session.json"
     writer = SessionStore(path)
     snap = SessionSnapshot(
-        state="interacting_with_user", credit_escrow=1.25, saved_at=1_700_000_000.5
+        state="interacting_with_user", credit_escrow_cents=125, saved_at=1_700_000_000.5
     )
     writer.save(snap)
 
@@ -259,7 +262,7 @@ def test_missing_saved_at_is_reported_as_unreadable_not_defaulted_to_now(tmp_pat
 
     assert loaded is not None
     assert loaded.error is not None
-    assert loaded.credit_escrow == 0.0  # the fabricated 5.0 was not trusted
+    assert loaded.credit_escrow_cents == 0  # the fabricated 5.0 was not trusted
     assert loaded.is_open() is True
 
 
@@ -277,7 +280,7 @@ def test_non_finite_saved_at_is_reported_as_unreadable(tmp_path):
 
     assert loaded is not None
     assert loaded.error is not None
-    assert loaded.credit_escrow == 0.0
+    assert loaded.credit_escrow_cents == 0
     assert loaded.is_open() is True
 
 
@@ -292,7 +295,7 @@ def test_negative_saved_at_is_reported_as_unreadable(tmp_path):
 
     assert loaded is not None
     assert loaded.error is not None
-    assert loaded.credit_escrow == 0.0
+    assert loaded.credit_escrow_cents == 0
     assert loaded.is_open() is True
 
 
@@ -303,12 +306,12 @@ def test_is_open_unchanged_for_open_and_cleared_snapshot_after_guard(tmp_path):
     store = SessionStore(tmp_path / "session.json")
 
     open_snap = SessionSnapshot(
-        state="interacting_with_user", credit_escrow=0.75, saved_at=100.0
+        state="interacting_with_user", credit_escrow_cents=75, saved_at=100.0
     )
     store.save(open_snap)
     assert store.load().is_open() is True
 
-    cleared_snap = SessionSnapshot(state="idle", credit_escrow=0.0, saved_at=200.0)
+    cleared_snap = SessionSnapshot(state="idle", credit_escrow_cents=0, saved_at=200.0)
     store.save(cleared_snap)
     assert store.load().is_open() is False
 
@@ -332,7 +335,7 @@ def test_future_saved_at_beyond_skew_loads_with_a_warning(tmp_path):
 
     assert loaded is not None
     assert loaded.error is None
-    assert loaded.credit_escrow == 5.0
+    assert loaded.credit_escrow_cents == 500
     assert loaded.saved_at == future
     assert loaded.is_open() is True
     assert any("saved_at" in m and "ahead" in m for m in messages)
@@ -361,7 +364,7 @@ def test_saved_at_just_within_future_skew_is_accepted(tmp_path):
 
     assert loaded is not None
     assert loaded.error is None
-    assert loaded.credit_escrow == 5.0
+    assert loaded.credit_escrow_cents == 500
     assert loaded.saved_at == within_skew
     assert not any("saved_at" in m for m in messages)
 
@@ -382,5 +385,112 @@ def test_zero_saved_at_is_reported_as_unreadable(tmp_path):
 
     assert loaded is not None
     assert loaded.error is not None
-    assert loaded.credit_escrow == 0.0
+    assert loaded.credit_escrow_cents == 0
     assert loaded.is_open() is True
+
+
+def test_save_writes_units_cents_marker(tmp_path):
+    path = tmp_path / "session.json"
+    SessionStore(path).save(
+        SessionSnapshot(state="interacting_with_user", credit_escrow_cents=125)
+    )
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+
+    assert raw["units"] == "cents"
+    assert raw["credit_escrow_cents"] == 125
+    assert "credit_escrow" not in raw
+
+
+def test_cents_file_is_not_reconverted_on_load(tmp_path):
+    """A file carrying units=cents is read as-is; 125 must not become 12500."""
+    store = SessionStore(tmp_path / "session.json")
+    snap = SessionSnapshot(
+        state="dispensing",
+        credit_escrow_cents=125,
+        credits=[Credit(method="cash_bill", cents=125, ts=1.0)],
+        pending_sale_shares={"cash": 250},
+    )
+    store.save(snap)
+
+    assert store.load() == snap
+
+
+def test_legacy_dollar_file_converts_to_cents(tmp_path):
+    """A pre-cents session.json (no `units`) loads through dollars_to_cents:
+    credit_escrow 1.25 -> 125, credit amount 1.25 -> 125, share 2.5 -> 250."""
+    path = tmp_path / "session.json"
+    legacy = {
+        "state": "interacting_with_user",
+        "credit_escrow": 1.25,
+        "selected_sku": "ICE-1",
+        "dispense_slot": None,
+        "dispense_started_at": None,
+        "pending_refund_request_id": None,
+        "credits": [{"method": "cash_bill", "amount": 1.25, "ts": 10.0}],
+        "pending_sale_shares": {"cash": 2.5},
+        "saved_at": 100.0,
+        "error": None,
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = SessionStore(path).load()
+
+    assert loaded.error is None
+    assert loaded.credit_escrow_cents == 125
+    assert loaded.credits == [Credit(method="cash_bill", cents=125, ts=10.0)]
+    assert loaded.pending_sale_shares == {"cash": 250}
+
+
+def test_credit_event_id_round_trips_and_old_credit_loads_without_it(tmp_path):
+    path = tmp_path / "session.json"
+    store = SessionStore(path)
+    store.save(
+        SessionSnapshot(
+            state="idle",
+            credit_escrow_cents=300,
+            credits=[Credit("cash_bill", 300, 1.0, event_id="evt-boot-0001-0007")],
+        )
+    )
+    assert store.load().credits[0].event_id == "evt-boot-0001-0007"
+
+    raw = json.loads(path.read_text())
+    del raw["credits"][0]["event_id"]  # a file from before the field existed
+    path.write_text(json.dumps(raw))
+    assert store.load().credits[0].event_id is None
+
+
+def test_pending_payouts_keep_a_snapshot_open_and_round_trip(tmp_path):
+    payout = {
+        "request_id": "r" * 8,
+        "kind": "payout",
+        "cents": 200,
+        "reason": "customer",
+        "sale_id": None,
+    }
+    snap = SessionSnapshot(
+        state="idle", credit_escrow_cents=0, pending_payouts=[payout]
+    )
+    assert snap.is_open()
+    assert not SessionSnapshot(state="idle", credit_escrow_cents=0).is_open()
+
+    store = SessionStore(tmp_path / "session.json")
+    store.save(snap)
+    assert store.load().pending_payouts == [payout]
+
+
+def test_legacy_pending_refund_request_id_still_counts_as_open(tmp_path):
+    path = tmp_path / "session.json"
+    store = SessionStore(path)
+    store.save(
+        SessionSnapshot(
+            state="idle", credit_escrow_cents=0, pending_refund_request_id="r" * 8
+        )
+    )
+    raw = json.loads(path.read_text())
+    del raw["pending_payouts"]  # a file written before the MDB cutover
+    path.write_text(json.dumps(raw))
+
+    loaded = store.load()
+    assert loaded.pending_payouts == [] and loaded.pending_refund_request_id
+    assert loaded.is_open()

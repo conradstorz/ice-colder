@@ -36,8 +36,12 @@ Cloud C1, C2 → the rest.
   same-slot duplicate `complete` during `record()` (`test_vmc_flows.py:219` only covers a
   different-slot duplicate).
 
-- [ ] **M3 — HIGH: the edge does not consume the new payment contract
+- [x] **M3 — HIGH: the edge does not consume the new payment contract
   (`ice_contracts.board.payment` 1.1.0).**
+  Status 2026-10-30: done. Spec A (money in integer cents) and spec B (the payment cutover:
+  `payment/event` consumer with `(boot_id, seq)` acks and `event_id` dedup, `PAY-105` on a gap,
+  `set_policy`/`payout`/`cash_sale`, vending contract 3.0.0) are merged on this branch; the
+  description below is the problem as found.
   `hal/mqtt_inbound.py:185` still routes legacy `payment/credit` to `on_payment_credit`,
   which validates the deprecated `PaymentEvent` (amount/method/timestamp only). Nothing
   in `ice_edge` or `ice_sims` imports `ice_contracts.board.payment`; no `payment/event`

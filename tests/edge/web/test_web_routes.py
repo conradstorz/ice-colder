@@ -522,7 +522,7 @@ class TestPermissionMatrix:
         from ice_edge.config.config_store import add_product
 
         cfg, _vmc, _inv, store = wired
-        add_product(cfg, _SKU, "Matrix Item", 1.00)
+        add_product(cfg, _SKU, "Matrix Item", 100)
         owner_id = store.owner().id
         client = login_as(role)
 
@@ -589,7 +589,7 @@ class TestPermissionMatrix:
         from ice_edge.config.config_store import add_product
 
         _cfg, _vmc, _inv, _store = wired
-        add_product(_cfg, "MATRIX-1", "Matrix Item", 1.00)
+        add_product(_cfg, "MATRIX-1", "Matrix Item", 100)
         client = login_as(role)
         resp = client.post(
             "/products/MATRIX-1/catalog",
@@ -939,7 +939,9 @@ class TestFaultsUI:
         assert r.status_code == 200
         assert "ICE-301" in r.text
         # The fault row names both the code and the locked product's name.
-        assert re.search(r"ICE-301 · \w+</span>.*?· Ice</span>", r.text, flags=re.DOTALL)
+        assert re.search(
+            r"ICE-301 · \w+</span>.*?· Ice</span>", r.text, flags=re.DOTALL
+        )
         assert "Issues Detected" in r.text
 
     def test_status_issues_headline_uses_hero_token(self, client):
@@ -1028,8 +1030,8 @@ class TestFaultsUI:
         from ice_edge.ledger.event_recorder import EventRecorder
 
         rec = EventRecorder(db_path=str(tmp_path / "events.db"))
-        rec.record("vend_failed", value=2.5)
-        rec.record("refund", value=2.5)
+        rec.record("vend_failed", value=250)
+        rec.record("refund", value=250)
         routes.set_event_recorder(rec)
         r = client.get("/reports")
         assert "Failed Vends" in r.text

@@ -15,6 +15,7 @@ from typing import Literal
 from ice_cloud.store.repository import Account, Machine, Membership
 from ice_contracts.cloud.report import FaultView, MachineReport
 from ice_contracts.cloud.signing import short_fingerprint
+from ice_contracts.money import format_cents
 from ice_ui.filters import humanize_seconds
 
 STALE_FACTOR = 3
@@ -392,7 +393,7 @@ def build_fleet_view(
         ),
         Headline(
             "Revenue (24 h)",
-            f"${sum(s.money_in for s in summaries):.2f}",
+            format_cents(sum(s.money_in_cents for s in summaries)),
             f"{sum(s.products_out for s in summaries)} products out · "
             f"{sum(s.vends_failed for s in summaries)} vends failed",
             "/admin/machines?status=online",

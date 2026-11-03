@@ -12,9 +12,6 @@ from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     DispenseStep,
     FaultCode,
-    PaymentRefundCommand,
-    PaymentRefundResult,
-    RefundStatus,
     Scope,
     Severity,
     VendingChannel,
@@ -35,8 +32,8 @@ def test_contract_version():
     # `dispense` params now require mechanism+profile, `cmd/dispense` is
     # removed, and DispenserStatus.request_id is now always set for sales.
     # 1.0.0 -> 2.0.0: ButtonPress.button is a channel id (breaking).
-    # 2.2.0 -> 2.3.0: DATA-105/DATA-106 (additive).
-    assert CONTRACT_VERSION == "2.3.0"
+    # 2.3.0 -> 2.4.0: VMCStatus.credit_escrow_cents (additive).
+    assert CONTRACT_VERSION == "3.0.0"
 
 
 def test_payment_contract_faults_registered():
@@ -134,41 +131,6 @@ def test_severities_follow_roadmap():
     assert FAULT_TABLE[FaultCode.ICE_301].scope is Scope.product
 
 
-class TestPaymentRefundCommand:
-    def test_valid(self):
-        cmd = PaymentRefundCommand(
-            request_id="a" * 32, amount=2.5, reason="session_timeout"
-        )
-        assert cmd.amount == 2.5
-        assert cmd.timestamp is not None
-
-    def test_rejects_non_positive_amount(self):
-        with pytest.raises(ValidationError):
-            PaymentRefundCommand(request_id="a" * 32, amount=0, reason="cancel")
-
-    def test_rejects_short_request_id(self):
-        with pytest.raises(ValidationError):
-            PaymentRefundCommand(request_id="short", amount=1.0, reason="cancel")
-
-
-class TestPaymentRefundResult:
-    def test_defaults(self):
-        res = PaymentRefundResult(request_id="a" * 32, status=RefundStatus.ok)
-        assert res.amount_returned == 0.0
-        assert res.detail is None
-
-    def test_round_trip_json(self):
-        res = PaymentRefundResult(
-            request_id="a" * 32,
-            status="failed",
-            amount_returned=0.0,
-            detail="changer_empty",
-        )
-        again = PaymentRefundResult.model_validate_json(res.model_dump_json())
-        assert again.status is RefundStatus.failed
-        assert again.detail == "changer_empty"
-
-
 def test_vmc_alert_carries_code_and_sku():
     from ice_contracts.board.mqtt_messages import VMCAlert
 
@@ -212,7 +174,7 @@ class TestSubsystemCapabilities:
             )
 
     def test_contract_version_bumped(self):
-        assert CONTRACT_VERSION == "2.3.0"
+        assert CONTRACT_VERSION == "3.0.0"
 
     def test_expected_subsystems(self):
         assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")
@@ -236,7 +198,7 @@ def test_pay_104_is_a_machine_warning():
 def test_contract_version_bumped_for_new_code():
     from ice_contracts.board.vending_machine import CONTRACT_VERSION
 
-    assert CONTRACT_VERSION == "2.3.0"
+    assert CONTRACT_VERSION == "3.0.0"
 
 
 def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():

@@ -28,7 +28,7 @@
     <div class="grid grid-cols-2 md:grid-cols-4 gap-touch">
       <div>
         <div class="text-xs text-gray-400 uppercase tracking-wide">Price</div>
-        <div class="text-base font-medium text-gray-900">${{ "%.2f"|format(product.price) }}</div>
+        <div class="text-base font-medium text-gray-900">{{ product.price_cents|money }}</div>
       </div>
       <div>
         <div class="text-xs text-gray-400 uppercase tracking-wide">Kind</div>

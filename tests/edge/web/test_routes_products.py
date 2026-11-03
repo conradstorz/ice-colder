@@ -23,7 +23,7 @@ def _state(cfg, inv):
     saved = config_store.CONFIG_PATH
     return (
         [
-            (p.sku, p.name, p.price, p.slot, p.kind, inv.get_count(p.sku))
+            (p.sku, p.name, p.price_cents, p.slot, p.kind, inv.get_count(p.sku))
             for p in cfg.products
         ],
         inv.get_all(),
@@ -202,7 +202,7 @@ class TestPlacementGating:
             p for p in context.config.products if p.sku == f"PLPOST-{role.value}"
         )
         assert product.slot == 2
-        assert product.price == 5.00
+        assert product.price_cents == 500
         assert inv.get_count(f"PLPOST-{role.value}") == 3
 
 
@@ -218,7 +218,7 @@ class TestCatalogWrites:
         assert resp.headers["hx-redirect"] == "/products/CAT-1"
         updated = next(p for p in cfg.products if p.sku == "CAT-1")
         assert updated.name == "New Name"
-        assert updated.price == 3.50
+        assert updated.price_cents == 350
         assert updated.kind == "water"
 
     def test_catalog_breadcrumb_chain_is_four_entries(self, client, wired):
@@ -290,7 +290,7 @@ class TestPlacementWrites:
         updated = next(p for p in cfg.products if p.sku == "PLC-4")
         assert updated.slot == 5
         assert updated.name == "Original"
-        assert updated.price == 9.99
+        assert updated.price_cents == 999
 
     def test_placement_post_negative_count_is_rejected(self, client, wired):
         """Part 1's 231fe36: a negative inventory_count is rejected and
@@ -381,6 +381,15 @@ class TestCreateCopyDelete:
         assert product.slot == 3
         assert inv.get_count("NEW-1") == 7
         assert inv.is_tracked("NEW-1") is True
+
+    def test_create_astronomical_price_is_400_not_500(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        resp = client.post(
+            "/products/new",
+            data={"sku": "HUGE-1", "name": "X", "price": "1e1000000"},
+        )
+        assert resp.status_code == 400
+        assert not any(p.sku == "HUGE-1" for p in cfg.products)
 
     def test_create_negative_count_rejected(self, client, wired):
         cfg, _vmc, _inv, _store = wired
@@ -713,9 +722,9 @@ class TestRoutesTolerateMissingMachine:
         assert resp.status_code == 200
         assert resp.headers["hx-redirect"] == "/products/NM-CAT"
         updated = next(p for p in cfg.products if p.sku == "NM-CAT")
-        assert (updated.name, updated.price, updated.kind) == (
+        assert (updated.name, updated.price_cents, updated.kind) == (
             "New Name",
-            3.50,
+            350,
             "water",
         )
         assert "New Name" in self._saved()
@@ -852,7 +861,7 @@ class TestProductButton:
         assert resp.status_code == 200
         product = next(p for p in cfg.products if p.sku == "BTN-8")
         assert product.name == "Renamed"
-        assert product.price == 2.50
+        assert product.price_cents == 250
         assert product.button == "button_ice"
 
     def test_invalid_button_id_is_400(self, client, wired):
@@ -960,3 +969,36 @@ class TestLengthLimits:
         value = re.search(r'id="name" name="name" value="([^"]*)"', resp.text).group(1)
         assert len(value) <= 120
         assert value.endswith(" Copy")
+
+
+class TestPriceForm:
+    def test_price_text_is_stored_as_cents(self, client, wired):
+        assert _add(client, "PF-1", price="2.5").status_code == 200
+        assert context.config.products[-1].price_cents == 250
+
+    @pytest.mark.parametrize("bad", ["2.505", "-1", "1000.01", "", "abc"])
+    def test_bad_price_on_create_is_400_and_changes_nothing(self, client, wired, bad):
+        cfg, inv = wired[0], wired[2]
+        before = _state(cfg, inv)
+        resp = _add(client, "PF-BAD", price=bad)
+        assert resp.status_code == 400
+        assert _state(cfg, inv) == before
+
+    @pytest.mark.parametrize("bad", ["2.505", "-1", "1000.01", ""])
+    def test_bad_price_on_catalog_edit_is_400_and_changes_nothing(
+        self, client, wired, bad
+    ):
+        _add(client, "PF-2", price="3.00")
+        cfg, inv = wired[0], wired[2]
+        before = _state(cfg, inv)
+        resp = client.post(
+            "/products/PF-2/catalog",
+            data={"name": "Item", "price": bad, "kind": "other"},
+        )
+        assert resp.status_code == 400
+        assert _state(cfg, inv) == before
+
+    def test_catalog_form_prefills_two_decimals(self, client, wired):
+        _add(client, "PF-3", price="2.5")
+        resp = client.get("/products/PF-3/catalog")
+        assert 'value="2.50"' in resp.text

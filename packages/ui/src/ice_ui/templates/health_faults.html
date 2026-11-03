@@ -44,23 +44,24 @@
          whether to record it or discard it, rather than clearing blind. #}
       <div class="w-full flex flex-wrap items-center gap-3 text-xs text-gray-500">
         <span class="font-mono">{{ f.pending_sale.sku }}</span>
-        <span>${{ "%.2f"|format(f.pending_sale.price) }}</span>
+        <span>{{ f.pending_sale.price_cents|money }}</span>
         {% for method, amount in f.pending_sale.methods.items() %}
-        <span>{{ method }}: ${{ "%.2f"|format(amount) }}</span>
+        <span>{{ method }}: {{ amount|money }}</span>
         {% endfor %}
       </div>
       {% endif %}
       {% if f.recovery_detail %}
-      {# M11: PAY-104 snapshot detail. No "Refund leftover" action on purpose:
-         after a restart the credit is no longer in escrow and the edge has no
-         refund path for money it does not hold, so the operator refunds at the
-         payment device. Renders nothing when the field is absent (the cloud
-         renders this template from a stored report that has no such field). #}
+      {# PAY-104 snapshot detail. No "Refund leftover" action on purpose: the
+         credit is not in edge escrow after a restart; reconciliation pays only
+         the board's excess once PAY-104 is resolved.
+         Renders nothing when the field is absent (the cloud renders this
+         template from a stored report that has no such field). #}
       {% set d = f.recovery_detail %}
-      {% if d.sale_recorded or d.credit_escrow > 0.005 or d.pending_refund_request_id or d.error %}
+      {% if d.sale_recorded or d.credit_escrow_cents > 0 or d.pending_payouts or d.pending_refund_request_id or d.error %}
       <div class="w-full flex flex-wrap items-center gap-3 text-xs text-gray-500">
         {% if d.sale_recorded %}<span>Sale already recorded</span>{% endif %}
-        {% if d.credit_escrow > 0.005 %}<span>Leftover credit ${{ "%.2f"|format(d.credit_escrow) }}</span>{% endif %}
+        {% if d.credit_escrow_cents > 0 %}<span>Leftover credit {{ d.credit_escrow_cents|money }} (no longer held by the machine; it is paid back only if the board still holds it, so verify the customer was repaid and resolve any remainder manually)</span>{% endif %}
+        {% for p in d.pending_payouts or [] %}<span>{% if p.kind == "cash_sale" %}Cash sale {{ p.cents|money }} not yet reported to the board{% else %}Payout {{ p.cents|money }} unconfirmed{% endif %}</span>{% endfor %}
         {% if d.pending_refund_request_id %}<span>Refund {{ d.pending_refund_request_id }} unconfirmed</span>{% endif %}
         {% if d.error %}<span>Snapshot error: {{ d.error }}</span>{% endif %}
       </div>
@@ -88,10 +89,11 @@
           {% include "partials/confirm_button.html" with context %}
         </div>
         {% else %}
+        {% if f.key == "PAY-104" %}<span class="text-xs text-gray-500">Clearing acts like Discard: the sale is not recorded and any cash the board still holds is paid back out.</span>{% endif %}
         {% set target = "#clear-" ~ f.dom_key %}
         {% set confirm_url = "/health/faults/" ~ f.key ~ "/clear/confirm" %}
         {% set post_url = "/health/faults/" ~ f.key ~ "/clear" %}
-        {% set label = "Clear" %}
+        {% set label = "Clear (as Discard)" if f.key == "PAY-104" else "Clear" %}
         {% set confirm_label = "Confirm" %}
         {% set confirming = false %}
         {% include "partials/confirm_button.html" with context %}

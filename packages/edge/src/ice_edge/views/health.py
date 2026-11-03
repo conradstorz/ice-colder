@@ -268,8 +268,8 @@ def build_fault_views(active_faults: list[dict]) -> list[FaultView]:
                 pending_sale=(
                     PendingSaleView(
                         sku=pending["sku"],
-                        price=pending["price"],
-                        methods=pending["methods"],
+                        price_cents=pending["price_cents"],
+                        methods=dict(pending["methods"]),
                     )
                     if pending is not None
                     else None
@@ -289,14 +289,14 @@ async def build_kpi_summary(event_recorder: EventRecorder | None) -> KpiSummary:
     average = await asyncio.to_thread(event_recorder.get_historical_average, 24)
     return KpiSummary(
         summary=KpiWindow(
-            money_in=summary["money_in"],
+            money_in_cents=summary["money_in_cents"],
             products_out=summary["products_out"],
             vends_failed=summary["vends_failed"],
             errors=summary["errors"],
             uptime_pct=summary["uptime_pct"],
         ),
         average=KpiAverage(
-            money_in=average["money_in"],
+            money_in_cents=average["money_in_cents"],
             products_out=average["products_out"],
             errors=average["errors"],
             uptime_pct=average["uptime_pct"],

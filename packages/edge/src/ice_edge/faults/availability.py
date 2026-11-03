@@ -1,7 +1,7 @@
 """Availability permissives: decides when the machine may accept money.
 
 ROADMAP.md §3. Inputs are pushed in by the VMC and the health monitor; this
-module computes per-kind sale availability and publishes cmd/payment/enable
+module computes per-kind sale availability and publishes the payment policy
 whenever the overall answer changes. Inputs the hardware cannot report yet are
 present as "not instrumented" rows that always pass, so flipping one to
 fail-closed later is a one-line change here.
@@ -15,6 +15,7 @@ from typing import Callable, Optional
 
 from loguru import logger
 
+from ice_contracts.board.payment import PaymentState
 from ice_contracts.board.vending_machine import (
     PAYMENT_BLOCKING_FAULTS,
     FaultCode,
@@ -84,7 +85,9 @@ LIVENESS_INPUTS = {
 
 # active_faults() reports codes as strings; compare against the contract set.
 _PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
-_BAD_DEVICE_STATES = {"error", "offline"}
+_BAD_DEVICE_STATES = frozenset({"offline", "error", "tilt", "jammed"})
+_CASH_DEVICES = ("coin", "bill")
+_CASH_BAD_REASONS = frozenset({"device_fault", "edge_silent"})
 
 # A maintenance TEST sale (TestSaleRunner.run_test_sale, system-tests design §2.3) is
 # exempt from the sale-blocking effect of the maintenance lease's OWN
@@ -141,11 +144,11 @@ def _stub(name: str, applies: Applies, gate: Gate = Gate.fulfillment) -> Permiss
 
 
 class Availability:
-    """Truth table of permissives plus the payment/enable publisher.
+    """Truth table of permissives plus the payment-policy publisher.
 
     Usage:
         avail = Availability()
-        avail.set_publisher(outputs.publish_payment_enable)  # StatusOutputs publisher, sync callable(bool)
+        avail.set_publisher(policy.on_payment_enabled_changed)  # PolicySync, sync callable(bool)
         avail.set_subsystem_alive("vending", True)         # ... from health monitor
         ok, failing = avail.product_sellable(product)
     """
@@ -154,7 +157,9 @@ class Availability:
         self._lockouts: dict[str, str] = {}
         self._publish: Optional[Callable[[bool], None]] = None
         self._recorder = None
-        self._payment_devices: dict[str, str] = {}
+        # device -> (present, status) for coin/bill; None until reported.
+        self._cash_devices: dict[str, tuple[bool, str]] = {}
+        self._cash_reason: Optional[str] = None
         self._bin_half_full: Optional[bool] = None
         self._bin_instrumented = True
         self._ice_101_active = False
@@ -169,7 +174,19 @@ class Availability:
             _inst("mqtt_connected", Applies.both),
             _inst("vending_alive", Applies.both),
             _inst("payment_alive", Applies.both),
-            _inst("payment_devices_ready", Applies.both),
+            _inst(
+                "payment_coin_ready",
+                Applies.both,
+                detail="no report yet",
+                gate=Gate.alert,
+            ),
+            _inst(
+                "payment_bill_ready",
+                Applies.both,
+                detail="no report yet",
+                gate=Gate.alert,
+            ),
+            _inst("cash_accepting", Applies.both, detail="no report yet"),
             _inst("ice_maker_alive", Applies.ice),
             _inst("ice_available", Applies.ice, detail="no bin report yet"),
             _inst("fsm_ok", Applies.both),
@@ -236,12 +253,47 @@ class Availability:
             return
         self._set_bool(name, alive, f"{subsystem} heartbeat lost")
 
-    def set_payment_device(self, device: str, state: str) -> None:
-        self._payment_devices[device] = state
-        bad = sorted(
-            d for d, s in self._payment_devices.items() if s in _BAD_DEVICE_STATES
-        )
-        self._set_bool("payment_devices_ready", not bad, ", ".join(bad))
+    def set_payment_state(self, state: PaymentState | None) -> None:
+        """Consume the retained ``payment/state`` document (cutover spec 5.5)."""
+        if state is None:
+            self._cash_devices.clear()
+            self._cash_reason = None
+        else:
+            for name in _CASH_DEVICES:
+                dev = getattr(state.devices, name)
+                self._cash_devices[name] = (dev.present, dev.status.value)
+            self._cash_reason = (
+                state.inhibited_reason.value if state.inhibited_reason else None
+            )
+        self._refresh_cash()
+
+    def _refresh_cash(self) -> None:
+        usable = 0
+        for name in _CASH_DEVICES:
+            row = self._rows[f"payment_{name}_ready"]
+            seen = self._cash_devices.get(name)
+            if seen is None:
+                row.state, row.detail = PermissiveState.UNKNOWN, "no report yet"
+                continue
+            present, status = seen
+            if not present:
+                row.state, row.detail = PermissiveState.PASS, "not present"
+            elif status in _BAD_DEVICE_STATES:
+                row.state, row.detail = PermissiveState.FAIL, status
+            else:
+                usable += 1
+                row.state = PermissiveState.PASS
+                row.detail = status if status in ("full", "empty") else ""
+        cash = self._rows["cash_accepting"]
+        if not self._cash_devices:
+            cash.state, cash.detail = PermissiveState.UNKNOWN, "no report yet"
+        elif self._cash_reason in _CASH_BAD_REASONS:
+            cash.state, cash.detail = PermissiveState.FAIL, str(self._cash_reason)
+        elif usable == 0:
+            cash.state, cash.detail = PermissiveState.FAIL, "no usable cash device"
+        else:
+            cash.state, cash.detail = PermissiveState.PASS, ""
+        self._recompute()
 
     def set_fsm_state(self, state: str) -> None:
         self._set_bool("fsm_ok", state != "error", "VMC in error state")
@@ -411,7 +463,7 @@ class Availability:
             )
         if command == "water_valve":
             return not self.sale_available("water")[0]
-        if command == "payment/enable":
+        if command == "set_policy":
             return not self.payment_enabled
         return False
 

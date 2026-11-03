@@ -3,8 +3,8 @@
 Pydantic models for all MQTT message payloads.
 
 Messages flow in three directions:
-  ESP32 → RPi:  sensor readings, payment events, hardware status
-  RPi → ESP32:  commands (dispense, enable payment, display mode)
+  ESP32 → RPi:  sensor readings, hardware status
+  RPi → ESP32:  commands (dispense, display mode)
   RPi → World:  VMC status and alerts (consumed by HA, owner dashboard, etc.)
 """
 
@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
 from ice_contracts.board.vending_machine import FaultCode, Mechanism
 from ice_contracts.board.dispenser_schema import SlotProfile
+from ice_contracts.money import Cents
 
 
 def _utc_now() -> datetime:
@@ -36,35 +37,6 @@ class SensorReading(BaseModel):
     )
     value: float = Field(..., description="Sensor reading value")
     unit: str = Field("C", description="Unit of measurement")
-    timestamp: datetime = Field(default_factory=_utc_now)
-
-
-class PaymentEvent(BaseModel):
-    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
-
-    Credit inserted or payment status change from MDB ESP32."""
-
-    amount: float = Field(
-        ...,
-        gt=0,
-        le=500,
-        description="Amount in dollars (bounded to reject forged/corrupt messages)",
-    )
-    method: str = Field(..., description="Payment method (e.g., 'cash', 'card')")
-    timestamp: datetime = Field(default_factory=_utc_now)
-
-
-class PaymentStatus(BaseModel):
-    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
-
-    MDB device readiness status."""
-
-    device: str = Field(
-        ..., description="Device name (e.g., 'coin_acceptor', 'card_reader')"
-    )
-    state: str = Field(
-        ..., description="Device state (e.g., 'ready', 'disabled', 'error')"
-    )
     timestamp: datetime = Field(default_factory=_utc_now)
 
 
@@ -170,14 +142,6 @@ class DispenseCommand(BaseModel):
         return self
 
 
-class PaymentEnableCommand(BaseModel):
-    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
-
-    Enable or disable payment acceptance."""
-
-    accept: bool = Field(..., description="True to accept payments, False to disable")
-
-
 class DisplayMode(str, Enum):
     advertising = "advertising"
     transaction = "transaction"
@@ -211,7 +175,7 @@ class VMCStatus(BaseModel):
     """Periodic VMC status published for HA and owner dashboard."""
 
     state: str = Field(..., description="Current FSM state")
-    credit_escrow: float = Field(0.0)
+    credit_escrow_cents: Cents = Field(0, description="Escrow in integer cents")
     selected_product: Optional[str] = Field(None)
     uptime_seconds: int = Field(0)
     version: str = Field(..., description="VMC build (short commit)")

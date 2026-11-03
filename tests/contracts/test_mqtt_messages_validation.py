@@ -9,27 +9,9 @@ from ice_edge.vend.dispensers import validate_document
 from ice_contracts.board.mqtt_messages import (
     ButtonPress,
     DispenseCommand,
-    PaymentEvent,
     VMCStatus,
 )
 from tests.dispenser_fixtures import GOOD, ICE, WATER
-
-
-class TestPaymentEventBounds:
-    def test_rejects_negative_amount(self):
-        with pytest.raises(ValidationError):
-            PaymentEvent(amount=-5.0, method="cash")
-
-    def test_rejects_zero_amount(self):
-        with pytest.raises(ValidationError):
-            PaymentEvent(amount=0.0, method="cash")
-
-    def test_rejects_huge_amount(self):
-        with pytest.raises(ValidationError):
-            PaymentEvent(amount=10_000.0, method="cash")
-
-    def test_accepts_normal_amount(self):
-        assert PaymentEvent(amount=2.50, method="cash").amount == 2.50
 
 
 class TestOtherMessageBounds:
@@ -75,6 +57,22 @@ class TestOtherMessageBounds:
         with pytest.raises(ValidationError):
             VMCStatus(state="idle")
 
+    def test_vmc_status_carries_escrow_cents_only(self):
+        status = VMCStatus(state="idle", version="abc1234", credit_escrow_cents=125)
+        assert status.credit_escrow_cents == 125
+        assert not hasattr(status, "credit_escrow")
+
+    def test_vmc_status_credit_escrow_cents_defaults_to_zero(self):
+        assert VMCStatus(state="idle", version="abc1234").credit_escrow_cents == 0
+
+    def test_vmc_status_credit_escrow_cents_rejects_floats(self):
+        with pytest.raises(ValidationError):
+            VMCStatus(state="idle", version="abc1234", credit_escrow_cents=1.25)
+
+    def test_vmc_status_credit_escrow_cents_rejects_negative(self):
+        with pytest.raises(ValidationError):
+            VMCStatus(state="idle", version="abc1234", credit_escrow_cents=-1)
+
     def test_contracts_module_has_no_runtime_build_info(self):
         import ice_contracts.board.mqtt_messages as mm
 
@@ -84,13 +82,13 @@ class TestOtherMessageBounds:
 class TestVMCDepositGuard:
     def test_deposit_ignores_negative(self):
         vmc = Machine(config=ConfigModel()).vmc
-        vmc.deposit_funds(-1.0)
-        assert vmc.credit_escrow == 0.0
+        vmc.deposit_funds(-100)
+        assert vmc.credit_escrow_cents == 0
 
     def test_deposit_ignores_zero(self):
         vmc = Machine(config=ConfigModel()).vmc
-        vmc.deposit_funds(0.0)
-        assert vmc.credit_escrow == 0.0
+        vmc.deposit_funds(0)
+        assert vmc.credit_escrow_cents == 0
 
     async def test_mqtt_handler_drops_invalid_payment(self):
         import asyncio
@@ -98,8 +96,12 @@ class TestVMCDepositGuard:
         machine = Machine(config=ConfigModel())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        with pytest.raises(ValidationError):
-            await vmc.on_payment_credit(
-                "payment/credit", {"amount": -5.0, "method": "cash"}
-            )
-        assert vmc.credit_escrow == 0.0
+        bad = {
+            "event_id": "evt-bad-0001",
+            "boot_id": "boot-bad",
+            "seq": 1,
+            "ts": "2026-10-30T12:00:00Z",
+            "event": {"kind": "coin_accepted", "cents": -500, "routed": "tubes"},
+        }
+        await machine.gateway.intake.handle("payment/event", bad)
+        assert vmc.credit_escrow_cents == 0

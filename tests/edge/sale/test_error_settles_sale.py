@@ -11,6 +11,7 @@ from ice_edge.ledger.session_store import SessionStore
 from ice_edge.monitoring.inventory_manager import InventoryManager
 from tests.edge.sale.test_vmc_flows import (
     RecordingClient,
+    payouts,
     make_machine,
     two_products,
 )
@@ -43,7 +44,7 @@ async def test_error_during_test_sale_settles_runner_and_releases_lease(tmp_path
     assert vmc.state == "error"
     assert machine.lease.hold.runs_in_flight == 0
     assert vmc.test_sale_in_progress is False
-    assert vmc.credit_escrow == 0.0
+    assert vmc.credit_escrow_cents == 0
     assert not any(t == "cmd/payment/refund" for t, *_ in client.published)
     machine.cancel_pending_tasks()
 
@@ -57,15 +58,15 @@ async def test_error_from_interacting_with_credit_refunds_and_settles_once(tmp_p
     settled = []
     vmc.subscribe_sale_settled(lambda s, o, c: settled.append((o, c)))
     vmc.select_product(vmc.products[0])
-    vmc.deposit_funds(1.0, payment_method="cash")
+    vmc.deposit_funds(100, payment_method="cash")
     assert vmc.sale is not None
 
     vmc.error_occurred()
     await asyncio.sleep(0)
 
     assert settled == [("error", None)]
-    assert len(client.refund_commands()) == 1
-    assert client.refund_commands()[0].amount == 1.0
+    assert len(payouts(machine)) == 1
+    assert payouts(machine)[0].cents == 100
 
 
 async def test_error_with_no_sale_settles_nothing(tmp_path):
@@ -100,7 +101,7 @@ async def test_error_during_sale_write_does_not_refund_dispensed_product(tmp_pat
     vmc.subscribe_sale_settled(lambda s, o, c: settled.append(o))
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
-    vmc.deposit_funds(2.50, payment_method="cash_bill")
+    vmc.deposit_funds(250, payment_method="cash_bill")
     vmc.process_payment()
     assert vmc.state == "dispensing"
 
@@ -122,8 +123,8 @@ async def test_error_during_sale_write_does_not_refund_dispensed_product(tmp_pat
 
     assert vmc.state == "error"
     assert len(sales) == 1
-    assert client.refund_commands() == []
-    assert vmc.credit_escrow == 0.0
+    assert payouts(machine) == []
+    assert vmc.credit_escrow_cents == 0
     assert vmc.pending_sale_shares is None
     assert settled == ["dispensed"]
 
@@ -152,7 +153,7 @@ async def _start_blocked_write(machine, vmc, recorder, product=None):
     product = product or vmc.products[0]
     vmc.set_state("interacting_with_user")
     vmc.selected_product = product
-    vmc.deposit_funds(product.price, payment_method="cash_bill")
+    vmc.deposit_funds(product.price_cents, payment_method="cash_bill")
     vmc.process_payment()
     assert vmc.state == "dispensing"
     report = asyncio.get_running_loop().create_task(
@@ -184,8 +185,8 @@ async def test_second_error_during_write_does_not_refund_or_settle_twice(tmp_pat
     await asyncio.wait_for(report, timeout=5)
     await asyncio.sleep(0)
 
-    assert client.refund_commands() == []
-    assert vmc.credit_escrow == 0.0
+    assert payouts(machine) == []
+    assert vmc.credit_escrow_cents == 0
     assert len(recorder.sales) == 1
     assert settled == ["dispensed"]
 
@@ -211,7 +212,7 @@ async def test_error_during_failed_write_keeps_snapshot_for_pay104_recovery(tmp_
     snap = SessionStore(store_path).load()
     assert snap is not None
     assert snap.is_open() is True
-    assert snap.pending_sale_shares == {"cash_bill": 2.5}
+    assert snap.pending_sale_shares == {"cash_bill": 250}
     pending = machine.pending_sale_for_recovery()
     assert pending is not None
     assert pending["sku"] == "ICE-1"
@@ -232,7 +233,7 @@ async def test_stale_write_does_not_touch_the_next_customers_sale(tmp_path):
     vmc.error_occurred()
     vmc.reset_state()
     vmc.select_product(water)
-    vmc.deposit_funds(water.price, payment_method="cash_bill")
+    vmc.deposit_funds(water.price_cents, payment_method="cash_bill")
     vmc.process_payment()
     assert vmc.state == "dispensing"
     b_shares = vmc.pending_sale_shares

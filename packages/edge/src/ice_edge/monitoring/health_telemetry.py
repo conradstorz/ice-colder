@@ -44,13 +44,6 @@ class HealthTelemetry:
         if health:
             health.record_signal("vending", device, 1.0 if state else 0.0)
 
-    def on_payment_status(self, device: str, state: str) -> None:
-        health = self._health()
-        if health:
-            health.record_signal(
-                "mdb", device, 1.0 if state == "ready" else 0.0, text=state
-            )
-
     def on_sensor(self, location: str, value: float) -> None:
         health = self._health()
         if health:

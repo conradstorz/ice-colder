@@ -92,6 +92,10 @@ claimed. Without it the machine registers as a new unclaimed one.
 Sales after the archive's timestamp are lost; the sale journal fallback file (if any) is
 replayed at start.
 
+Caution: this restore is not enough for a rollback past the money-in-cents release. Also
+restore `config.json` (full restore above); otherwise an older image loads every product
+at its default $1.00, because the saved file holds only `price_cents`.
+
 ### Cloud: `cloud.db`
 
 1. `docker compose -f docker/docker-compose.cloud.yml [-f docker/docker-compose.cloud.proxy.yml] stop cloud backup`

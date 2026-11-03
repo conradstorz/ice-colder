@@ -13,6 +13,7 @@ from collections.abc import Callable
 from loguru import logger
 
 from ice_common.config_model import Product
+from ice_contracts.money import cents_to_dollar_text, format_cents
 from ice_contracts.board.vending_machine import FaultCode
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
@@ -43,9 +44,22 @@ class SaleJournal:
 
     # -- payment / buttons -------------------------------------------------
 
-    def payment_received(self, amount: float, method: str) -> None:
-        logger.info(f"MQTT payment received: ${amount:.2f} via {method}")
-        self._txn.info(f"PAYMENT RECEIVED: ${amount:.2f} via {method}")
+    def payment_received(self, amount: int, method: str) -> None:
+        logger.info(f"MQTT payment received: {format_cents(amount)} via {method}")
+        self._txn.info(f"PAYMENT RECEIVED: {format_cents(amount)} via {method}")
+
+    def payment_event(self, kind: str, fields: dict) -> None:
+        logger.info(f"MDB payment event {kind}: {fields}")
+        self._txn.info(f"PAYMENT EVENT {kind}: {fields}")
+
+    def non_cash_refund(self, cents: int, reason) -> None:
+        logger.error(
+            f"Cannot refund {format_cents(cents)} of non-cash credit "
+            f"(reason={reason}); the MDB board only pays out cash"
+        )
+        self._txn.error(
+            f"REFUND IMPOSSIBLE: {format_cents(cents)} non-cash credit reason={reason}"
+        )
 
     def button_press(self, button: str) -> None:
         logger.info(f"MQTT button press: button {button}")
@@ -54,23 +68,25 @@ class SaleJournal:
 
     # -- deposits ----------------------------------------------------------
 
-    def deposit_ignored(self, amount) -> None:
+    def deposit_ignored(self, amount: int) -> None:
         logger.warning(f"Ignoring non-positive deposit: {amount}")
 
-    def deposit_during_maintenance(self, amount: float) -> None:
+    def deposit_during_maintenance(self, amount: int) -> None:
         logger.warning(
-            f"Credit ${amount:.2f} arrived during a maintenance lease; "
+            f"Credit {format_cents(amount)} arrived during a maintenance lease; "
             "refunding rather than escrowing"
         )
 
-    def deposit_while_payment_disabled(self, amount: float, reasons: list[str]) -> None:
+    def deposit_while_payment_disabled(self, amount: int, reasons: list[str]) -> None:
         logger.warning(
-            f"Credit ${amount:.2f} arrived while payment is disabled "
+            f"Credit {format_cents(amount)} arrived while payment is disabled "
             f"({', '.join(reasons)}); escrowed"
         )
 
-    def deposited(self, amount: float, method: str, total: float) -> None:
-        logger.info(f"Deposited ${amount:.2f} via {method}. New escrow: ${total:.2f}")
+    def deposited(self, amount: int, method: str, total: int) -> None:
+        logger.info(
+            f"Deposited {format_cents(amount)} via {method}. New escrow: {format_cents(total)}"
+        )
 
     # -- selection ---------------------------------------------------------
 
@@ -99,11 +115,9 @@ class SaleJournal:
         )
 
     def product_selected(self, product: Product) -> None:
-        logger.info(f"Selected product: {product.name} at ${product.price:.2f}")
-        text = (
-            f"PRODUCT SELECTED: '{product.name}' (${product.price:.2f}), "
-            f"sku {product.sku}"
-        )
+        price = format_cents(product.price_cents)
+        logger.info(f"Selected product: {product.name} at {price}")
+        text = f"PRODUCT SELECTED: '{product.name}' ({price}), sku {product.sku}"
         self._txn.info(text)
         self._vend.info(text)
 
@@ -114,29 +128,29 @@ class SaleJournal:
 
     # -- payment processing ------------------------------------------------
 
-    def payment_sufficient(self, escrow: float, price: float, product: Product) -> None:
+    def payment_sufficient(self, escrow: int, price: int, product: Product) -> None:
         logger.info(
             f"{STATE_CHANGE_PREFIX} Escrow sufficient "
-            f"({escrow:.2f} >= {price:.2f}). Processing payment."
+            f"({cents_to_dollar_text(escrow)} >= {cents_to_dollar_text(price)}). Processing payment."
         )
         self._txn.info(
-            f"PAYMENT SUFFICIENT: ${escrow:.2f} >= ${price:.2f} "
-            f"for '{product.name}', charging ${price:.2f}"
+            f"PAYMENT SUFFICIENT: {format_cents(escrow)} >= {format_cents(price)} "
+            f"for '{product.name}', charging {format_cents(price)}"
         )
         self._message("Sufficient funds received. Processing your payment...")
 
     def payment_insufficient(
         self,
-        escrow: float,
-        price: float,
+        escrow: int,
+        price: int,
         product: Product,
-        required: float,
+        required: int,
         text: str,
     ) -> None:
         logger.info(text)
         self._txn.info(
-            f"PAYMENT INSUFFICIENT: ${escrow:.2f} < ${price:.2f} "
-            f"for '{product.name}', need ${required:.2f} more"
+            f"PAYMENT INSUFFICIENT: {format_cents(escrow)} < {format_cents(price)} "
+            f"for '{product.name}', need {format_cents(required)} more"
         )
         self._message(text)
 
@@ -195,17 +209,17 @@ class SaleJournal:
         name: str,
         code: FaultCode,
         outcome,
-        price: float,
+        price: int,
         sku,
         *,
         is_test: bool,
     ) -> None:
         logger.error(
             f"{STATE_CHANGE_PREFIX} Vend failed for '{name}' ({code.value}, {outcome}); "
-            f"${price:.2f} returned to escrow"
+            f"{format_cents(price)} returned to escrow"
         )
         self._txn.error(
-            f"VEND FAILED: '{name}' {code.value} ({outcome}); ${price:.2f} returned to escrow"
+            f"VEND FAILED: '{name}' {code.value} ({outcome}); {format_cents(price)} returned to escrow"
         )
         if not is_test:
             self._record(
@@ -215,18 +229,18 @@ class SaleJournal:
             )
         self._message(
             f"Sorry, {name} could not be dispensed ({code.value}). "
-            f"Your ${price:.2f} credit has been kept."
+            f"Your {format_cents(price)} credit has been kept."
         )
 
-    def shares_missing(self, price: float) -> None:
+    def shares_missing(self, price: int) -> None:
         logger.warning(
             "on_vend_failed: no pending_sale_shares recorded; crediting "
-            f"${price:.2f} back to escrow as 'unknown'"
+            f"{format_cents(price)} back to escrow as 'unknown'"
         )
 
-    def test_credit_cleared(self, amount: float, code: FaultCode, outcome) -> None:
+    def test_credit_cleared(self, amount: int, code: FaultCode, outcome) -> None:
         logger.debug(
-            f"test credit cleared directly, never refunded (${amount:.2f}, "
+            f"test credit cleared directly, never refunded ({format_cents(amount)}, "
             f"{code.value}, {outcome})"
         )
 
@@ -240,12 +254,12 @@ class SaleJournal:
         )
         self._record("error", value=1.0)
 
-    def error_restored(self, total: float) -> None:
+    def error_restored(self, total: int) -> None:
         logger.warning(
-            f"Error state: ${total:.2f} of consumed sale credit returned to escrow "
+            f"Error state: {format_cents(total)} of consumed sale credit returned to escrow "
             "for refund; no sale recorded"
         )
-        self._txn.warning(f"ERROR: ${total:.2f} returned to escrow for refund")
+        self._txn.warning(f"ERROR: {format_cents(total)} returned to escrow for refund")
 
     def error_during_sale_write(self, product) -> None:
         logger.warning(
@@ -273,13 +287,8 @@ class SaleJournal:
     def dispensing_started(self) -> None:
         self._message("Processing your payment and dispensing your product...")
 
-    def transaction_complete(self, has_credit: bool) -> None:
-        self._message(
-            "Transaction complete. You have remaining credit. "
-            "Please select another product if desired."
-            if has_credit
-            else "Transaction complete. Thank you for your purchase!"
-        )
+    def transaction_complete(self) -> None:
+        self._message("Transaction complete. Thank you for your purchase!")
 
     def product_removed(self) -> None:
         self._message(
@@ -287,72 +296,64 @@ class SaleJournal:
             "Please make a new selection."
         )
 
-    def test_credit_cleared_on_error(self, amount: float) -> None:
-        logger.debug(f"test credit cleared on error, never refunded (${amount:.2f})")
+    def test_credit_cleared_on_error(self, amount: int) -> None:
+        logger.debug(
+            f"test credit cleared on error, never refunded ({format_cents(amount)})"
+        )
 
     # -- refunds -----------------------------------------------------------
 
-    def refund_requested(self, amount: float, method, reason, request_id: str) -> None:
+    def refund_requested(self, amount: int, method, reason, request_id: str) -> None:
         logger.info(
-            f"Refund of ${amount:.2f} requested via {method} "
+            f"Refund of {format_cents(amount)} requested via {method} "
             f"(reason={reason}, request_id={request_id})"
         )
         self._txn.info(
-            f"REFUND REQUESTED: ${amount:.2f} via {method} "
+            f"REFUND REQUESTED: {format_cents(amount)} via {method} "
             f"reason={reason} request_id={request_id}"
         )
-        self._message(f"Refund of ${amount:.2f} requested via {method}. Please wait...")
+        self._message(
+            f"Refund of {format_cents(amount)} requested via {method}. Please wait..."
+        )
 
     def refund_confirmed(
-        self, request_id: str, reason, amount_returned: float, method
+        self, request_id: str, reason, amount_returned_cents: int, method
     ) -> None:
         self._txn.info(
-            f"REFUND CONFIRMED: ${amount_returned:.2f} request_id={request_id}"
+            f"REFUND CONFIRMED: {format_cents(amount_returned_cents)} "
+            f"request_id={request_id}"
         )
         self._record(
             "refund",
-            value=amount_returned,
+            value=amount_returned_cents,
             metadata={"request_id": request_id, "reason": reason},
         )
-        self._message(f"Refund of ${amount_returned:.2f} issued via {method}.")
-
-    def refund_failed(self, request_id: str, reason, amount: float, detail) -> None:
-        self._txn.error(
-            f"REFUND FAILED: ${amount:.2f} request_id={request_id} "
-            f"reason={reason} detail={detail}"
-        )
-        self._record(
-            "refund_failed",
-            value=amount,
-            metadata={"request_id": request_id, "reason": reason, "detail": detail},
-        )
         self._message(
-            f"We could not return ${amount:.2f} automatically. "
-            f"Please contact support and quote {request_id[:8]}."
+            f"Refund of {format_cents(amount_returned_cents)} issued via {method}."
         )
 
     # -- session / lifecycle -----------------------------------------------
 
-    def session_timeout(self, amount: float, state: str) -> None:
+    def session_timeout(self, amount: int, state: str) -> None:
         if state == "idle":
             logger.info(
-                f"Idle session timed out with stranded escrow; refunding ${amount:.2f}."
+                f"Idle session timed out with stranded escrow; refunding {format_cents(amount)}."
             )
             self._txn.info(
-                f"SESSION TIMEOUT: refunding ${amount:.2f} (idle, no active selection)"
+                f"SESSION TIMEOUT: refunding {format_cents(amount)} (idle, no active selection)"
             )
         elif state == "error":
             logger.info(
                 "Session timed out in error state with stranded escrow; "
-                f"refunding ${amount:.2f}."
+                f"refunding {format_cents(amount)}."
             )
             self._txn.info(
-                f"SESSION TIMEOUT: refunding ${amount:.2f} "
+                f"SESSION TIMEOUT: refunding {format_cents(amount)} "
                 "(error, deposited after on_error's own refund)"
             )
         else:
             logger.info("Customer session timed out due to inactivity.")
-            self._txn.info(f"SESSION TIMEOUT: refunding ${amount:.2f}")
+            self._txn.info(f"SESSION TIMEOUT: refunding {format_cents(amount)}")
 
     def sale_cancelled(self, product) -> None:
         logger.info(
@@ -372,10 +373,10 @@ class SaleJournal:
             f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {product}"
         )
 
-    def completing(self, escrow: float) -> None:
+    def completing(self, escrow: int) -> None:
         logger.info(
             f"{STATE_CHANGE_PREFIX} Completing transaction. "
-            f"Remaining escrow: ${escrow:.2f}"
+            f"Remaining escrow: {format_cents(escrow)}"
         )
 
     def resetting(self, product) -> None:

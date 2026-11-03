@@ -174,15 +174,16 @@ def test_reconcile_replays_nonempty_journal_and_clears_data_101(tmp_path, monkey
 
     with sqlite3.connect(str(db_path)) as conn:
         rows = conn.execute(
-            "SELECT sku, name, slot, price, methods FROM sales"
+            "SELECT sku, name, slot, price_cents, methods FROM sales"
         ).fetchall()
     assert len(rows) == 1
     sku, name, slot, price, methods_json = rows[0]
     assert sku == "ICE-1"
     assert name == "Ice Bag"
     assert slot == 0
-    assert price == pytest.approx(2.50)
-    assert json.loads(methods_json) == {"cash_bill": 2.50}
+    # the journal row is legacy (no "units"): dollars replay as cents
+    assert price == 250
+    assert json.loads(methods_json) == {"cash_bill": 250}
 
 
 def test_reconcile_replay_returning_zero_does_not_wrongly_clear_data_101(

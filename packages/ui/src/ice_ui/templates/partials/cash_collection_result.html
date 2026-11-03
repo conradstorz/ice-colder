@@ -32,7 +32,7 @@
     <h3 class="font-semibold text-green-900 mb-2">Cash Collection Recorded</h3>
     <div class="space-y-1 text-sm text-green-800">
       <p><strong>Time:</strong> {{ recorded_time }}</p>
-      <p><strong>Expected Cash:</strong> ${{ "%.2f"|format(expected_cash) }}</p>
+      <p><strong>Expected Cash:</strong> {{ expected_cash_cents|money }}</p>
     </div>
     <p class="text-sm text-green-800 mt-3">
       Compare this amount with the cash in the collection box.

@@ -239,15 +239,16 @@ _STANDARD_COMMANDS_SET: frozenset[str] = frozenset(STANDARD_COMMANDS)
 # Server-side allowlist for the Tests level (§1.3): exactly the standard
 # commands plus each subsystem's actuator commands, and nothing else —
 # `SubsystemCapabilities.commands` may advertise control commands such as
-# `payment/enable`, `refund`, or `set_interval`, but a test button only ever
+# `set_policy`, `refund`, or `set_interval`, but a test button only ever
 # exists for a command that also appears here. `POST /tests/{subsystem}/
 # {command}` re-checks this allowlist so a crafted request cannot reach a
 # control command through the test tile.
 TESTABLE_COMMANDS: dict[str, frozenset[str]] = {
     "vending": _STANDARD_COMMANDS_SET | frozenset({"dispense", "water_valve"}),
     "ice_maker": _STANDARD_COMMANDS_SET | frozenset({"power_cycle"}),
-    "mdb": _STANDARD_COMMANDS_SET
-    | frozenset({"bill_acceptor_test", "coin_return_test", "card_reader_test"}),
+    # `payment.MDB_TESTABLE_COMMANDS` aliases this entry (payment.py imports
+    # this module, so the literal lives here to avoid an import cycle).
+    "mdb": _STANDARD_COMMANDS_SET | frozenset({"device_reset", "payout"}),
 }
 
 

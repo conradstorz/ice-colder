@@ -1,10 +1,13 @@
 """Helpers shared by the Products sub-modules; no routes of its own."""
 
 import re
+from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException, Request
 
+from ice_common.config_model import MAX_PRICE_CENTS
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
+from ice_contracts.money import dollars_to_cents
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
@@ -33,6 +36,29 @@ def _require_any(*permissions: Permission):
         return principal
 
     return dependency
+
+
+def parse_price_form(text: str) -> int:
+    """Parse the price form field (dollar text) into cents.
+
+    Raises ValueError on empty input, more than two decimal places, a
+    negative value, or a value over MAX_PRICE_CENTS.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Price is required.")
+    try:
+        d = Decimal(text)
+    except InvalidOperation:
+        raise ValueError("Price must be a dollar amount.") from None
+    if not d.is_finite():
+        raise ValueError("Price must be a dollar amount.")
+    if d.as_tuple().exponent < -2:
+        raise ValueError("Price can have at most two decimal places.")
+    cents = dollars_to_cents(d)  # raises ValueError if negative
+    if cents > MAX_PRICE_CENTS:
+        raise ValueError(f"Price must be at most ${MAX_PRICE_CENTS // 100}.")
+    return cents
 
 
 def _clean_button(
@@ -116,7 +142,7 @@ def _render_product_form(
     source_sku: str,
     sku: str,
     name: str,
-    price: float,
+    price_text: str,
     kind: str,
     slot,
     inventory_count: int,
@@ -151,7 +177,7 @@ def _render_product_form(
             source_sku=source_sku,
             sku=sku,
             name=name,
-            price=price,
+            price=price_text,
             kind=kind,
             slot=slot,
             inventory_count=inventory_count,

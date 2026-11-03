@@ -48,9 +48,9 @@
           <tr>
             <td class="px-5 py-3 text-gray-500">Money In</td>
             <td class="px-5 py-3 text-right whitespace-nowrap">
-              <span class="font-medium text-gray-900">${{ "%.2f"|format(s.money_in) }}</span>
-              {% if a.money_in is not none %}
-                <span class="ml-2 text-xs text-gray-400">avg ${{ "%.2f"|format(a.money_in) }}</span>
+              <span class="font-medium text-gray-900">{{ s.money_in_cents|money }}</span>
+              {% if a.money_in_cents is not none %}
+                <span class="ml-2 text-xs text-gray-400">avg {{ a.money_in_cents|round|int|money }}</span>
               {% else %}
                 <span class="ml-2 text-xs text-gray-300">avg —</span>
               {% endif %}
@@ -87,9 +87,9 @@
           <tr>
             <td class="px-5 py-3 text-gray-500">Refunds Paid</td>
             <td class="px-5 py-3 text-right whitespace-nowrap">
-              <span class="font-medium text-gray-900">${{ "%.2f"|format(s.refunds) }}</span>
-              {% if a.refunds is not none %}
-                <span class="ml-2 text-xs text-gray-400">avg ${{ "%.2f"|format(a.refunds) }}</span>
+              <span class="font-medium text-gray-900">{{ s.refunds_cents|money }}</span>
+              {% if a.refunds_cents is not none %}
+                <span class="ml-2 text-xs text-gray-400">avg {{ a.refunds_cents|round|int|money }}</span>
               {% else %}
                 <span class="ml-2 text-xs text-gray-300">avg —</span>
               {% endif %}

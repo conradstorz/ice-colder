@@ -37,7 +37,7 @@
           {% for row in rows %}
           <tr>
             <td class="px-5 py-3 text-gray-700">{{ row.method }}</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">${{ "%.2f"|format(row.amount) }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">{{ row.amount_cents|money }}</td>
             <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ "%.1f"|format(row.share * 100) }}%</td>
             <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ row.count }}</td>
             <td class="px-5 py-3 text-gray-500">{{ "Cash" if row.is_cash else "Other" }}</td>

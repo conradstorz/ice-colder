@@ -34,8 +34,8 @@ from ice_edge.ledger.session_store import SessionSnapshot
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeTaskRunner
 
-ICE = Product(sku="ICE-1", slot=0, kind="ice", name="Ice", price=2.0)
-WATER = Product(sku="W-1", slot=1, kind="water", name="Water", price=3.0)
+ICE = Product(sku="ICE-1", slot=0, kind="ice", name="Ice", price_cents=200)
+WATER = Product(sku="W-1", slot=1, kind="water", name="Water", price_cents=300)
 
 
 class FakeGate:
@@ -95,16 +95,16 @@ def _profile_for(tmp_path, product) -> object:
 
 
 def not_open_snapshot(state: str | None) -> SessionSnapshot:
-    return SessionSnapshot(state=state or "idle", credit_escrow=0.0)
+    return SessionSnapshot(state=state or "idle", credit_escrow_cents=0)
 
 
 def make_outputs(runner: FakeTaskRunner, *, session_store=None) -> StatusOutputs:
     outputs = StatusOutputs(
         snapshot=not_open_snapshot,
-        credit_escrow=lambda: 0.0,
+        credit_escrow_cents=lambda: 0,
         selected_product=lambda: None,
         fsm_state=lambda: "idle",
-        pay104_active=lambda: False,
+        evidence_held=lambda: False,
         tasks=runner,
     )
     if session_store is not None:
@@ -125,6 +125,7 @@ def make_cycle(
     on_failed=None,
     on_request_id=None,
     set_transaction_certain=None,
+    hold_evidence=None,
     timeout_seconds=90.0,
 ) -> tuple[DispenseCycle, FakeTaskRunner]:
     runner = runner if runner is not None else FakeTaskRunner()
@@ -141,6 +142,7 @@ def make_cycle(
         timeout_seconds=lambda: timeout_seconds,
         on_failed=on_failed if on_failed is not None else FailureRecorder(),
         on_request_id=on_request_id or (lambda rid, mech: None),
+        hold_evidence=hold_evidence,
     )
     return cycle, runner
 
@@ -185,7 +187,7 @@ async def test_snapshot_save_failure_fails_with_pay102(tmp_path):
         on_failed=failures,
     )
 
-    cycle.start(lambda state: SessionSnapshot(state=state, credit_escrow=2.0))
+    cycle.start(lambda state: SessionSnapshot(state=state, credit_escrow_cents=200))
     await asyncio.sleep(0)
 
     assert failures.calls == [(cycle, FaultCode.PAY_102, "snapshot_failed")]
@@ -495,7 +497,7 @@ async def test_record_writes_sale_with_share_sum_price():
     recorder = FakeRecorder()
     cycle, _ = make_cycle(
         product=ICE,
-        shares={"cash": 1.00, "card": 0.75},
+        shares={"cash": 100, "card": 75},
         recorder=lambda: recorder,
     )
 
@@ -504,7 +506,7 @@ async def test_record_writes_sale_with_share_sum_price():
     assert recorded is True
     assert recorder.events == [("dispense", float(ICE.slot), None)]
     assert recorder.sales == [
-        (ICE.sku, ICE.name, ICE.slot, 1.75, {"cash": 1.00, "card": 0.75})
+        (ICE.sku, ICE.name, ICE.slot, 175, {"cash": 100, "card": 75})
     ]
 
 
@@ -528,8 +530,8 @@ async def test_record_defaults_price_to_product_price_without_shares():
             ICE.sku,
             ICE.name,
             ICE.slot,
-            round(ICE.price, 2),
-            {"unknown": round(ICE.price, 2)},
+            ICE.price_cents,
+            {"unknown": ICE.price_cents},
         )
     ]
 
@@ -540,7 +542,7 @@ async def test_record_raises_data101_on_generic_failure():
     faults = FakeFaults()
     cycle, _ = make_cycle(
         product=ICE,
-        shares={"cash": 2.0},
+        shares={"cash": 200},
         recorder=lambda: recorder,
         faults=faults,
     )
@@ -556,17 +558,20 @@ async def test_record_raises_pay104_and_sets_transaction_uncertain():
     recorder.fail_with = SaleRecordingFailed("nowhere durable")
     faults = FakeFaults()
     certain_calls: list[bool] = []
+    held: list[int] = []
     cycle, _ = make_cycle(
         product=ICE,
-        shares={"cash": 2.0},
+        shares={"cash": 200},
         recorder=lambda: recorder,
         faults=faults,
         set_transaction_certain=certain_calls.append,
+        hold_evidence=lambda: held.append(1),
     )
 
     recorded = await cycle.record()  # must not raise
 
     assert recorded is False
+    assert held == [1]  # the on-disk snapshot is now the sale's only record
     assert certain_calls == [False]
     assert faults.raised == [
         (FaultCode.PAY_104, None, "sku=ICE-1 price=$2.00 unrecorded")

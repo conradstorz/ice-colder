@@ -3,12 +3,12 @@
 Extracted from ``ice_edge.sale.vmc.VMC`` as the fourth piece carved off the VMC
 god object, following the same pattern as ``ice_edge/faults/fault_registry.py``'s
 ``FaultRegistry``, ``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger`` and
-``ice_edge/payment/refund_protocol.py``'s ``RefundProtocol`` (see ``CLAUDE.md``'s
+the refund path (see ``CLAUDE.md``'s
 "FSM Core" section). ``SessionRecovery`` owns the boot-time three-way
 decision over a loaded ``SessionSnapshot`` plus the read-only PAY-104
 recovery accessor and its record-once guards (``_recorded_pay104_keys``, now
 this class's own state). It knows nothing about MQTT, the FSM, the event
-recorder, or the health monitor: ``store``/``product_name``/``pay104_active``
+recorder, or the health monitor: ``store``/``product_name``/``evidence_held``
 are injected callables, and every side effect of a boot decision other than
 ``SessionStore.clear()`` itself (the event-recorder row, the availability
 gate, raising ``PAY-104``) stays on ``VMC`` via ``_flag_uncertain_session``.
@@ -22,7 +22,6 @@ from typing import Literal
 
 from loguru import logger
 
-from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.ledger.event_recorder import SALE_MATCH_WINDOW_SECONDS
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
@@ -64,8 +63,9 @@ class RecoveryDetail:
 
     sku: str | None
     sale_recorded: bool
-    credit_escrow: float
-    pending_refund_request_id: str | None
+    credit_escrow_cents: int
+    pending_refund_request_id: str | None  # legacy snapshots only
+    pending_payouts: list[dict]
     error: str | None
     is_test: bool
 
@@ -78,15 +78,15 @@ class SessionRecovery:
         *,
         store: Callable[[], SessionStore | None],
         product_name: Callable[[str | None], str | None],
-        pay104_active: Callable[[], bool],
-        sale_recorded: Callable[[str, float, dict[str, float], float], bool] = (
+        evidence_held: Callable[[], bool],
+        sale_recorded: Callable[[str, float, dict[str, int], float], bool] = (
             lambda sku, since_ts, methods, window: False
         ),
         match_window_seconds: Callable[[], float] = lambda: SALE_MATCH_WINDOW_SECONDS,
     ) -> None:
         self._store = store
         self._product_name = product_name
-        self._pay104_active = pay104_active
+        self._evidence_held = evidence_held
         # (sku, since_ts, methods) -> True when the live path already
         # committed this snapshot's sale (crash between the insert and the
         # idle snapshot clear). Default: never.
@@ -146,8 +146,9 @@ class SessionRecovery:
         leftover credit (the price was already deducted from escrow), a
         pending refund, or an unreadable-file error."""
         return (
-            snap.credit_escrow <= EscrowLedger.TOLERANCE
+            snap.credit_escrow_cents <= 0
             and snap.pending_refund_request_id is None
+            and not snap.pending_payouts
             and not snap.error
         )
 
@@ -172,7 +173,11 @@ class SessionRecovery:
         """Read-only view of the current snapshot for the PAY-104 fault row:
         whether its sale already has a ``sales`` row, and any credit, pending
         refund or read error it still carries. ``None`` with no store or no
-        snapshot (or an unreadable store). Never mutates anything."""
+        snapshot (or an unreadable store), and unless the evidence is held:
+        a live sale's snapshot is not recovery evidence. Never mutates
+        anything."""
+        if not self._evidence_held():
+            return None
         store = self._store()
         if store is None:
             return None
@@ -185,8 +190,9 @@ class SessionRecovery:
         return RecoveryDetail(
             sku=snap.selected_sku,
             sale_recorded=self._already_recorded(snap),
-            credit_escrow=snap.credit_escrow,
+            credit_escrow_cents=snap.credit_escrow_cents,
             pending_refund_request_id=snap.pending_refund_request_id,
+            pending_payouts=[dict(p) for p in snap.pending_payouts],
             error=snap.error,
             is_test=snap.is_test,
         )
@@ -196,8 +202,9 @@ class SessionRecovery:
         any -- feeds the Health > Faults PAY-104 card's "record this sale"
         / "discard" choice (Task 14).
 
-        Returns ``None`` unless ``PAY-104`` is currently an active machine
-        fault *and* the on-disk snapshot carries a non-empty
+        Returns ``None`` unless the session evidence is held (boot-uncertain or
+        ``SaleRecordingFailed`` -- a runtime PAY-104 alone leaves the LIVE
+        snapshot on disk, which is not a recoverable sale) *and* the on-disk snapshot carries a non-empty
         ``pending_sale_shares``; a card whose snapshot carries no pending
         sale (or whose fault has already been cleared, including by a
         replayed record/discard) keeps the plain Clear button instead of
@@ -213,7 +220,7 @@ class SessionRecovery:
         display, falling back to the SKU itself when the product no
         longer exists -- reads the catalog straight off the config.
         """
-        if not self._pay104_active():
+        if not self._evidence_held():
             return None
         store = self._store()
         if store is None:
@@ -252,7 +259,7 @@ class SessionRecovery:
             "sku": sku,
             "name": self._product_name(sku),
             "slot": snap.dispense_slot,
-            "price": round(sum(snap.pending_sale_shares.values()), 2),
+            "price_cents": sum(snap.pending_sale_shares.values()),
             "methods": dict(snap.pending_sale_shares),
             # Not part of the row this recovers and not shown anywhere --
             # carried only so reserve_pending_sale/pending_sale_already_

@@ -93,7 +93,7 @@ def test_seed_preserves_identity_and_catalog(tmp_path, monkeypatch):
     access.write_bytes(b"{arbitrary")
     config = launcher.seed(s)
     monkeypatch.setenv("ICE_COLDER_CONFIG", str(tmp_path / "config.json"))
-    assert add_product(config, "EXTRA", "Extra", 5.0, slot=3)
+    assert add_product(config, "EXTRA", "Extra", 500, slot=3)
     path = tmp_path / "config.json"
     data = json.loads(path.read_text())
     data["machine_id"] = "edited"

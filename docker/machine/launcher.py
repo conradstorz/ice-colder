@@ -62,7 +62,7 @@ DEFAULT_PRODUCTS: tuple[dict, ...] = (
         "slot": 0,
         "kind": "ice",
         "button": "button_ice",
-        "price": 3.00,
+        "price_cents": 300,
     },
     {
         "sku": "SAMPLE-WATER-SM",
@@ -70,7 +70,7 @@ DEFAULT_PRODUCTS: tuple[dict, ...] = (
         "slot": 1,
         "kind": "water",
         "button": "button_water_1gal",
-        "price": 1.00,
+        "price_cents": 100,
     },
     {
         "sku": "SAMPLE-WATER-LG",
@@ -78,7 +78,7 @@ DEFAULT_PRODUCTS: tuple[dict, ...] = (
         "slot": 2,
         "kind": "water",
         "button": "button_water_5gal",
-        "price": 2.00,
+        "price_cents": 200,
     },
 )
 

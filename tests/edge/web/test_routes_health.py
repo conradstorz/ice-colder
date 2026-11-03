@@ -27,7 +27,7 @@ def _seed_product(cfg, sku: str = "ICE-1") -> str:
     """A product-scope fault needs a real product on the config (a fresh
     ConfigModel() ships with none) -- mirrors legacy.py's own add_product
     usage rather than going through an HTTP round trip."""
-    add_product(cfg, sku, "Ice", 2.5)
+    add_product(cfg, sku, "Ice", 250)
     return sku
 
 
@@ -248,7 +248,7 @@ class TestSubsystemDetailLevel:
                         "unit": "",
                         "description": "",
                         "direction": "input",
-                        "driven_by": "payment/enable",
+                        "driven_by": "set_policy",
                     }
                 ],
                 "commands": ["ping", "self_test", "force_report"],
@@ -784,3 +784,76 @@ class TestLogsLevel:
 @pytest.fixture
 def client_as_tech(login_as):
     return login_as(Role.tech)
+
+
+class TestMdbPaymentStatePanel:
+    """Payment cutover task 11: /health/subsystems/mdb shows the retained
+    `payment/state` document; other boards never get the panel."""
+
+    @staticmethod
+    def _doc():
+        return {
+            "boot_id": "boot0001",
+            "seq_last": 3,
+            "policy_id": "pol-abc123",
+            "accepting": False,
+            "inhibited_reason": "edge_silent",
+            "escrow_cents": 125,
+            "bill_in_escrow_cents": 500,
+            "devices": {
+                "coin": {
+                    "present": True,
+                    "status": "ready",
+                    "model": "CC-9",
+                    "level": 3,
+                },
+                "bill": {
+                    "present": True,
+                    "status": "jammed",
+                    "model": "BV-2",
+                    "level": 2,
+                },
+                "cashless": {"present": False, "status": "offline"},
+            },
+            "tubes": [
+                {"cents": 25, "count": 7, "full": False},
+                {"cents": 100, "count": 12, "full": True},
+            ],
+            "exact_change": True,
+            "stacker": {"count": 42, "full": False},
+            "session": None,
+        }
+
+    def test_no_state_yet(self, client, wired):
+        resp = client.get("/health/subsystems/mdb")
+        assert resp.status_code == 200
+        assert "No payment state yet." in resp.text
+
+    def test_panel_renders_the_state(self, client, wired):
+        import asyncio
+
+        machine = context.machine_instance
+        asyncio.run(machine.gateway.state_consumer.handle("payment/state", self._doc()))
+        resp = client.get("/health/subsystems/mdb")
+        assert resp.status_code == 200
+        text = resp.text
+        assert "No payment state yet." not in text
+        assert "pol-abc123" in text
+        assert "edge_silent" in text
+        assert "$1.25" in text
+        assert "$5.00" in text
+        assert "CC-9" in text and "BV-2" in text
+        assert "jammed" in text
+        assert "$0.25" in text and "$1.00" in text
+        assert ">42<" in text.replace(" ", "").replace("\n", "")
+        assert "Exact change" in text
+
+    def test_live_fragment_carries_the_panel(self, client, wired):
+        resp = client.get("/health/subsystems/mdb/live")
+        assert resp.status_code == 200
+        assert "No payment state yet." in resp.text
+
+    def test_other_boards_have_no_panel(self, client, wired):
+        assert (
+            "No payment state yet." not in client.get("/health/subsystems/vending").text
+        )

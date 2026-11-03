@@ -43,7 +43,7 @@ def test_machine_owner_convenience_property():
 def test_product_defaults():
     p = Product()
     assert p.sku == "SAMPLE-SKU"
-    assert p.price == 1.00
+    assert p.price_cents == 100
     assert p.track_inventory is False
     assert p.inventory_count == 0
 
@@ -52,13 +52,13 @@ def test_product_custom_values():
     p = Product(
         sku="ICE-001",
         name="Bag of Ice",
-        price=2.50,
+        price_cents=250,
         track_inventory=True,
         inventory_count=50,
     )
     assert p.sku == "ICE-001"
     assert p.name == "Bag of Ice"
-    assert p.price == 2.50
+    assert p.price_cents == 250
     assert p.track_inventory is True
     assert p.inventory_count == 50
 
@@ -81,7 +81,7 @@ def test_config_from_dict():
             "serial_number": "1234-5678",
             "location": {"address": "456 Test Ave"},
             "people": {},
-            "products": [{"sku": "T-001", "name": "Test Product", "price": 3.00}],
+            "products": [{"sku": "T-001", "name": "Test Product", "price_cents": 300}],
         },
     }
     cfg = ConfigModel.model_validate(data)
@@ -136,9 +136,9 @@ def test_legacy_config_without_slot_assigns_list_index():
     data = {
         "physical": {
             "products": [
-                {"sku": "A", "name": "Ice", "price": 3.00},
-                {"sku": "B", "name": "Small Water", "price": 0.50},
-                {"sku": "C", "name": "Large Water", "price": 2.00},
+                {"sku": "A", "name": "Ice", "price_cents": 300},
+                {"sku": "B", "name": "Small Water", "price_cents": 50},
+                {"sku": "C", "name": "Large Water", "price_cents": 200},
             ]
         }
     }
@@ -150,8 +150,8 @@ def test_config_with_explicit_slots_preserved():
     data = {
         "physical": {
             "products": [
-                {"sku": "A", "name": "Ice", "price": 3.00, "slot": 5},
-                {"sku": "B", "name": "Water", "price": 0.50, "slot": 2},
+                {"sku": "A", "name": "Ice", "price_cents": 300, "slot": 5},
+                {"sku": "B", "name": "Water", "price_cents": 50, "slot": 2},
             ]
         }
     }
@@ -163,8 +163,8 @@ def test_duplicate_slots_rejected():
     data = {
         "physical": {
             "products": [
-                {"sku": "A", "name": "Ice", "price": 3.00, "slot": 0},
-                {"sku": "B", "name": "Water", "price": 0.50, "slot": 0},
+                {"sku": "A", "name": "Ice", "price_cents": 300, "slot": 0},
+                {"sku": "B", "name": "Water", "price_cents": 50, "slot": 0},
             ]
         }
     }
@@ -364,3 +364,86 @@ class TestProductLengthLimits:
             logger.remove(sink)
         assert product.sku == "S" * 70
         assert any("longer than" in line for line in lines)
+
+
+class TestProductPriceCents:
+    @staticmethod
+    def _warnings(fn):
+        from loguru import logger
+
+        lines = []
+        sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+        try:
+            result = fn()
+        finally:
+            logger.remove(sink)
+        return result, lines
+
+    def test_legacy_dollar_price_is_converted_with_one_warning(self):
+        p, lines = self._warnings(
+            lambda: Product.model_validate({"sku": "LEG-1", "price": 2.5})
+        )
+        assert p.price_cents == 250
+        assert len([line for line in lines if "LEG-1" in line]) == 1
+
+    def test_both_keys_keep_price_cents(self):
+        p, lines = self._warnings(
+            lambda: Product.model_validate(
+                {"sku": "B", "price": 9.0, "price_cents": 120}
+            )
+        )
+        assert p.price_cents == 120
+        assert lines
+
+    def test_over_cap_is_kept_with_warning(self):
+        p, lines = self._warnings(lambda: Product(sku="HI", price_cents=200_000))
+        assert p.price_cents == 200_000
+        assert any("limit" in line for line in lines)
+
+    def test_dump_has_no_dollar_price(self):
+        dumped = Product(sku="D", price_cents=5).model_dump()
+        assert "price" not in dumped
+        assert dumped["price_cents"] == 5
+
+    def test_legacy_rounds_half_even_on_decimal_text(self):
+        assert Product.model_validate({"price": 2.675}).price_cents == 268
+
+    @pytest.mark.parametrize("bad", [-1.0, "abc"])
+    def test_unparsable_or_negative_legacy_price_refused(self, bad):
+        with pytest.raises(ValidationError):
+            Product.model_validate({"price": bad})
+
+
+def test_mdb_policy_defaults():
+    p = ConfigModel().payment.mdb.policy
+    assert p.coin_enabled == [5, 10, 25, 100]
+    assert p.bill_enabled == [100, 500, 1000, 2000]
+    assert p.max_escrow_cents == 2000
+    assert p.change_threshold_cents == 500
+    assert p.edge_timeout_s == 30
+    assert p.return_bill_on_lever is True
+
+
+def test_old_config_without_policy_loads():
+    cfg = ConfigModel.model_validate({"payment": {"mdb": {"polling_interval": 1.0}}})
+    assert cfg.payment.mdb.polling_interval == 1.0
+    assert cfg.payment.mdb.policy.max_escrow_cents == 2000
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"coin_enabled": [0]},
+        {"bill_enabled": [-100]},
+        {"coin_enabled": [2.5]},
+        {"max_escrow_cents": 0},
+        {"change_threshold_cents": -1},
+        {"edge_timeout_s": 4},
+        {"edge_timeout_s": 121},
+    ],
+)
+def test_mdb_policy_rejects_bad_values(bad):
+    from ice_common.config_model import MdbPolicyConfig
+
+    with pytest.raises(ValidationError):
+        MdbPolicyConfig(**bad)

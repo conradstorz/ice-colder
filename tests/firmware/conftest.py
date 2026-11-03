@@ -64,7 +64,7 @@ class Target:
     client_id: str | None = None
 
 
-async def _clear_retained(host: str, port: int, machine_id: str) -> None:
+async def clear_retained(host: str, port: int, machine_id: str) -> None:
     """Remove the retained messages the simulator left behind for this id."""
     topics: set[str] = set()
     async with aiomqtt.Client(hostname=host, port=port, **mqtt_auth()) as client:
@@ -129,7 +129,7 @@ def target():
     finally:
         state["loop"].call_soon_threadsafe(state["task"].cancel)
         thread.join(10)
-        asyncio.run(_clear_retained(host, port, machine_id))
+        asyncio.run(clear_retained(host, port, machine_id))
 
 
 @pytest.fixture(scope="package")

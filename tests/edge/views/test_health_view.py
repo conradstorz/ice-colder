@@ -117,14 +117,14 @@ def _pay104_machine(tmp_path):
     plus one active product fault, a health monitor, an event recorder with an
     error row, and an Availability."""
     cfg = ConfigModel()
-    add_product(cfg, "ICE-1", "Ice", 2.50)
+    add_product(cfg, "ICE-1", "Ice", 250)
     store_path = tmp_path / "session.json"
     machine1 = Machine(config=cfg)
     vmc1 = machine1.vmc
     vmc1.set_state("interacting_with_user")
     vmc1.selected_product = next(p for p in vmc1.products if p.sku == "ICE-1")
-    vmc1.deposit_funds(2.00, payment_method="cash_bill")
-    vmc1.deposit_funds(0.50, payment_method="card")
+    vmc1.deposit_funds(200, payment_method="cash_bill")
+    vmc1.deposit_funds(50, payment_method="card")
     vmc1.process_payment()
     assert vmc1.state == "dispensing"
     SessionStore(store_path).save(vmc1.snapshot())
@@ -294,7 +294,7 @@ def test_build_fault_views_equals_projected_legacy_faults(scenario, monkeypatch)
     pending sale's ``name``/``slot``/``saved_at``; FaultView drops exactly
     those (cloud spec section 6.4). So the expected value is each legacy dict
     restricted to the FaultView fields, with ``pending_sale`` restricted to
-    ``sku``/``price``/``methods``."""
+    ``sku``/``price_cents``/``methods``."""
     machine, monitor, _avail, _recorder = scenario
     _freeze(monitor, monkeypatch)
     legacy = _legacy_faults_with_age(machine, monitor)
@@ -304,7 +304,13 @@ def test_build_fault_views_equals_projected_legacy_faults(scenario, monkeypatch)
         row = {k: f[k] for k in fields.split()}
         ps = f["pending_sale"]
         row["pending_sale"] = (
-            {k: ps[k] for k in ("sku", "price", "methods")} if ps else None
+            {
+                "sku": ps["sku"],
+                "price_cents": ps["price_cents"],
+                "methods": dict(ps["methods"]),
+            }
+            if ps
+            else None
         )
         expected.append(row)
     # positive control: the keys being dropped really exist in the legacy shape
@@ -342,10 +348,14 @@ async def test_build_kpi_summary_projects_the_cards_keys(scenario):
     raw_summary = recorder.get_summary(24)
     raw_average = recorder.get_historical_average(24)
     kpi = await build_kpi_summary(recorder)
-    keys = ("money_in", "products_out", "vends_failed", "errors", "uptime_pct")
-    assert kpi.summary.model_dump() == {k: raw_summary[k] for k in keys}
-    akeys = ("money_in", "products_out", "errors", "uptime_pct")
-    assert kpi.average.model_dump() == {k: raw_average[k] for k in akeys}
+    keys = ("products_out", "vends_failed", "errors", "uptime_pct")
+    expected = {k: raw_summary[k] for k in keys}
+    expected["money_in_cents"] = raw_summary["money_in_cents"]
+    assert kpi.summary.model_dump() == expected
+    akeys = ("products_out", "errors", "uptime_pct")
+    expected_avg = {k: raw_average[k] for k in akeys}
+    expected_avg["money_in_cents"] = raw_average["money_in_cents"]
+    assert kpi.average.model_dump() == expected_avg
     assert kpi.summary.errors >= 1
 
 

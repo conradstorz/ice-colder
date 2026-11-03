@@ -15,7 +15,7 @@ The design rationale lives in
 `docs/superpowers/specs/2026-10-18-payment-contract-design.md`. This contract
 supersedes the payment topics of the [vending-machine contract](../vending-machine/CONTRACT.md)
 (`payment/credit`, `payment/status`, `cmd/payment/enable`, `cmd/payment/refund`),
-which are deprecated.
+which were removed in vending contract 3.0.0.
 
 ## Identity & versioning
 
@@ -196,7 +196,11 @@ Edge mapping, fixed here and inherited by the edge-migration spec:
 - `payment_devices_ready` becomes three rows, one per device the policy
   declares present, failing on `offline | error | tilt | jammed`; `full` and
   `empty` are alert-only. A missing cashless reader fails only cashless
-  sales; cash still sells.
+  sales; cash still sells. These per-device rows are alert-gate rows (they
+  block nothing machine-wide), and the edge derives one further
+  fulfillment-gate row, `cash_accepting`, from the coin/bill device rows and
+  `inhibited_reason`: it fails when no cash device is usable, so one jammed
+  device does not stop sales the other can still take.
 - New machine-scope `warning` faults, raised from `device_status`:
   `PAY-106` coin changer fault, `PAY-107` bill validator fault, `PAY-108`
   cashless reader fault. None is payment-blocking.
@@ -279,10 +283,8 @@ today but the old contract never listed.
    exact `paid_cents`.
 
 **Testable set.** `payment.MDB_TESTABLE_COMMANDS` (`STANDARD_COMMANDS` plus
-`device_reset` and `payout`) is the future allowlist for the Tests level.
-`TESTABLE_COMMANDS["mdb"]` in `common.py` still holds the legacy counters
-today; it flips to `MDB_TESTABLE_COMMANDS` when the simulator that advertises
-the new commands ships (spec 2). The Tests level caps a test `payout` at one
+`device_reset` and `payout`) is the allowlist for the Tests level
+(`TESTABLE_COMMANDS["mdb"]` in `common.py` is the same set). The Tests level caps a test `payout` at one
 smallest enabled coin (an edge rule, recorded in the edge-migration spec).
 
 ## Reference flows (normative)

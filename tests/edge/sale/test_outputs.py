@@ -17,11 +17,9 @@ import asyncio
 import pytest
 
 from ice_common.config_model import Product
-from ice_contracts.board.vending_machine import PaymentRefundCommand
 from ice_edge.sale.outputs import StatusOutputs
 from ice_contracts.board.mqtt_messages import (
     AlertLevel,
-    PaymentEnableCommand,
     VMCAlert,
     VMCStatus,
 )
@@ -46,34 +44,36 @@ class FakeDisplay:
 
 
 def not_open_snapshot(state: str | None) -> SessionSnapshot:
-    return SessionSnapshot(state=state or "idle", credit_escrow=0.0)
+    return SessionSnapshot(state=state or "idle", credit_escrow_cents=0)
 
 
 def open_snapshot(state: str | None) -> SessionSnapshot:
-    return SessionSnapshot(state=state or "dispensing", credit_escrow=2.50)
+    return SessionSnapshot(state=state or "dispensing", credit_escrow_cents=250)
 
 
 def make_outputs(
     *,
     tasks: FakeTaskRunner | None = None,
     snapshot=not_open_snapshot,
-    credit_escrow=lambda: 0.0,
+    credit_escrow_cents=lambda: 0,
     selected_product=lambda: None,
     fsm_state=lambda: "idle",
-    pay104_active=lambda: False,
+    evidence_held=lambda: False,
     on_persist_failed=None,
     on_persist_ok=None,
+    on_evidence_released=None,
 ) -> tuple[StatusOutputs, FakeTaskRunner]:
     runner = tasks if tasks is not None else FakeTaskRunner()
     outputs = StatusOutputs(
         snapshot=snapshot,
-        credit_escrow=credit_escrow,
+        credit_escrow_cents=credit_escrow_cents,
         selected_product=selected_product,
         fsm_state=fsm_state,
-        pay104_active=pay104_active,
+        evidence_held=evidence_held,
         tasks=runner,
         on_persist_failed=on_persist_failed,
         on_persist_ok=on_persist_ok,
+        on_evidence_released=on_evidence_released,
     )
     return outputs, runner
 
@@ -98,7 +98,7 @@ async def test_state_changed_with_no_session_store_never_reads_snapshot():
 
 async def test_state_changed_with_every_sink_pushes_and_publishes_retained_status():
     outputs, runner = make_outputs(
-        credit_escrow=lambda: 3.25,
+        credit_escrow_cents=lambda: 325,
         selected_product=lambda: Product(name="Ice Bag"),
         snapshot=not_open_snapshot,
     )
@@ -124,7 +124,7 @@ async def test_state_changed_with_every_sink_pushes_and_publishes_retained_statu
     assert retain is True
     assert isinstance(payload, VMCStatus)
     assert payload.state == "interacting_with_user"
-    assert payload.credit_escrow == 3.25
+    assert payload.credit_escrow_cents == 325
     assert payload.selected_product == "Ice Bag"
     assert payload.uptime_seconds >= 0
     from ice_common.build_info import BUILD_INFO
@@ -181,9 +181,9 @@ async def test_persist_without_session_store_is_a_no_op():
     assert runner.persist == []
 
 
-async def test_persist_skips_while_pay104_is_active():
+async def test_persist_skips_while_evidence_is_held():
     store = FakeStore()
-    outputs, runner = make_outputs(pay104_active=lambda: True, snapshot=open_snapshot)
+    outputs, runner = make_outputs(evidence_held=lambda: True, snapshot=open_snapshot)
     runner.attach(asyncio.get_running_loop())
     outputs.attach_session_store(store)
 
@@ -204,7 +204,7 @@ async def test_persist_saves_an_open_snapshot():
     await asyncio.sleep(0)
 
     assert len(store.saved) == 1
-    assert store.saved[0].credit_escrow == 2.50
+    assert store.saved[0].credit_escrow_cents == 250
     assert store.cleared_async_calls == 0
 
 
@@ -325,9 +325,9 @@ async def test_save_snapshot_async_with_none_snapshot_is_a_no_op():
     assert store.saved == []
 
 
-async def test_save_snapshot_async_skips_while_pay104_is_active():
+async def test_save_snapshot_async_skips_while_evidence_is_held():
     store = FakeStore()
-    outputs, runner = make_outputs(pay104_active=lambda: True)
+    outputs, runner = make_outputs(evidence_held=lambda: True)
     runner.attach(asyncio.get_running_loop())
     outputs.attach_session_store(store)
 
@@ -336,7 +336,7 @@ async def test_save_snapshot_async_skips_while_pay104_is_active():
     assert store.saved == []
 
 
-async def test_save_snapshot_async_saves_when_no_pay104():
+async def test_save_snapshot_async_saves_when_no_evidence_held():
     store = FakeStore()
     outputs, runner = make_outputs()
     runner.attach(asyncio.get_running_loop())
@@ -357,9 +357,33 @@ def test_clear_session_evidence_without_store_returns_true():
     assert outputs.clear_session_evidence() is True
 
 
+def test_clear_session_evidence_leaves_the_live_session_when_nothing_is_held():
+    store = FakeStore()
+    released = []
+    outputs, _runner = make_outputs(on_evidence_released=lambda: released.append(1))
+    outputs.attach_session_store(store)
+
+    assert outputs.clear_session_evidence() is True
+    assert store.clear_calls == 0
+    assert released == []
+
+
+def test_clear_session_evidence_releases_the_hold_after_removing_the_file():
+    store = FakeStore()
+    released = []
+    outputs, _runner = make_outputs(
+        evidence_held=lambda: True, on_evidence_released=lambda: released.append(1)
+    )
+    outputs.attach_session_store(store)
+
+    assert outputs.clear_session_evidence() is True
+    assert store.clear_calls == 1
+    assert released == [1]
+
+
 def test_clear_session_evidence_returns_the_stores_own_answer():
     store = FakeStore(clear_result=False)
-    outputs, _runner = make_outputs()
+    outputs, _runner = make_outputs(evidence_held=lambda: True)
     outputs.attach_session_store(store)
 
     assert outputs.clear_session_evidence() is False
@@ -423,19 +447,19 @@ def test_refresh_calls_callback_only_when_set():
 def test_refresh_passes_state_product_and_escrow():
     """Mirrors ``StatusOutputs.refresh``'s own call:
     ``self.update_callback(self.state, self.selected_product,
-    self.credit_escrow)`` -- same three positional args, same order."""
+    self.credit_escrow_cents)`` -- same three positional args, same order."""
     product = Product(name="Ice Bag")
     outputs, _runner = make_outputs(
         fsm_state=lambda: "interacting_with_user",
         selected_product=lambda: product,
-        credit_escrow=lambda: 1.75,
+        credit_escrow_cents=lambda: 175,
     )
     calls = []
     outputs.set_update_callback(lambda *args: calls.append(args))
 
     outputs.refresh()
 
-    assert calls == [("interacting_with_user", product, 1.75)]
+    assert calls == [("interacting_with_user", product, 175)]
 
 
 def test_message_swallows_a_raising_callback():
@@ -477,54 +501,10 @@ def test_show_qr_calls_callback_only_when_set():
 # --- publish_payment_enable / publish_refund / publish_alert ---
 
 
-async def test_publish_payment_enable_without_client_is_silent():
-    outputs, runner = make_outputs()
-    runner.attach(asyncio.get_running_loop())
-
-    outputs.publish_payment_enable(True)
-    await asyncio.sleep(0)
-    # no client -> nothing to assert but "did not raise"
-
-
-async def test_publish_payment_enable_publishes_on_the_right_topic():
-    outputs, runner = make_outputs()
-    runner.attach(asyncio.get_running_loop())
-    mqtt = FakeMqtt()
-    outputs.attach_mqtt(mqtt)
-
-    outputs.publish_payment_enable(True)
-    await asyncio.sleep(0)
-
-    assert len(mqtt.published) == 1
-    topic, payload, _retain = mqtt.published[0]
-    assert topic == "cmd/payment/enable"
-    assert isinstance(payload, PaymentEnableCommand)
-    assert payload.accept is True
-
-
-async def test_publish_refund_without_client_is_silent():
-    outputs, runner = make_outputs()
-    runner.attach(asyncio.get_running_loop())
-    cmd = PaymentRefundCommand(request_id="r" * 8, amount=1.50, reason="admin")
-
-    outputs.publish_refund(cmd)
-    await asyncio.sleep(0)
-
-
-async def test_publish_refund_publishes_on_the_right_topic():
-    outputs, runner = make_outputs()
-    runner.attach(asyncio.get_running_loop())
-    mqtt = FakeMqtt()
-    outputs.attach_mqtt(mqtt)
-    cmd = PaymentRefundCommand(request_id="r" * 8, amount=1.50, reason="admin")
-
-    outputs.publish_refund(cmd)
-    await asyncio.sleep(0)
-
-    assert len(mqtt.published) == 1
-    topic, payload, _retain = mqtt.published[0]
-    assert topic == "cmd/payment/refund"
-    assert payload is cmd
+def test_outputs_no_longer_publish_payment_enable_or_refund_commands():
+    outputs, _runner = make_outputs()
+    assert not hasattr(outputs, "publish_payment_enable")
+    assert not hasattr(outputs, "publish_refund")
 
 
 async def test_publish_alert_without_client_is_silent():
@@ -559,7 +539,7 @@ def test_next_payment_prompt_returns_none_with_no_gateways():
     manager = PaymentGatewayManager()
     manager.gateways = {}
 
-    assert manager.next_payment_prompt(2.50) is None
+    assert manager.next_payment_prompt(250) is None
 
 
 def test_next_payment_prompt_cycles_through_gateways():
@@ -567,16 +547,16 @@ def test_next_payment_prompt_cycles_through_gateways():
     names = list(manager.gateways.keys())
     assert len(names) >= 2  # stripe/paypal/square -- cycling is meaningful
 
-    seen = [manager.next_payment_prompt(2.50)[0] for _ in names]
+    seen = [manager.next_payment_prompt(250)[0] for _ in names]
 
     assert seen == names
     # Cycled all the way back around to the first gateway.
-    assert manager.next_payment_prompt(2.50)[0] == names[0]
+    assert manager.next_payment_prompt(250)[0] == names[0]
 
 
 def test_next_payment_prompt_returns_a_qr_image():
     manager = PaymentGatewayManager()
-    name, qr_image = manager.next_payment_prompt(2.50)
+    name, qr_image = manager.next_payment_prompt(250)
 
     assert name in manager.gateways
     assert qr_image is not None

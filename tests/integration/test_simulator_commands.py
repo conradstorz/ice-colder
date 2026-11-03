@@ -11,7 +11,7 @@ from ice_edge.web.routes.tests_level.commands import (
     testable_commands as allowed_test_commands,
 )
 from ice_sims.ice_maker import IceMakerSimulator
-from ice_sims.mdb_gateway import MDBGatewaySimulator
+from ice_sims.mdb_gateway import MdbSimulator
 from ice_sims.vending_machine import VendingMachineSimulator
 
 
@@ -19,7 +19,7 @@ from ice_sims.vending_machine import VendingMachineSimulator
     ("subsystem", "simulator"),
     [
         ("vending", VendingMachineSimulator),
-        ("mdb", MDBGatewaySimulator),
+        ("mdb", MdbSimulator),
         ("ice_maker", IceMakerSimulator),
     ],
 )

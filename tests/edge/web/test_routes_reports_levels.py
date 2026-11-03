@@ -45,8 +45,8 @@ def recorder(wired, tmp_path):
     yield rec
 
 
-def _add_product(cfg, sku="SKU-COLA", name="Cola", price=1.50, slot=1):
-    ok = add_product(cfg, sku, name, price, slot=slot, kind="drink")
+def _add_product(cfg, sku="SKU-COLA", name="Cola", price_cents=150, slot=1):
+    ok = add_product(cfg, sku, name, price_cents, slot=slot, kind="drink")
     assert ok, "test setup: add_product failed"
     return next(p for p in cfg.products if p.sku == sku)
 
@@ -305,7 +305,7 @@ class TestRetentionNoneVersusZero:
         # 130 days ago: outside the 90-day retention cutoff, but still
         # inside the 12m/365-day window so its bucket is rendered at all.
         old_ts = time.time() - 130 * 86400
-        recorder.record_sale("OLD", "Old Item", 1, 9.00, {"cash": 9.00}, ts=old_ts)
+        recorder.record_sale("OLD", "Old Item", 1, 900, {"cash": 900}, ts=old_ts)
 
         resp = client.get("/reports/period?range=12m&bucket=month")
         assert resp.status_code == 200
@@ -333,7 +333,7 @@ class TestProductSku:
         cfg, _vmc, _inv, _store = wired
         product = _add_product(cfg, sku="SKU-REAL", name="Real Product")
         recorder.record_sale(
-            product.sku, product.name, 1, 2.50, {"cash": 2.50}, ts=time.time() - 10
+            product.sku, product.name, 1, 250, {"cash": 250}, ts=time.time() - 10
         )
 
         resp = client.get(f"/reports/product/{product.sku}?range=30d")
@@ -370,7 +370,7 @@ class TestSkuUrlSafety:
         product = _add_product(cfg, sku=sku, name="Odd SKU Product", slot=7)
         # by_product's table only lists SKUs with sales in the window.
         recorder.record_sale(
-            product.sku, product.name, 7, 1.50, {"cash": 1.50}, ts=time.time() - 10
+            product.sku, product.name, 7, 150, {"cash": 150}, ts=time.time() - 10
         )
 
         table_resp = client.get("/reports/product")
@@ -526,7 +526,7 @@ class TestEmailReport:
     ):
         cfg, _vmc, _inv, _store = wired
         self._configure_gateway(cfg)
-        recorder.record_sale("A", "Alpha", 1, 9.00, {"cash": 9.00}, ts=time.time() - 10)
+        recorder.record_sale("A", "Alpha", 1, 900, {"cash": 900}, ts=time.time() - 10)
 
         resp = client.post(
             "/reports/email",
@@ -619,10 +619,10 @@ class TestEmailReport:
         cfg, _vmc, _inv, _store = wired
         self._configure_gateway(cfg)
         recorder.record_sale(
-            "A", "Alpha", 1, 1.00, {"cash_coin": 1.00}, ts=time.time() - 20
+            "A", "Alpha", 1, 100, {"cash_coin": 100}, ts=time.time() - 20
         )
         recorder.record_sale(
-            "B", "Beta", 2, 2.00, {"cash_bill": 2.00}, ts=time.time() - 10
+            "B", "Beta", 2, 200, {"cash_bill": 200}, ts=time.time() - 10
         )
 
         resp = client.post("/reports/email", data={"report": "method", "range": "30d"})
@@ -654,13 +654,13 @@ class TestEmailReport:
         self._configure_gateway(cfg)
         product = _add_product(cfg, sku="SKU-EMAIL", name="Email Product")
         recorder.record_sale(
-            product.sku, product.name, 1, 3.25, {"cash": 3.25}, ts=time.time() - 10
+            product.sku, product.name, 1, 325, {"cash": 325}, ts=time.time() - 10
         )
         # A different SKU's sale, same window -- must NOT leak into this
         # SKU's total; proves the sku= filter is actually applied here,
         # not merely that the route renders something.
         recorder.record_sale(
-            "SKU-OTHER", "Other Product", 2, 99.00, {"cash": 99.00}, ts=time.time() - 5
+            "SKU-OTHER", "Other Product", 2, 9900, {"cash": 9900}, ts=time.time() - 5
         )
 
         resp = client.post(

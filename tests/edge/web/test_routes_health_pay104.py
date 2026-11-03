@@ -37,7 +37,7 @@ from ice_edge.app.machine import Machine
 from ice_edge.access.access import ROLE_PERMISSIONS, Permission, Role
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
-from ice_edge.ledger.session_store import SessionStore
+from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 from ice_edge.web import context, routes
 from ice_edge.web.server import app
 
@@ -46,7 +46,7 @@ def _pay104_setup(
     cfg,
     tmp_path,
     sku="ICE-1",
-    deposits=(("cash_bill", 2.00), ("card", 0.50)),
+    deposits=(("cash_bill", 200), ("card", 50)),
 ):
     """Build a genuinely open PAY-104 with real pending_sale_shares.
 
@@ -79,7 +79,7 @@ def _pay104_setup(
     assert vmc1.state == "dispensing", "setup did not reach dispensing"
     assert vmc1.pending_sale_shares, "setup produced no pending_sale_shares"
     expected_shares = dict(vmc1.pending_sale_shares)
-    expected_price = round(sum(expected_shares.values()), 2)
+    expected_price = sum(expected_shares.values())
 
     snap = vmc1.snapshot()
     assert snap.is_open()
@@ -105,7 +105,7 @@ def pay104(wired, tmp_path):
     with real pending-sale shares, plus a real EventRecorder (tmp sqlite
     db) wired the same way `context.event_recorder` is in production."""
     cfg, _old_vmc, _inv, _store = wired
-    add_product(cfg, "ICE-1", "Ice", 2.50)
+    add_product(cfg, "ICE-1", "Ice", 250)
     machine2, vmc2, session_store, product, expected_shares, expected_price = (
         _pay104_setup(cfg, tmp_path)
     )
@@ -118,7 +118,7 @@ def pay104(wired, tmp_path):
     assert pending is not None
     assert pending["sku"] == "ICE-1"
     assert pending["methods"] == expected_shares
-    assert pending["price"] == expected_price
+    assert pending["price_cents"] == expected_price
 
     recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
     old_machine = context.machine_instance
@@ -142,7 +142,7 @@ def pay104(wired, tmp_path):
 def _sales_rows(db_path):
     with sqlite3.connect(str(db_path)) as conn:
         return conn.execute(
-            "SELECT sku, name, slot, price, methods FROM sales"
+            "SELECT sku, name, slot, price_cents, methods FROM sales"
         ).fetchall()
 
 
@@ -200,6 +200,9 @@ class TestFaultsListRendersPendingSale:
         assert 'id="clear-PAY-104"' in text
         assert 'id="record-sale-PAY-104"' not in text
         assert 'id="discard-PAY-104"' not in text
+        # The generic Clear behaves like Discard, and says so.
+        assert "Clear (as Discard)" in text
+        assert "Clearing acts like Discard" in text
 
     def test_clearing_a_pay104_with_no_pending_sale_writes_no_row(
         self, wired, login_as, tmp_path
@@ -322,6 +325,58 @@ class TestRecordSale:
 
         assert "PAY-104" not in {f["code"] for f in vmc.active_faults()}
         assert not pay104["session_path"].exists()
+
+    def test_record_sale_queues_cash_sale_with_the_cash_share_only(
+        self, pay104, login_as
+    ):
+        machine = pay104["machine"]
+        assert machine.gateway.pending_payouts() == []
+        client = login_as(Role.tech)
+        assert client.post("/health/faults/PAY-104/record-sale").status_code == 200
+
+        (queued,) = machine.gateway.pending_payouts()
+        assert (queued.kind, queued.cents, queued.sale_id) == ("cash_sale", 200, None)
+        # a replay finds nothing pending and queues nothing more
+        client.post("/health/faults/PAY-104/record-sale")
+        assert len(machine.gateway.pending_payouts()) == 1
+
+    def test_cash_sale_not_queued_keeps_pay104_and_retry_queues_it(
+        self, pay104, login_as, monkeypatch
+    ):
+        """If the cash_sale cannot be queued, clearing PAY-104 would release the
+        armed reconciliation with no cash_sale in flight, so the recorded sale's
+        price would be refunded as excess board escrow. PAY-104 and the
+        evidence stay; a retry (sale already recorded) queues it and clears."""
+        machine = pay104["machine"]
+        vmc = pay104["vmc"]
+        real = machine.gateway.cash_sale
+
+        def boom(cents, sale_id):
+            raise RuntimeError("mqtt down")
+
+        monkeypatch.setattr(machine.gateway, "cash_sale", boom)
+        client = login_as(Role.tech)
+        resp = client.post("/health/faults/PAY-104/record-sale")
+        assert resp.status_code == 500
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert pay104["session_path"].exists()
+        assert machine.pending_sale_for_recovery() is not None
+        assert machine.gateway.pending_payouts() == []
+        assert len(_sales_rows(pay104["db_path"])) == 1
+
+        monkeypatch.setattr(machine.gateway, "cash_sale", real)
+        resp = client.post("/health/faults/PAY-104/record-sale")
+        assert resp.status_code == 200
+        (queued,) = machine.gateway.pending_payouts()
+        assert (queued.kind, queued.cents) == ("cash_sale", 200)
+        assert "PAY-104" not in {f["code"] for f in vmc.active_faults()}
+        assert len(_sales_rows(pay104["db_path"])) == 1
+
+    def test_discard_queues_nothing_for_the_sale(self, pay104, login_as):
+        machine = pay104["machine"]
+        client = login_as(Role.tech)
+        assert client.post("/health/faults/PAY-104/discard").status_code == 200
+        assert machine.gateway.pending_payouts() == []
 
     def test_replay_after_success_writes_no_second_row_and_does_not_error(
         self, pay104, login_as
@@ -847,21 +902,26 @@ class TestRecordedSaleWithLeftoverCredit:
     @pytest.fixture
     def leftover(self, wired, tmp_path):
         cfg, _old_vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice", 2.50)
+        add_product(cfg, "ICE-1", "Ice", 250)
         store_path = tmp_path / "session.json"
         machine1 = Machine(config=cfg)
         vmc1 = machine1.vmc
         vmc1.set_state("interacting_with_user")
         vmc1.selected_product = next(p for p in vmc1.products if p.sku == "ICE-1")
-        vmc1.deposit_funds(5.00, payment_method="cash_bill")
+        vmc1.deposit_funds(500, payment_method="cash_bill")
         vmc1.process_payment()
         snap = vmc1.snapshot()
-        assert snap.credit_escrow == pytest.approx(2.50)  # positive control
+        assert snap.credit_escrow_cents == 250  # positive control
         SessionStore(store_path).save(snap)
 
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         recorder.record_sale(
-            "ICE-1", "Ice", 1, 2.50, dict(snap.pending_sale_shares), ts=snap.saved_at
+            "ICE-1",
+            "Ice",
+            1,
+            250,
+            snap.pending_sale_shares,
+            ts=snap.saved_at,
         )
         machine2 = Machine(config=cfg)
         machine2.set_event_recorder(recorder)
@@ -897,10 +957,53 @@ class TestRecordedSaleWithLeftoverCredit:
         text = client.get("/health/faults").text
         assert "Sale already recorded" in text
         assert "Leftover credit $2.50" in text
+        # No unconditional refund promise: after a restart the credit is not in
+        # edge escrow, and reconciliation pays only what the board still holds
+        # (nothing if the board rebooted too).
+        assert "the machine will pay it out" not in text
+        assert "only if the board still holds it" in text
+        assert "verify the customer was repaid" in text
 
     def test_recovery_detail_forwarded_on_machine(self, leftover):
         machine, _store, _db = leftover
         detail = machine.recovery_detail()
         assert detail is not None
         assert detail.sale_recorded is True
-        assert detail.credit_escrow == pytest.approx(2.50)
+        assert detail.credit_escrow_cents == 250
+
+
+class TestPendingPayoutChip:
+    @pytest.fixture
+    def owed(self, wired, tmp_path):
+        cfg, _old, _inv, _store = wired
+        store_path = tmp_path / "session.json"
+        SessionStore(store_path).save(
+            SessionSnapshot(
+                state="idle",
+                credit_escrow_cents=0,
+                pending_payouts=[
+                    {
+                        "request_id": "p1",
+                        "kind": "payout",
+                        "cents": 150,
+                        "reason": "change",
+                    },
+                    {"request_id": "c1", "kind": "cash_sale", "cents": 250},
+                ],
+            )
+        )
+        machine = Machine(config=cfg)
+        machine.set_session_store(SessionStore(store_path))
+        old = context.machine_instance
+        routes.set_machine_instance(machine)
+        try:
+            yield machine
+        finally:
+            routes.set_machine_instance(old)
+
+    def test_pending_payout_chips_replace_the_refund_id_chip(self, owed, login_as):
+        assert owed.faults.has(FaultCode.PAY_104)
+        text = login_as(Role.tech).get("/health/faults").text
+        assert "Payout $1.50 unconfirmed" in text
+        assert "Cash sale $2.50 not yet reported to the board" in text
+        assert "unconfirmed" in text and "Refund p1" not in text

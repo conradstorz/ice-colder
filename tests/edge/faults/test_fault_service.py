@@ -52,7 +52,7 @@ class FakeRecorder:
 
 
 def not_open_snapshot(state: str | None) -> SessionSnapshot:
-    return SessionSnapshot(state=state or "idle", credit_escrow=0.0)
+    return SessionSnapshot(state=state or "idle", credit_escrow_cents=0)
 
 
 def make_service(
@@ -79,10 +79,10 @@ def make_service(
     runner = FakeTaskRunner()
     outputs = StatusOutputs(
         snapshot=not_open_snapshot,
-        credit_escrow=lambda: 0.0,
+        credit_escrow_cents=lambda: 0,
         selected_product=lambda: None,
         fsm_state=fsm_state,
-        pay104_active=lambda: registry.has(FaultCode.PAY_104),
+        evidence_held=lambda: registry.has(FaultCode.PAY_104),
         tasks=runner,
     )
     if mqtt is not None:

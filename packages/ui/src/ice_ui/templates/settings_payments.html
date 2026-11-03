@@ -76,4 +76,18 @@
   <p class="text-sm text-gray-500">No MDB devices configured.</p>
   {% endif %}
 </div>
+
+{% set policy = mdb.policy %}
+<div id="mdb-policy" class="max-w-md space-y-2 border-t border-gray-100 pt-4 mt-6">
+  <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">MDB acceptance policy</h2>
+  <p class="text-sm text-gray-500">Read-only; edit in config.json.</p>
+  <div class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-1 text-sm text-gray-700">
+    <div>Coins accepted: {% for c in policy.coin_enabled %}{{ c|money }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+    <div>Bills accepted: {% for b in policy.bill_enabled %}{{ b|money }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+    <div>Escrow cap: {{ policy.max_escrow_cents|money }}</div>
+    <div>Change threshold: {{ policy.change_threshold_cents|money }}</div>
+    <div>Board fail-safe timeout: {{ policy.edge_timeout_s }} s</div>
+    <div>Return bill on lever: {{ "yes" if policy.return_bill_on_lever else "no" }}</div>
+  </div>
+</div>
 {% endblock %}

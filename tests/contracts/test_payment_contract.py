@@ -651,10 +651,9 @@ class TestTestableAndTimeouts:
         assert ("mdb", "vend_result") not in COMPLETION_TIMEOUTS
         assert ("mdb", "set_policy") not in COMPLETION_TIMEOUTS
 
-    def test_testable_commands_flip_is_spec_2(self):
-        # Spec 2 flips TESTABLE_COMMANDS["mdb"] to MDB_TESTABLE_COMMANDS;
-        # delete this assertion there rather than "fixing" it.
-        assert "bill_acceptor_test" in TESTABLE_COMMANDS["mdb"]
+    def test_testable_commands_mdb_is_the_payment_set(self):
+        assert TESTABLE_COMMANDS["mdb"] == MDB_TESTABLE_COMMANDS
+        assert "bill_acceptor_test" not in TESTABLE_COMMANDS["mdb"]
 
 
 def test_generate_registers_payment_contract():
