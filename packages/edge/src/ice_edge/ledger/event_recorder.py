@@ -337,6 +337,7 @@ class EventRecorder:
         self._on_write_failed: Optional[Callable[[], None]] = None
         self._on_write_ok: Optional[Callable[[], None]] = None
         self._last_write_failed = False
+        self._precents_journal_rows = 0
         self._historical_avg_cache: dict[int, tuple[float, dict]] = {}
         # Corrupt-database recovery (§5): not a raise -- a flag + the backup
         # path a later task (main.py) inspects to raise the alert-class
@@ -439,6 +440,16 @@ class EventRecorder:
             target=self._writer_loop, name="event-recorder", daemon=True
         )
         self._writer.start()
+
+    @property
+    def precents_journal_rows(self) -> int:
+        """Pre-cents journal rows the last replay kept in the journal.
+
+        Such a row (dollar ``price``, no ``price_cents``) is deliberately not
+        converted (spec D1) and not set aside as rejected evidence: it stays
+        in the journal so DATA-101 stays raised until an operator handles it.
+        """
+        return self._precents_journal_rows
 
     @property
     def db_path(self) -> Path:
@@ -989,6 +1000,7 @@ class EventRecorder:
 
         count = 0
         remaining_lines: list[str] = []
+        self._precents_journal_rows = 0
         conn = sqlite3.connect(self._db_path, timeout=5.0)
         try:
             self._configure_sale_connection(conn)
@@ -1005,6 +1017,23 @@ class EventRecorder:
                         "EventRecorder: dropping corrupt/partial journal "
                         f"line: {line!r}"
                     )
+                    continue
+
+                if (
+                    isinstance(row, dict)
+                    and "price_cents" not in row
+                    and "price" in row
+                ):
+                    # A pre-cents row is not converted (spec D1). Setting it
+                    # aside would drain the journal and clear DATA-101 while
+                    # the sale is in no report; keep it so the fault stays.
+                    logger.error(
+                        "EventRecorder: pre-cents sales-journal row "
+                        f"(sku={row.get('sku')!r}, ts={row.get('ts')!r}) kept "
+                        "in the journal; it needs manual handling"
+                    )
+                    self._precents_journal_rows += 1
+                    remaining_lines.append(line)
                     continue
 
                 try:
