@@ -225,6 +225,5 @@ firmware/mdb/managed_components/
 # Local backup archives (scripts/backup_data.py, docs/backups.md)
 backups/
 
-# HTML renders of markdown documents (one line per rendered .md)
-firmware/docs/mdb-board-interface.html
-firmware/docs/vending-board-interface.html
+# HTML renders of documents: any .html inside a docs/ folder
+**/docs/**/*.html
