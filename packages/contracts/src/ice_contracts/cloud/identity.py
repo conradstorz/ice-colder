@@ -3,13 +3,11 @@
 import base64
 import binascii
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, Field, field_validator
+
+from ice_contracts.cloud._base import _Model
 
 _ED25519_PUBLIC_KEY_BYTES = 32
-
-
-class _Model(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class RegisterMachine(_Model):

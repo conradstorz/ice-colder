@@ -18,21 +18,6 @@ COOLDOWN_SECONDS = 600
 _ERROR_LIMIT = 500
 
 
-class _MailEvent:
-    """A stored event as the mail renderer sees it (the row has no scope)."""
-
-    scope = None
-
-    def __init__(self, event: StoredEvent) -> None:
-        self.kind = event.kind
-        self.at = event.at
-        self.code = event.code
-        self.severity = event.severity
-        self.description = event.description
-        self.sku = event.sku
-        self.product = event.product
-
-
 class AlertDispatcher:
     def __init__(
         self,
@@ -209,8 +194,8 @@ class AlertDispatcher:
                 label=machine.label,
                 short=short_fingerprint(fp),
                 role=person.role,
-                triggering=[_MailEvent(e) for e in triggering],
-                cleared=[_MailEvent(e) for e in cleared],
+                triggering=triggering,
+                cleared=cleared,
                 public_url=self._public_url,
                 from_addr=self._from_addr,
                 to=person.email,

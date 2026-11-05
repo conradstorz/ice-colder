@@ -11,8 +11,6 @@ not stored in config.json.
 """
 
 import json
-import os
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +18,7 @@ from loguru import logger
 from pydantic import SecretStr
 
 from ice_common.config_model import ConfigModel, Product
-from ice_common.paths import fsync_dir
+from ice_common.paths import atomic_write, config_path
 
 CONFIG_PATH = Path("config.json")
 
@@ -36,15 +34,12 @@ def _clean_kind(kind: str) -> str:
 def _config_path() -> Path:
     """Resolve the active config path.
 
-    ``ICE_COLDER_CONFIG`` (read at call time, not import time) takes priority
-    so Docker deployments can point at a writable, bind-mounted location
-    (e.g. ``/app/data/config.json``); otherwise falls back to ``CONFIG_PATH``
-    (also honored so tests can monkeypatch it directly).
+    ``ICE_COLDER_CONFIG`` (via ``ice_common.paths.config_path``, read at call
+    time) takes priority so Docker deployments can point at a writable,
+    bind-mounted location (e.g. ``/app/data/config.json``); otherwise falls
+    back to ``CONFIG_PATH``, which tests monkeypatch directly.
     """
-    env_path = os.environ.get("ICE_COLDER_CONFIG")
-    if env_path:
-        return Path(env_path)
-    return CONFIG_PATH
+    return config_path(CONFIG_PATH)
 
 
 def _config_json(config: ConfigModel) -> str:
@@ -67,25 +62,8 @@ def save_config(config: ConfigModel, path: Path | None = None):
     """
     if path is None:
         path = _config_path()
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    if os.name == "posix":
-        # Tighten a stale .tmp before any secret is written into it.
-        os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(_config_json(config))
-        f.flush()
-        os.fsync(f.fileno())
-    if os.name == "posix":
-        # O_CREAT does not re-mode a .tmp left behind by a crash.
-        os.chmod(tmp, 0o600)
-    if path.exists():
-        bak = path.with_name(path.name + ".bak")
-        shutil.copy2(path, bak)
-        if os.name == "posix":
-            os.chmod(bak, 0o600)
-    os.replace(tmp, path)
-    fsync_dir(path.parent)
+    # 0600 tmp (any stale one removed first) and .bak: the file holds secrets.
+    atomic_write(path, _config_json(config), mode=0o600, backup=True)
 
 
 def _lowest_free_slot(products) -> int:

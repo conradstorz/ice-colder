@@ -17,7 +17,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from ice_common.paths import DATA_DIR
+from ice_common.paths import DATA_DIR, atomic_write
 
 CURSOR_PATH = DATA_DIR / "payment_cursor.json"
 MAX_BOOTS = 2
@@ -77,12 +77,10 @@ class PaymentCursorStore:
 
     def save(self, state: CursorState) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_name(self._path.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"seqs": state.seqs, "recent_ids": list(state.recent_ids)}, f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self._path)
+        atomic_write(
+            self._path,
+            json.dumps({"seqs": state.seqs, "recent_ids": list(state.recent_ids)}),
+        )
 
     async def save_async(self, state: CursorState) -> None:
         # Snapshot first: the worker thread must not see later mutations.

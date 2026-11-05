@@ -38,7 +38,7 @@ from ice_common.secrets import (  # noqa: F401  (re-exported for existing import
     hash_secret,
     verify_secret,
 )
-from ice_common.paths import DATA_DIR
+from ice_common.paths import DATA_DIR, atomic_write
 from ice_contracts.access import (  # noqa: F401  (re-exported for existing importers)
     ROLE_PERMISSIONS,
     Permission,
@@ -334,17 +334,7 @@ class AccessStore:
         if self.corrupt:
             raise AccessError("access file is corrupt; refusing to overwrite it")
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_name(self._path.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self._document(), f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self._path)
-        except Exception:
-            tmp.unlink(missing_ok=True)
-            raise
+        atomic_write(self._path, json.dumps(self._document(), indent=2), mode=0o600)
         self._tighten_permissions()
 
     def _commit(self) -> None:

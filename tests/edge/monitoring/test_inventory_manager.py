@@ -215,3 +215,25 @@ class TestSaveObservers:
         inv.set_save_observers(boom, boom)
         (tmp_path / "inventory.json.tmp").mkdir()
         inv.set_count("ICE-SM", 4)
+
+
+def test_save_fsyncs_the_file_before_replacing_it(tmp_path, monkeypatch):
+    import os
+
+    calls: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(
+        os, "fsync", lambda fd: (calls.append("fsync"), real_fsync(fd))[1]
+    )
+    monkeypatch.setattr(
+        os, "replace", lambda s, d: (calls.append("replace"), real_replace(s, d))[1]
+    )
+    path = tmp_path / "inventory.json"
+    inv = InventoryManager(_products(), path=path)
+    calls.clear()
+
+    inv.set_count("ICE-SM", 7)
+
+    assert "fsync" in calls
+    assert calls.index("fsync") < calls.index("replace")
+    assert json.loads(path.read_text())["ICE-SM"] == 7

@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from email.message import EmailMessage
 from typing import Any, Protocol
 
 from loguru import logger
+
+from ice_cloud.alerts.format import as_utc, fmt_utc
 
 _ROLE_WORDS = {"owner": "owner", "tech": "technician"}
 
@@ -25,8 +27,6 @@ class MailEvent(Protocol):
     def code(self) -> str | None: ...
     @property
     def severity(self) -> str | None: ...
-    @property
-    def scope(self) -> str | None: ...
     @property
     def description(self) -> str | None: ...
     @property
@@ -95,23 +95,6 @@ def make_mailer(settings: Any) -> Mailer:
     return SmtpMailer(config)
 
 
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
-def _utc(value: datetime) -> str:
-    return _as_utc(value).strftime("%Y-%m-%d %H:%M UTC")
-
-
-def _scope_text(event: MailEvent) -> str:
-    scope = event.scope or ("product" if event.sku else "machine")
-    if scope == "product" and event.sku:
-        return f"product {event.product or event.sku} (sku {event.sku})"
-    return scope
-
-
 def render_email(
     *,
     label: str,
@@ -129,27 +112,30 @@ def render_email(
     raised = [e for e in triggering if e.kind == "raised"]
     link = sorted(
         (e for e in triggering if e.kind in ("offline", "online")),
-        key=lambda e: _as_utc(e.at),
+        key=lambda e: as_utc(e.at),
     )
     if link:
         subject = head + ("back online" if link[-1].kind == "online" else "offline")
         for event in link:
             if event.kind == "offline":
-                line = f"Stopped reporting at {_utc(event.at)}"
+                line = f"Stopped reporting at {fmt_utc(event.at)}"
                 if last_report_at is not None:
-                    line += f" (last report {_as_utc(last_report_at):%H:%M})"
+                    line += f" (last report {as_utc(last_report_at):%H:%M})"
             else:
-                line = f"Reporting again at {_utc(event.at)}"
+                line = f"Reporting again at {fmt_utc(event.at)}"
             lines.append(line)
     else:
         subject = head + f"{len(raised)} raised, {len(cleared)} cleared"
         at = (raised or list(cleared) or list(triggering))[0].at
-        lines.append(f"Fault changes at {_utc(at)}")
+        lines.append(f"Fault changes at {fmt_utc(at)}")
 
     if raised:
         lines += ["", "Raised"]
         for e in raised:
-            lines.append(f"  {e.code}  {e.severity}  {_scope_text(e)}  {e.description}")
+            scope = (
+                f"product {e.product or e.sku} (sku {e.sku})" if e.sku else "machine"
+            )
+            lines.append(f"  {e.code}  {e.severity}  {scope}  {e.description}")
     if cleared:
         lines += ["", "Cleared since your last email"]
         for e in cleared:

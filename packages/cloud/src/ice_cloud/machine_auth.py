@@ -213,7 +213,6 @@ async def _verify(request: Request) -> Machine | None:
         if not app.state.bundle_bodies.try_acquire():
             raise BundleBusy
         request.state.bundle_slot = True
-    if request.url.path.startswith(BUNDLE_PREFIX):
         try:
             async with asyncio.timeout(BUNDLE_BODY_READ_SECONDS):
                 body = await request.body()

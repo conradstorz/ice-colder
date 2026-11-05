@@ -19,30 +19,7 @@ from ice_contracts.board.common import CommandAck as CommandAck
 from ice_contracts.board.common import SubsystemCommand as MonitorCommand
 from ice_contracts.board.vending_machine import SubsystemCapabilities
 
-# 1.1.0 -> 1.2.0: minor bump. The command/ack models (MonitorCommand,
-# CommandAck) move to ice_contracts/board/common.py as SubsystemCommand/CommandAck and
-# are re-exported here under their original names — same classes, wire
-# format unchanged except the ack's new optional `result` field. Additive,
-# so today's ice-maker firmware and the VMC's current ack handler still
-# validate.
-#
-# 1.2.0 -> 1.3.0 (2026-09-29): minor bump, additive. `CommandAck` gains
-# `phase` ("accepted" | "completed", default "completed" -- a present-day
-# ack with no `phase` key still validates unchanged). `power_cycle` now
-# acks "accepted" as soon as it starts (unchanged: still within the 10 s
-# ack deadline, still enforcing the 300 s lockout) and sends a SECOND,
-# `phase="completed"` ack, same topic and `request_id`, once the dwell
-# actually elapses -- see docs/contracts/ice-maker-monitor/CONTRACT.md's
-# completion table. `set_interval`, `ping`, `self_test` and `force_report`
-# are unaffected; their single ack is still both accept and completion.
-#
-# 1.3.0 -> 1.4.0 (2026-09-30): minor bump, additive. `ChannelDescriptor`
-# (ice_contracts/board/common.py) gains `direction` ("input" | "output", default
-# "input") and `driven_by` (str | None, default None) so a board's
-# capabilities document can say which channels it drives versus senses,
-# and which command's refusal inhibits an output. Both fields are
-# optional with defaults, so every present-day channel descriptor still
-# validates unchanged.
+# Version history: docs/architecture-history.md (Contract version history).
 CONTRACT_VERSION = "1.4.0"
 
 _CHANNEL_ID_PATTERN = CHANNEL_ID_PATTERN  # kept for ChannelReading

@@ -25,6 +25,12 @@ from types import SimpleNamespace
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
+# require_htmx (the CSRF guard) lives in ice_ui.htmx, shared with the cloud
+# portal; re-exported here because every edge route reads it as
+# ``context.require_htmx``. Routes list it after the session check, so an
+# unauthenticated cross-site POST is turned away before the CSRF guard runs.
+from ice_ui.htmx import require_htmx  # noqa: F401
+
 from ice_common.config_model import (
     MAX_PRODUCT_NAME_LENGTH,
     MAX_SKU_LENGTH,
@@ -191,22 +197,6 @@ def ensure_setup_mode() -> None:
         # only place the plaintext would otherwise land, so log it directly.
         _last_logged_setup_code = code
         logger.warning(f"Setup code: {code[:4]} {code[4:]}")
-
-
-# Listed ahead of require_htmx on every mutating route, so an unauthenticated
-# cross-site POST is turned away by the session check before the CSRF guard
-# even runs. Both must pass to reach a handler; the order is intentional.
-def require_htmx(request: Request):
-    """CSRF guard for mutating routes.
-
-    Cookie auth is replayed by the browser on cross-site requests same as
-    Basic auth was, so a hostile page could still POST to /action/* or
-    /inventory/delete/*. HTMX sends HX-Request: true on every request it
-    makes; a cross-site form cannot add it, and a cross-origin fetch with a
-    custom header needs a CORS preflight this app never answers.
-    """
-    if request.headers.get("HX-Request") != "true":
-        raise HTTPException(status_code=403, detail="HTMX request required")
 
 
 LOG_PATH = LOG_FILE

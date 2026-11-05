@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
-from types import SimpleNamespace
 
 from fastapi import HTTPException, Request
 
+from ice_cloud.auth import find_machine
+from ice_cloud.context import page_context
 from ice_cloud.fleet_view import FleetView, build_fleet_view
 from ice_cloud.store.repository import Account, Machine
 from ice_cloud.viewer import MY_MACHINES_SWITCH, RemoteViewer
-from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
-from ice_contracts.cloud.signing import parse_short_fingerprint
 from ice_ui.levels import Level
 
 LEVEL_ADMIN = Level(title="Admin", url="/admin")
@@ -30,30 +29,22 @@ def admin_context(
     """Every ``/admin*`` page wears the Admin hat: the chip reads ``admin`` and
     the bar offers the way back to My machines."""
     return {
-        "request": request,
-        "current_user": RemoteViewer(display_name=account.name, role_label="admin"),
-        "perms": REMOTE_VIEWER_PERMISSIONS,
-        "level": level,
-        "hat_switch": MY_MACHINES_SWITCH,
-        "badge": SimpleNamespace(
-            label="Cloud", url="/fleet", tone="cloud", title=None, external=False
+        **page_context(
+            request,
+            viewer=RemoteViewer(display_name=account.name, role_label="admin"),
+            level=level,
+            hat_switch=MY_MACHINES_SWITCH,
         ),
         **extra,
     }
 
 
 def templates(request: Request):
-    registry = request.app.state.registry
-    return registry.resolve(registry.installed_digest).templates
+    return request.app.state.registry.installed().templates
 
 
 async def machine_or_404(request: Request, short: str) -> Machine:
-    short16 = parse_short_fingerprint(short)
-    machine = (
-        await asyncio.to_thread(request.app.state.repo.resolve_short, short16)
-        if short16
-        else None
-    )
+    machine = await find_machine(request.app.state.repo, short)
     if machine is None:
         raise HTTPException(status_code=404)
     return machine

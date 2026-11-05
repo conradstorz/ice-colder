@@ -12,10 +12,10 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from ice_cloud.alerts.engine import AlertEvent, diff_reports
+from ice_cloud.alerts.engine import diff_reports
 from ice_cloud.alerts.handled import alerts_handled_for
 from ice_cloud.machine_auth import require_machine
-from ice_cloud.store.repository import AlertState, Machine
+from ice_cloud.store.repository import AlertEventRow, AlertState, Machine
 from ice_contracts.cloud.identity import (
     ClaimCodeNotice,
     RegisterMachine,
@@ -206,20 +206,7 @@ def _record_alerts(repo, fingerprint: str, report: MachineReport, now):
         previous.faults if previous else (), report, now=now, fingerprint=fingerprint
     )
     if previous is not None and previous.offline_since is not None:
-        events.append(
-            AlertEvent(
-                fingerprint=fingerprint,
-                kind="online",
-                at=now,
-                key=None,
-                code=None,
-                severity=None,
-                gate=None,
-                description=None,
-                sku=None,
-                product=None,
-            )
-        )
+        events.append(AlertEventRow.bare(fingerprint, "online", now))
     return repo.record_alert_pass(
         events,
         AlertState(

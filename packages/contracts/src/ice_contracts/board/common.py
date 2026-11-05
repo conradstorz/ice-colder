@@ -93,6 +93,13 @@ def _validate_water_valve(params: dict) -> None:
         raise ValueError(f"water_valve requires seconds in [{lo}, {hi}]")
 
 
+def _first_error(exc: ValidationError) -> str:
+    """First validation error as "loc — message"."""
+    e = exc.errors()[0]
+    loc_str = ".".join(str(x) for x in e.get("loc", []))
+    return f"{loc_str} — {e.get('msg', 'validation error')}"
+
+
 def _validate_dispense_params(params: dict) -> None:
     # Lazy import: ice_contracts/board/mqtt_messages.py imports ice_contracts.board.vending_machine
     # (and, through ice_contracts.board.dispenser_schema, ice_contracts.board.common), so a
@@ -129,11 +136,7 @@ def _validate_dispense_params(params: dict) -> None:
         # (a ValidationError never has an empty errors() list), so this
         # always raises -- there is no further, unreachable fallback below
         # it (M6, whole-branch review).
-        e = errors[0]
-        loc_str = ".".join(str(x) for x in e.get("loc", []))
-        msg_str = e.get("msg", "validation error")
-        msg = f"dispense params invalid: {loc_str} — {msg_str}"
-        raise ValueError(msg) from exc
+        raise ValueError(f"dispense params invalid: {_first_error(exc)}") from exc
 
 
 def _payment_params_validator(command: str) -> Callable[[dict], None]:
@@ -147,12 +150,7 @@ def _payment_params_validator(command: str) -> Callable[[dict], None]:
         try:
             PARAM_MODELS[command].model_validate(params)
         except ValidationError as exc:
-            e = exc.errors()[0]
-            loc_str = ".".join(str(x) for x in e.get("loc", []))
-            msg_str = e.get("msg", "validation error")
-            raise ValueError(
-                f"{command} params invalid: {loc_str} — {msg_str}"
-            ) from exc
+            raise ValueError(f"{command} params invalid: {_first_error(exc)}") from exc
 
     return validate
 

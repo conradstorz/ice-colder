@@ -25,8 +25,8 @@ and keep a rolling `config.json.bak`.
 `packages/edge/src/ice_edge/app/startup_config.py` owns config loading, first-run creation,
 environment overrides, and the startup access-store / setup-mode warning
 (`warn_if_setup_mode`); `__main__.py` calls it during startup, including `warn_if_no_buttons(config)` right after `load_config` (a migration aid: logs a warning when no product has a `button`, since a press maps to a product only by `button`, and an info line for a partial assignment; it never raises or edits the config). The config file path
-is configurable via the `ICE_COLDER_CONFIG` environment variable (read at call
-time by both `packages/edge/src/ice_edge/app/startup_config.py` and `packages/edge/src/ice_edge/config/config_store.py`),
+is configurable via the `ICE_COLDER_CONFIG` environment variable, read at call
+time by `ice_common.paths.config_path()` (used by `packages/edge/src/ice_edge/app/startup_config.py`, `packages/edge/src/ice_edge/config/config_store.py`, `packages/edge/src/ice_edge/vend/dispensers.py` and the simulators in `ice_sims/base.py`),
 defaulting to `config.json` in the current working directory when unset. This
 lets Docker point the app at a writable, bind-mounted location instead of
 relying on a bind-mount targeting `config.json` directly (which would let

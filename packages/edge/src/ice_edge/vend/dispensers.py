@@ -44,7 +44,7 @@ from ice_contracts.board.dispenser_schema import (
     sense_channels,
     worst_case_seconds,
 )
-from ice_common.paths import fsync_dir
+from ice_common.paths import config_path, fsync_dir
 
 _SLOT_PROFILE_ADAPTER = TypeAdapter(SlotProfile)
 
@@ -1153,7 +1153,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Resolve paths
     dispensers_file_path = dispensers_path() if args.path is None else Path(args.path)
-    config_path_str = args.config or os.environ.get("ICE_COLDER_CONFIG", "config.json")
+    config_path_str = args.config or str(config_path())
 
     # Load config (try block for config errors)
     try:

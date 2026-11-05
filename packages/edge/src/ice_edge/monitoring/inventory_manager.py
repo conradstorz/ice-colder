@@ -9,12 +9,14 @@ of config.json.
 
 import asyncio
 import json
-import os
+import os  # noqa: F401  (tests patch inventory_manager.os.replace)
 import threading
 from collections.abc import Callable
 from pathlib import Path
 
 from loguru import logger
+
+from ice_common.paths import atomic_write
 
 INVENTORY_PATH = Path("inventory.json")
 
@@ -83,11 +85,8 @@ class InventoryManager:
     def _save(self):
         """Persist current counts to disk atomically."""
         with self._save_lock:
-            tmp = f"{self._path}.tmp"
             try:
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(dict(self._counts), f, indent=2)
-                os.replace(tmp, self._path)
+                atomic_write(Path(self._path), json.dumps(dict(self._counts), indent=2))
             except Exception as e:
                 logger.error(f"Failed to save inventory: {e}")
                 self._last_save_failed = True

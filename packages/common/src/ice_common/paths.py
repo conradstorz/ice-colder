@@ -5,6 +5,7 @@ the bind mounts in docker-compose.yml (``./LOGS:/app/LOGS``, ``./data:/app/data`
 """
 
 import os
+import shutil
 from pathlib import Path
 
 from loguru import logger
@@ -12,14 +13,25 @@ from loguru import logger
 LOG_DIR = Path("LOGS")
 LOG_FILE = LOG_DIR / "vmc.log"
 DATA_DIR = Path("data")
+CONFIG_ENV = "ICE_COLDER_CONFIG"
+
+
+def config_path(default: str | Path = "config.json") -> Path:
+    """Return the active config.json path.
+
+    ``ICE_COLDER_CONFIG`` is read at call time (never import time) and wins
+    when set and non-empty; otherwise ``default`` is used. Callers that must
+    honour a module-level fallback (``config_store.CONFIG_PATH``) pass it here.
+    """
+    return Path(os.environ.get(CONFIG_ENV) or default)
 
 
 def fsync_dir(directory: Path) -> None:
     """Flush a directory entry after a rename (no-op on Windows).
 
-    Shared by every atomic-save path (``ice_edge/config/config_store.py``,
-    ``ice_edge/vend/dispensers.py``) so a rename's directory-entry update is
-    durable on POSIX before the caller reports success.
+    Called by ``atomic_write`` (and so by every atomic-save path built on it)
+    so a rename's directory-entry update is durable on POSIX before the
+    caller reports success.
     """
     if os.name != "posix":
         return
@@ -33,3 +45,58 @@ def fsync_dir(directory: Path) -> None:
         logger.warning(f"paths: directory fsync failed for {directory}: {e}")
     finally:
         os.close(fd)
+
+
+def atomic_write(
+    path: Path,
+    data: bytes | str,
+    *,
+    mode: int | None = None,
+    backup: bool = False,
+    encoding: str = "utf-8",
+) -> None:
+    """Atomically replace ``path`` with ``data``, durably.
+
+    Writes a same-directory temp file (``<name>.tmp``, any stale one removed
+    first, then created ``O_CREAT|O_EXCL`` with ``mode`` when given, so a
+    secret is never readable through a looser pre-existing file), flushes and
+    fsyncs it, optionally copies the live file to ``<name>.bak`` (a copy, so
+    ``path`` is never briefly absent; re-moded to ``mode`` on POSIX when
+    given), then ``os.replace``s it into place and fsyncs the directory.
+    ``str`` is written in text mode (platform newline translation, exactly as
+    ``open(path, "w")`` does); ``bytes`` are written verbatim. On any
+    exception the temp file is unlinked and the exception re-raised; the
+    target is untouched.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.unlink(missing_ok=True)
+    try:
+        fd = os.open(
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+            0o666 if mode is None else mode,
+        )
+        if mode is not None:
+            # os.open's mode is filtered by the umask; apply it exactly.
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, mode)
+            elif os.name == "posix":
+                os.chmod(tmp, mode)
+        if isinstance(data, bytes):
+            f = os.fdopen(fd, "wb")
+        else:
+            f = os.fdopen(fd, "w", encoding=encoding)
+        with f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if backup and path.exists():
+            bak = path.with_name(path.name + ".bak")
+            shutil.copy2(path, bak)
+            if mode is not None and os.name == "posix":
+                os.chmod(bak, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    fsync_dir(path.parent)

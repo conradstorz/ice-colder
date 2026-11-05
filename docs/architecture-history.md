@@ -68,3 +68,109 @@ The v2 shell replaces all URLs from the old tabbed dashboard. Anyone holding a b
 ### Legacy money compatibility removed (2026-11-02)
 
 The cloud stopped accepting 0.x reports (`MachineReport.contract` is `"1.0.0"` only; the schema is unchanged, so no version bump) and dropped the dollar template aliases for old uploaded UI bundles. The edge dropped its pre-cents readers: the dollar `session.json` and sales-journal conversion (the `"units": "cents"` marker is still written, no longer read), the dollar `price` upgrade of `config.json` products, and `SessionSnapshot.pending_refund_request_id` (never written since the MDB cutover). events.db migration 2 stays in `MIGRATIONS` because the list is append-only; a fresh database runs it as a no-op.
+
+## Contract version history
+
+### ice-maker-monitor (`ice_contracts.board`)
+
+```text
+1.1.0 -> 1.2.0: minor bump. The command/ack models (MonitorCommand,
+CommandAck) move to ice_contracts/board/common.py as SubsystemCommand/CommandAck and
+are re-exported here under their original names — same classes, wire
+format unchanged except the ack's new optional `result` field. Additive,
+so today's ice-maker firmware and the VMC's current ack handler still
+validate.
+
+1.2.0 -> 1.3.0 (2026-09-29): minor bump, additive. `CommandAck` gains
+`phase` ("accepted" | "completed", default "completed" -- a present-day
+ack with no `phase` key still validates unchanged). `power_cycle` now
+acks "accepted" as soon as it starts (unchanged: still within the 10 s
+ack deadline, still enforcing the 300 s lockout) and sends a SECOND,
+`phase="completed"` ack, same topic and `request_id`, once the dwell
+actually elapses -- see docs/contracts/ice-maker-monitor/CONTRACT.md's
+completion table. `set_interval`, `ping`, `self_test` and `force_report`
+are unaffected; their single ack is still both accept and completion.
+
+1.3.0 -> 1.4.0 (2026-09-30): minor bump, additive. `ChannelDescriptor`
+(ice_contracts/board/common.py) gains `direction` ("input" | "output", default
+"input") and `driven_by` (str | None, default None) so a board's
+capabilities document can say which channels it drives versus senses,
+and which command's refusal inhibits an output. Both fields are
+optional with defaults, so every present-day channel descriptor still
+validates unchanged.
+```
+
+### vending-machine (`ice_contracts.board`)
+
+```text
+0.4.0 -> 0.5.0: minor bump, absorbing two additive changes. (1) SVC-102
+(new FaultCode + FAULT_TABLE entry + PAYMENT_BLOCKING_FAULTS member,
+six -> seven). (2) Part 3's DATA-101 description wording fix
+("Sale journal in use; sales are being written to a fallback file" ->
+"Sale write failed; held in fallback file") shipped without its own bump
+at the time; that deferred bump is absorbed here too.
+
+0.5.0 -> 0.6.0 (2026-09-29): minor bump, additive. `CommandAck` gains
+`phase` ("accepted" | "completed", default "completed" -- a present-day
+ack payload with no `phase` key still validates and means exactly what
+it always meant). A long-running actuator command (`dispense`,
+`water_valve`) now acks "accepted" as soon as it starts, and reports
+completion separately -- see `ice_contracts/board/common.py`'s COMPLETION_TIMEOUTS
+and docs/contracts/vending-machine/CONTRACT.md's completion table. No
+existing field changed shape or meaning; every present-day ack and
+command payload still validates unchanged.
+
+0.6.0 -> 0.7.0 (2026-09-30): minor bump, additive. `ChannelDescriptor`
+(ice_contracts/board/common.py) gains `direction` ("input" | "output", default
+"input") and `driven_by` (str | None, default None) so a board's
+capabilities document can say which channels it drives versus senses,
+and which command's refusal inhibits an output. Both fields are
+optional with defaults, so every present-day channel descriptor still
+validates unchanged.
+
+0.7.0 -> 0.8.0 (plan 1): minor bump, additive. FaultCode gains CFG-101
+(no valid dispenser profile for a slot, product-scope) and CFG-102
+(dispensers.toml could not be read, machine-scope). Neither blocks
+payment.
+
+0.8.0 -> 1.0.0 (plan 2, Copilot review on PR #32): MAJOR bump -- this is
+wire-breaking, not additive, so the minor-bump rule plan 2 originally
+shipped under does not apply. `dispense`'s params previously accepted
+just `slot`; this version requires `mechanism` and the slot's whole
+`profile` too, and the production dispense path moves from a bare
+`cmd/dispense` publish (removed) onto the command channel
+(`cmd/vending`, command `dispense`), same as a test run.
+`DispenserStatus.request_id` is now always set for a production sale,
+not test runs only. See docs/contracts/vending-machine/CONTRACT.md's
+"Semantics fixed in 1.0.0 (breaking)" section for the full list.
+
+2.0.0 -> 2.1.0 (2026-10-18): minor bump, additive. PAY-105..108 for the
+payment contract (ice_contracts.board.payment, spec
+2026-10-18-payment-contract-design.md). Not payment-blocking.
+
+2.1.0 -> 2.2.0 (2026-10-22): minor bump, additive. DATA-103 (event
+database could not be initialised; writes are still attempted and a failed
+sale write is journalled to the fallback file). Alert-class
+and not payment-blocking.
+Also in 2.2.0: DATA-104 (session snapshot could not be saved; a crash
+now would lose the live sale's evidence). Alert-class, not
+payment-blocking.
+
+2.2.0 -> 2.3.0 (2026-10-22): minor bump, additive. DATA-105 (event row
+could not be written; KPIs and history may be incomplete) and DATA-106
+(inventory counts could not be saved; stock levels revert on restart).
+Both alert-class, not payment-blocking.
+
+2.3.0 -> 2.4.0 (2026-10-30): minor bump, additive. VMCStatus gains
+credit_escrow_cents (integer cents); the float credit_escrow stays,
+deprecated, and is removed in 3.0.0.
+
+2.4.0 -> 3.0.0 (2026-10-30): major bump, breaking. The legacy payment
+models and topics are removed: PaymentEvent, PaymentStatus,
+PaymentEnableCommand, PaymentRefundCommand, PaymentRefundResult,
+RefundStatus and VMCStatus.credit_escrow (the deprecated dollar float);
+the topics payment/credit, payment/status, cmd/payment/enable,
+cmd/payment/refund and cmd/payment/refund/ack. Payments are
+ice_contracts.board.payment. The vending board no longer advertises the
+payment/enable command.
+```

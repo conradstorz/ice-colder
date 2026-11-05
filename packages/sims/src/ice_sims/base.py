@@ -39,7 +39,8 @@ from ice_contracts.board.vending_machine import (
     SubsystemCapabilities,
 )
 from ice_common.build_info import BUILD_INFO
-from ice_common.mqtt_client import PROTOCOL_VERSIONS
+from ice_common.mqtt_client import PROTOCOL_VERSIONS, topic_matches
+from ice_common.paths import config_path
 
 
 RECOVERY_RANGES: dict[str, tuple[float, float]] = {
@@ -289,22 +290,8 @@ class ESP32Simulator(ABC):
             except (json.JSONDecodeError, TypeError):
                 continue
             for pattern, queue in self._subscriptions:
-                if self._topic_matches(pattern, topic_str):
+                if topic_matches(pattern, topic_str):
                     await queue.put((topic_str, payload))
-
-    @staticmethod
-    def _topic_matches(pattern: str, topic: str) -> bool:
-        """Simple MQTT topic matching with + and # wildcards."""
-        pat_parts = pattern.split("/")
-        top_parts = topic.split("/")
-        for i, pat in enumerate(pat_parts):
-            if pat == "#":
-                return True
-            if i >= len(top_parts):
-                return False
-            if pat != "+" and pat != top_parts[i]:
-                return False
-        return len(pat_parts) == len(top_parts)
 
     def register_fault(self, fault: FaultDef) -> None:
         """Register a fault definition. Call from subclass __init__."""
@@ -908,18 +895,14 @@ class ESP32Simulator(ABC):
         invalid JSON, or a failed schema validation are all logged and fall
         back to ``ConfigModel()`` defaults rather than raising.
         """
-        resolved = (
-            path
-            if path is not None
-            else os.environ.get("ICE_COLDER_CONFIG", "config.json")
-        )
-        config_path = Path(resolved)
+        resolved = path if path is not None else str(config_path())
+        config_file = Path(resolved)
 
-        if not config_path.exists():
+        if not config_file.exists():
             logger.warning(f"{resolved} not found, using default config")
             return ConfigModel()
 
-        if config_path.is_dir():
+        if config_file.is_dir():
             logger.error(
                 f"Config path '{resolved}' is a directory, not a file; "
                 "using default config"
@@ -927,7 +910,7 @@ class ESP32Simulator(ABC):
             return ConfigModel()
 
         try:
-            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            raw = json.loads(config_file.read_text(encoding="utf-8"))
             config = ConfigModel.model_validate(raw)
         except (
             OSError,

@@ -17,7 +17,7 @@ from typing import Protocol
 
 from loguru import logger
 
-from ice_common.paths import DATA_DIR, fsync_dir
+from ice_common.paths import DATA_DIR, atomic_write
 from ice_contracts.cloud import signing
 
 IDENTITY_FILE = DATA_DIR / "cloud_identity.json"
@@ -160,20 +160,9 @@ class MachineIdentity:
             },
         }
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_name(self._path.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(doc, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self._path)
-        except Exception:
-            tmp.unlink(missing_ok=True)
-            raise
+        atomic_write(self._path, json.dumps(doc, indent=2), mode=0o600)
         if os.name == "posix":
             os.chmod(self._path, 0o600)
-            fsync_dir(self._path.parent)
 
 
 def cloud_handles_alerts(
