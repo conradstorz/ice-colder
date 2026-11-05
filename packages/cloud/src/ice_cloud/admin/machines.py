@@ -57,45 +57,43 @@ def _url(query: dict[str, str]) -> str:
     return f"{base}?{urlencode(query)}" if query else base
 
 
-def _unbind_fragment(request: Request, short: str, confirming: bool) -> Response:
+def _unbind_ctx(short: str, confirming: bool) -> dict:
     base = f"/admin/machines/{short}/unbind"
-    return templates(request).TemplateResponse(
-        request,
-        "partials/admin_unbind.html",
-        {
-            "label": "Unbind",
-            "confirm_label": "Confirm unbind",
-            "tone": "danger",
-            "consequence": (
-                "Removes this machine's owner and techs and deletes its alert "
-                "history. Used claim codes stay spent."
-            ),
-            "post_url": base,
-            "confirm_url": f"{base}/confirm",
-            "target": f"#unbind-{short}",
-            "confirming": confirming,
-        },
-    )
+    return {
+        "label": "Unbind",
+        "confirm_label": "Confirm unbind",
+        "tone": "danger",
+        "consequence": (
+            "Removes this machine's owner and techs and deletes its alert "
+            "history. Used claim codes stay spent."
+        ),
+        "post_url": base,
+        "confirm_url": f"{base}/confirm",
+        "target": f"#unbind-{short}",
+        "confirming": confirming,
+    }
 
 
-def _purge_fragment(request: Request, confirming: bool) -> Response:
+def _purge_ctx(confirming: bool) -> dict:
     base = "/admin/purge-unclaimed"
+    return {
+        "label": "Purge all unclaimed",
+        "confirm_label": "Confirm purge",
+        "tone": "danger",
+        "consequence": (
+            "Permanently deletes every machine that has never been claimed, "
+            "with its stored report. This cannot be undone."
+        ),
+        "post_url": base,
+        "confirm_url": f"{base}/confirm",
+        "target": "#unclaimed-purge",
+        "confirming": confirming,
+    }
+
+
+def _confirm_fragment(request: Request, ctx: dict) -> Response:
     return templates(request).TemplateResponse(
-        request,
-        "partials/admin_unbind.html",
-        {
-            "label": "Purge all unclaimed",
-            "confirm_label": "Confirm purge",
-            "tone": "danger",
-            "consequence": (
-                "Permanently deletes every machine that has never been claimed, "
-                "with its stored report. This cannot be undone."
-            ),
-            "post_url": base,
-            "confirm_url": f"{base}/confirm",
-            "target": "#unclaimed-purge",
-            "confirming": confirming,
-        },
+        request, "partials/confirm_button.html", ctx
     )
 
 
@@ -161,6 +159,8 @@ async def machines_page(
             filters=filters,
             heading=heading,
             count=len(rows),
+            purge=_purge_ctx(False),
+            unbind={r.short: _unbind_ctx(r.short, False) for r in rows if r.owner_id},
             unclaimed=await asyncio.to_thread(
                 request.app.state.repo.count_unclaimed_machines
             ),
@@ -175,7 +175,7 @@ async def machines_page(
 )
 async def unbind_confirm(request: Request, short: str, confirming: str | None = None):
     await machine_or_404(request, short)
-    return _unbind_fragment(request, short, confirming != "false")
+    return _confirm_fragment(request, _unbind_ctx(short, confirming != "false"))
 
 
 @router.post(
@@ -194,7 +194,7 @@ async def unbind(request: Request, short: str):
     dependencies=[Depends(require_admin), Depends(require_htmx)],
 )
 async def purge_unclaimed_confirm(request: Request, confirming: str | None = None):
-    return _purge_fragment(request, confirming != "false")
+    return _confirm_fragment(request, _purge_ctx(confirming != "false"))
 
 
 @router.post(

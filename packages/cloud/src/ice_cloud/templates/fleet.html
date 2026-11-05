@@ -13,8 +13,7 @@
         </div>
         <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
           {% if m.reported %}
-          {# Online/Offline coloring matches partials/admin_status_badge.html #}
-          <span class="text-xs px-1.5 py-0.5 rounded {% if m.stale %}bg-red-50 text-red-600{% else %}bg-green-50 text-green-700{% endif %}">{{ "Offline" if m.stale else "Online" }}</span>
+          {% with badge_status="silent" if m.stale else "online", silent_label="Offline" %}{% include "partials/admin_status_badge.html" %}{% endwith %}
           <span class="text-xs text-gray-400">reported {{ m.age_text }} ago</span>
           <span class="text-xs text-gray-400">{{ m.fault_line }}</span>
           {% else %}

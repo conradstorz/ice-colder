@@ -28,6 +28,7 @@ async def accounts_page(request: Request, account: Account = Depends(require_adm
             "name": a.name,
             "suspended": a.suspended_at is not None,
             "is_self": a.id == account.id,
+            "suspend": _suspend_ctx(a, False),
         }
         for a in accounts
     ]
@@ -46,25 +47,21 @@ async def accounts_page(request: Request, account: Account = Depends(require_adm
     )
 
 
-def _suspend_fragment(request: Request, target: Account, confirming: bool) -> Response:
+def _suspend_ctx(target: Account, confirming: bool) -> dict:
     base = f"/admin/accounts/{target.id}/suspend"
-    return templates(request).TemplateResponse(
-        request,
-        "partials/admin_suspend.html",
-        {
-            "label": "Suspend",
-            "confirm_label": "Confirm suspend",
-            "tone": "danger",
-            "consequence": (
-                f"Signs {target.email} out and locks them out of their fleet "
-                "until you unsuspend them."
-            ),
-            "post_url": base,
-            "confirm_url": f"{base}/confirm",
-            "target": f"#suspend-{target.id}",
-            "confirming": confirming,
-        },
-    )
+    return {
+        "label": "Suspend",
+        "confirm_label": "Confirm suspend",
+        "tone": "danger",
+        "consequence": (
+            f"Signs {target.email} out and locks them out of their fleet "
+            "until you unsuspend them."
+        ),
+        "post_url": base,
+        "confirm_url": f"{base}/confirm",
+        "target": f"#suspend-{target.id}",
+        "confirming": confirming,
+    }
 
 
 @router.get(
@@ -85,7 +82,11 @@ async def suspend_confirm(
     target = await asyncio.to_thread(request.app.state.repo.account, account_id)
     if target is None:
         raise HTTPException(status_code=404)
-    return _suspend_fragment(request, target, confirming != "false")
+    return templates(request).TemplateResponse(
+        request,
+        "partials/confirm_button.html",
+        _suspend_ctx(target, confirming != "false"),
+    )
 
 
 async def _set_suspended(request: Request, account_id: str, suspend: bool) -> Response:

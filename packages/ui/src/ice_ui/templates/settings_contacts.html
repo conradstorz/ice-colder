@@ -9,42 +9,21 @@
 #}
 {% extends "base.html" %}
 {% block title %}Contacts · Settings · Vending Machine{% endblock %}
+{% from "partials/form_macros.html" import field, form_actions, form_error %}
 {% block body %}
 <form hx-post="/settings/contacts" class="max-w-md space-y-6">
   <h1 class="text-hero font-semibold text-gray-900">Contacts</h1>
 
-  {% if error %}
-  <p role="alert" class="text-sm text-red-600">{{ error }}</p>
-  {% endif %}
+  {{ form_error(error) }}
 
   <div class="space-y-4">
     <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Machine owner</h2>
 
-    <div>
-      <label for="owner_name" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Name</label>
-      <input type="text" id="owner_name" name="owner_name" value="{{ owner.name }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="owner_email" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Email</label>
-      <input type="email" id="owner_email" name="owner_email" value="{{ owner.email }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="owner_phone" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Phone</label>
-      <input type="tel" id="owner_phone" name="owner_phone" value="{{ owner.phone or '' }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="owner_address" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Address</label>
-      <input type="text" id="owner_address" name="owner_address" value="{{ owner.address or '' }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="owner_notes" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Notes</label>
-      <input type="text" id="owner_notes" name="owner_notes" value="{{ owner.notes or '' }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
+    {{ field("owner_name", "Name", type="text", value=owner.name) }}
+    {{ field("owner_email", "Email", type="email", value=owner.email) }}
+    {{ field("owner_phone", "Phone", type="tel", value=owner.phone or '') }}
+    {{ field("owner_address", "Address", type="text", value=owner.address or '') }}
+    {{ field("owner_notes", "Notes", type="text", value=owner.notes or '') }}
     <div>
       <span class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Preferred channel</span>
       <div class="flex flex-col gap-touch">
@@ -63,31 +42,11 @@
   <div class="space-y-4 border-t border-gray-100 pt-4">
     <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Location owner</h2>
 
-    <div>
-      <label for="loc_name" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Name</label>
-      <input type="text" id="loc_name" name="loc_name" value="{{ location_owner.name }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="loc_email" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Email</label>
-      <input type="email" id="loc_email" name="loc_email" value="{{ location_owner.email }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="loc_phone" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Phone</label>
-      <input type="tel" id="loc_phone" name="loc_phone" value="{{ location_owner.phone or '' }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="loc_address" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Address</label>
-      <input type="text" id="loc_address" name="loc_address" value="{{ location_owner.address or '' }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="loc_notes" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Notes</label>
-      <input type="text" id="loc_notes" name="loc_notes" value="{{ location_owner.notes or '' }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
+    {{ field("loc_name", "Name", type="text", value=location_owner.name) }}
+    {{ field("loc_email", "Email", type="email", value=location_owner.email) }}
+    {{ field("loc_phone", "Phone", type="tel", value=location_owner.phone or '') }}
+    {{ field("loc_address", "Address", type="text", value=location_owner.address or '') }}
+    {{ field("loc_notes", "Notes", type="text", value=location_owner.notes or '') }}
     <div>
       <span class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Preferred channel</span>
       <div class="flex flex-col gap-touch">
@@ -103,12 +62,7 @@
     </div>
   </div>
 
-  <div class="flex gap-touch pt-2">
-    <button type="submit"
-            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Save</button>
-    <a href="/settings"
-       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
-  </div>
+  {{ form_actions("/settings") }}
 </form>
 
 <div class="max-w-md space-y-2 border-t border-gray-100 pt-4 mt-6">

@@ -9,53 +9,31 @@
 #}
 {% extends "base.html" %}
 {% block title %}Payments · Settings · Vending Machine{% endblock %}
+{% from "partials/form_macros.html" import field, form_actions, form_error %}
 {% block body %}
 <form hx-post="/settings/payments" class="max-w-md space-y-6">
   <h1 class="text-hero font-semibold text-gray-900">Payments</h1>
 
-  {% if error %}
-  <p role="alert" class="text-sm text-red-600">{{ error }}</p>
-  {% endif %}
+  {{ form_error(error) }}
 
   <div class="space-y-4">
     {% include "partials/secret_hint.html" %}
     <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Stripe</h2>
-    <div>
-      <label for="stripe_api_key" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">API key</label>
-      <input type="password" id="stripe_api_key" name="stripe_api_key" value="{{ stripe_api_key }}" autocomplete="off"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="stripe_webhook_secret" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Webhook secret</label>
-      <input type="password" id="stripe_webhook_secret" name="stripe_webhook_secret" value="{{ stripe_webhook_secret }}" autocomplete="off"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
+    {{ field("stripe_api_key", "API key", type="password", value=stripe_api_key, autocomplete="off") }}
+    {{ field("stripe_webhook_secret", "Webhook secret", type="password", value=stripe_webhook_secret, autocomplete="off") }}
   </div>
 
   <div class="space-y-4 border-t border-gray-100 pt-4">
     <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">PayPal</h2>
     {% if paypal %}
-    <div>
-      <label for="paypal_client_id" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Client ID</label>
-      <input type="password" id="paypal_client_id" name="paypal_client_id" value="{{ paypal_client_id }}" autocomplete="off"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="paypal_client_secret" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Client secret</label>
-      <input type="password" id="paypal_client_secret" name="paypal_client_secret" value="{{ paypal_client_secret }}" autocomplete="off"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
+    {{ field("paypal_client_id", "Client ID", type="password", value=paypal_client_id, autocomplete="off") }}
+    {{ field("paypal_client_secret", "Client secret", type="password", value=paypal_client_secret, autocomplete="off") }}
     {% else %}
     <p class="text-sm text-gray-500">PayPal is not configured on this machine. It is enabled by adding a paypal section to config.json; this page cannot create one.</p>
     {% endif %}
   </div>
 
-  <div class="flex gap-touch pt-2">
-    <button type="submit"
-            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Save</button>
-    <a href="/settings"
-       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
-  </div>
+  {{ form_actions("/settings") }}
 </form>
 
 <div class="max-w-md space-y-2 border-t border-gray-100 pt-4 mt-6">

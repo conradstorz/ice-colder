@@ -73,18 +73,30 @@ TILES: tuple[TileDef, ...] = (
 )
 
 
+def tile(title: str, url: str, icon: str, context: str, enabled: bool = True) -> dict:
+    """One tile dict, the shape ``partials/tile.html`` and the tile grids
+    consume. ``enabled`` decides whether the grid renders it at all."""
+    return {
+        "title": title,
+        "url": url,
+        "icon": icon,
+        "context": context,
+        "enabled": enabled,
+    }
+
+
 def build_tiles(perms: frozenset, lines: Mapping[str, str]) -> list[dict]:
     """Build all eight tile dicts. Every tile is always present; ``enabled``
     (True when *perms* intersects the tile's permission set) is what
     home.html uses to decide whether to render it."""
     return [
-        {
-            "title": t.title,
-            "url": t.url,
-            "icon": t.icon,
-            "context": lines.get(t.title, ""),
-            "enabled": bool(perms & t.permissions),
-        }
+        tile(
+            t.title,
+            t.url,
+            t.icon,
+            lines.get(t.title, ""),
+            bool(perms & t.permissions),
+        )
         for t in TILES
     ]
 
@@ -95,34 +107,30 @@ def build_tiles(perms: frozenset, lines: Mapping[str, str]) -> list[dict]:
 # level here is already gated on view_reports by /reports itself, so every
 # tile is always "enabled" for a viewer who can reach this page at all.
 REPORT_TILES = [
-    {
-        "title": LEVEL_REPORTS_PERIOD.title,
-        "url": LEVEL_REPORTS_PERIOD.url,
-        "icon": "reports",
-        "context": "Revenue, vends and uptime by day, week or month",
-        "enabled": True,
-    },
-    {
-        "title": LEVEL_REPORTS_PRODUCT.title,
-        "url": LEVEL_REPORTS_PRODUCT.url,
-        "icon": "reports",
-        "context": "Units and revenue per product",
-        "enabled": True,
-    },
-    {
-        "title": LEVEL_REPORTS_METHOD.title,
-        "url": LEVEL_REPORTS_METHOD.url,
-        "icon": "reports",
-        "context": "Revenue split by payment method",
-        "enabled": True,
-    },
-    {
-        "title": LEVEL_REPORTS_COLLECTIONS.title,
-        "url": LEVEL_REPORTS_COLLECTIONS.url,
-        "icon": "reports",
-        "context": "The last 50 cash collections",
-        "enabled": True,
-    },
+    tile(
+        LEVEL_REPORTS_PERIOD.title,
+        LEVEL_REPORTS_PERIOD.url,
+        "reports",
+        "Revenue, vends and uptime by day, week or month",
+    ),
+    tile(
+        LEVEL_REPORTS_PRODUCT.title,
+        LEVEL_REPORTS_PRODUCT.url,
+        "reports",
+        "Units and revenue per product",
+    ),
+    tile(
+        LEVEL_REPORTS_METHOD.title,
+        LEVEL_REPORTS_METHOD.url,
+        "reports",
+        "Revenue split by payment method",
+    ),
+    tile(
+        LEVEL_REPORTS_COLLECTIONS.title,
+        LEVEL_REPORTS_COLLECTIONS.url,
+        "reports",
+        "The last 50 cash collections",
+    ),
 ]
 
 
@@ -158,32 +166,14 @@ def health_tiles(
     Each argument is that tile's context line. Logs is the only tile whose
     ``enabled`` depends on the viewer: it needs ``Permission.view_logs``."""
     return [
-        {
-            "title": "Subsystems",
-            "url": LEVEL_HEALTH_SUBSYSTEMS.url,
-            "icon": "health",
-            "context": subsystems,
-            "enabled": True,
-        },
-        {
-            "title": "Faults",
-            "url": LEVEL_HEALTH_FAULTS.url,
-            "icon": "health",
-            "context": faults,
-            "enabled": True,
-        },
-        {
-            "title": "Availability",
-            "url": LEVEL_HEALTH_AVAILABILITY.url,
-            "icon": "health",
-            "context": availability,
-            "enabled": True,
-        },
-        {
-            "title": "Logs",
-            "url": LEVEL_HEALTH_LOGS.url,
-            "icon": "health",
-            "context": logs,
-            "enabled": Permission.view_logs in perms,
-        },
+        tile("Subsystems", LEVEL_HEALTH_SUBSYSTEMS.url, "health", subsystems),
+        tile("Faults", LEVEL_HEALTH_FAULTS.url, "health", faults),
+        tile("Availability", LEVEL_HEALTH_AVAILABILITY.url, "health", availability),
+        tile(
+            "Logs",
+            LEVEL_HEALTH_LOGS.url,
+            "health",
+            logs,
+            Permission.view_logs in perms,
+        ),
     ]

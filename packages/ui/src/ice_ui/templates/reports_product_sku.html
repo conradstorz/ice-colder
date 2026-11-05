@@ -34,17 +34,7 @@
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
 
     {# Range tabs #}
-    <div class="flex flex-wrap border-b border-gray-200 px-1 pt-1">
-      {% for r, label in [("7d", "7 Days"), ("30d", "30 Days"), ("90d", "90 Days"), ("12m", "12 Months"), ("all", "All Time")] %}
-      <a
-        href="/reports/product/{{ sku|sku_url_segment }}?range={{ r }}"
-        class="px-4 py-3 text-sm font-medium -mb-px transition-colors
-               {% if r == range %}border-b-2 border-blue-600 text-blue-600
-               {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
-        {{ label }}
-      </a>
-      {% endfor %}
-    </div>
+    {% with base_url="/reports/product/" ~ (sku|sku_url_segment), range=range %}{% include "partials/report_range_tabs.html" %}{% endwith %}
 
     {# Bucket tabs #}
     <div class="flex flex-wrap border-b border-gray-200 px-1 pt-1">
@@ -59,75 +49,11 @@
       {% endfor %}
     </div>
 
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="text-left text-gray-500 text-xs uppercase tracking-wide">
-            <th class="px-5 py-3">Bucket</th>
-            <th class="px-5 py-3 text-right">Revenue</th>
-            <th class="px-5 py-3 text-right">Vends</th>
-            <th class="px-5 py-3 text-right">Failed vends</th>
-            <th class="px-5 py-3 text-right">Refunds</th>
-            <th class="px-5 py-3 text-right">Uptime</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100">
-          {% for row in rows %}
-          <tr>
-            <td class="px-5 py-3 text-gray-700 whitespace-nowrap">{{ row.bucket_start }}</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">{{ row.revenue_cents|money }}</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ row.vends }}</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap {{ 'text-red-600' if row.failed_vends else 'text-gray-900' }}">
-              {{ row.failed_vends if row.failed_vends is not none else "—" }}
-            </td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
-              {{ row.refunds_cents|money if row.refunds_cents is not none else "—" }}
-            </td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
-              {{ "%.1f%%"|format(row.uptime_pct) if row.uptime_pct is not none else "—" }}
-            </td>
-          </tr>
-          {% else %}
-          <tr>
-            <td class="px-5 py-3 text-gray-400" colspan="6">No data in this range.</td>
-          </tr>
-          {% endfor %}
-          {% if rows %}
-          <tr class="border-t-2 border-gray-200 font-semibold">
-            <td class="px-5 py-3 text-gray-700">Total</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ total.revenue_cents|money }}</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ total.vends }}</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
-              {{ total.failed_vends if total.failed_vends is not none else "—" }}
-            </td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
-              {{ total.refunds_cents|money if total.refunds_cents is not none else "—" }}
-            </td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
-              {{ "%.1f%%"|format(total.uptime_pct) if total.uptime_pct is not none else "—" }}
-            </td>
-          </tr>
-          {% endif %}
-        </tbody>
-      </table>
-    </div>
+    {% include "partials/report_period_table.html" %}
 
   </div>
 
-  <form hx-post="/reports/email" hx-swap="outerHTML show:none">
-    <input type="hidden" name="report" value="product_sku">
-    <input type="hidden" name="range" value="{{ range }}">
-    <input type="hidden" name="bucket" value="{{ bucket }}">
-    <input type="hidden" name="sku" value="{{ sku }}">
-    <button type="submit"
-            class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
-      Email me this report (CSV)
-    </button>
-  </form>
-
-  {# Result sits right under the button so a phone user sees it without scrolling back up. #}
-  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
-  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
+  {% with report="product_sku", hidden=[("range", range), ("bucket", bucket), ("sku", sku)] %}{% include "partials/report_email_form.html" %}{% endwith %}
 
 </div>
 {% endblock %}

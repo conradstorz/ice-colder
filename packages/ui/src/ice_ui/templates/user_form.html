@@ -9,6 +9,7 @@
 #}
 {% extends "base.html" %}
 {% block title %}Add User · Vending Machine{% endblock %}
+{% from "partials/form_macros.html" import field, select, form_actions %}
 {% block body %}
 <div class="space-y-4">
   <h1 class="text-hero font-semibold text-gray-900">Add User</h1>
@@ -16,27 +17,13 @@
   {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
 
   <form hx-post="/users/new" class="space-y-4 max-w-md bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-    <div>
-      <label for="name" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Name</label>
-      <input type="text" id="name" name="name" value="{{ form.name }}" required
-             class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
-    </div>
+    {{ field("name", "Name", value=form.name, variant="plain", required=True) }}
 
-    <div>
-      <label for="email" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Email (optional)</label>
-      <input type="email" id="email" name="email" value="{{ form.email }}"
-             class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
-    </div>
+    {{ field("email", "Email (optional)", type="email", value=form.email, variant="plain") }}
 
-    <div>
-      <label for="role" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Role</label>
-      <select id="role" name="role"
-              class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
-        {% for r in roles %}
-        <option value="{{ r.value }}" {{ "selected" if form.role == r.value }}>{{ r.value.capitalize() }}</option>
-        {% endfor %}
-      </select>
-    </div>
+    {% set role_options = [] %}
+    {% for r in roles %}{% set _ = role_options.append((r.value, r.value.capitalize())) %}{% endfor %}
+    {{ select("role", "Role", role_options, form.role, variant="plain") }}
 
     <div>
       <label for="pin" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Initial PIN (4-8 digits)</label>
@@ -45,12 +32,7 @@
              class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
     </div>
 
-    <div class="flex gap-touch pt-2">
-      <button type="submit"
-              class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Add User</button>
-      <a href="/users"
-         class="touch-target inline-flex items-center px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
-    </div>
+    {{ form_actions("/users", label="Add User", inline_cancel=True) }}
   </form>
 </div>
 {% endblock %}

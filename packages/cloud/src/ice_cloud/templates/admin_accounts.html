@@ -19,8 +19,8 @@
             class="ml-auto touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Unsuspend</button>
     {% else %}
     <span class="ml-auto">
-      {% with label="Suspend", tone="danger", confirm_label="Confirm suspend", consequence="Signs " ~ a.email ~ " out and locks them out of their fleet until you unsuspend them.", post_url="/admin/accounts/" ~ a.id ~ "/suspend", confirm_url="/admin/accounts/" ~ a.id ~ "/suspend/confirm", target="#suspend-" ~ a.id, confirming=false %}
-      {% include "partials/admin_suspend.html" %}
+      {% with label=a.suspend.label, tone=a.suspend.tone, confirm_label=a.suspend.confirm_label, consequence=a.suspend.consequence, post_url=a.suspend.post_url, confirm_url=a.suspend.confirm_url, target=a.suspend.target, confirming=a.suspend.confirming %}
+      {% include "partials/confirm_button.html" %}
       {% endwith %}
     </span>
     {% endif %}

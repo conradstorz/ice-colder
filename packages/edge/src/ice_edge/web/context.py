@@ -25,7 +25,12 @@ from types import SimpleNamespace
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from ice_common.config_model import ConfigModel, Product
+from ice_common.config_model import (
+    MAX_PRODUCT_NAME_LENGTH,
+    MAX_SKU_LENGTH,
+    ConfigModel,
+    Product,
+)
 from loguru import logger
 
 from ice_contracts.cloud.report import HealthSummary
@@ -270,6 +275,8 @@ def template_context(request: Request, level: str | None = None, **extra) -> dic
         "perms": principal.perms if principal else frozenset(),
         "level": level,
         "page_source": "local",
+        "max_sku_length": MAX_SKU_LENGTH,
+        "max_product_name_length": MAX_PRODUCT_NAME_LENGTH,
     }
     badge = context_badge()
     if badge is not None:

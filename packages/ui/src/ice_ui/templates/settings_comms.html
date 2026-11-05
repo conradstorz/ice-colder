@@ -8,69 +8,31 @@
 #}
 {% extends "base.html" %}
 {% block title %}Comms · Settings · Vending Machine{% endblock %}
+{% from "partials/form_macros.html" import field, form_actions, form_error %}
 {% block body %}
 <form hx-post="/settings/comms" class="max-w-md space-y-6">
   <h1 class="text-hero font-semibold text-gray-900">Comms</h1>
 
-  {% if error %}
-  <p role="alert" class="text-sm text-red-600">{{ error }}</p>
-  {% endif %}
+  {{ form_error(error) }}
 
   <div class="space-y-4">
     {% include "partials/secret_hint.html" %}
     <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Email gateway</h2>
-    <div>
-      <label for="smtp_server" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">SMTP server</label>
-      <input type="text" id="smtp_server" name="smtp_server" value="{{ email.smtp_server }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="smtp_port" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">SMTP port</label>
-      <input type="number" id="smtp_port" name="smtp_port" value="{{ email.smtp_port }}" min="1" max="65535" inputmode="numeric"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="smtp_username" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Username</label>
-      <input type="text" id="smtp_username" name="smtp_username" value="{{ email.username }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="smtp_password" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Password</label>
-      <input type="password" id="smtp_password" name="smtp_password" value="{{ email_password }}" autocomplete="off"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="default_from" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Default From address</label>
-      <input type="text" id="default_from" name="default_from" value="{{ email.default_from }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
+    {{ field("smtp_server", "SMTP server", type="text", value=email.smtp_server) }}
+    {{ field("smtp_port", "SMTP port", type="number", value=email.smtp_port, min="1", max="65535", inputmode="numeric") }}
+    {{ field("smtp_username", "Username", type="text", value=email.username) }}
+    {{ field("smtp_password", "Password", type="password", value=email_password, autocomplete="off") }}
+    {{ field("default_from", "Default From address", type="text", value=email.default_from) }}
   </div>
 
   <div class="space-y-4 border-t border-gray-100 pt-4">
     <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">SMS gateway</h2>
-    <div>
-      <label for="sms_account_sid" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Account SID</label>
-      <input type="password" id="sms_account_sid" name="sms_account_sid" value="{{ sms_account_sid }}" autocomplete="off"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="sms_auth_token" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Auth token</label>
-      <input type="password" id="sms_auth_token" name="sms_auth_token" value="{{ sms_auth_token }}" autocomplete="off"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
-    <div>
-      <label for="sms_from_number" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From number</label>
-      <input type="tel" id="sms_from_number" name="sms_from_number" value="{{ sms.from_number }}"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-    </div>
+    {{ field("sms_account_sid", "Account SID", type="password", value=sms_account_sid, autocomplete="off") }}
+    {{ field("sms_auth_token", "Auth token", type="password", value=sms_auth_token, autocomplete="off") }}
+    {{ field("sms_from_number", "From number", type="tel", value=sms.from_number) }}
   </div>
 
-  <div class="flex gap-touch pt-2">
-    <button type="submit"
-            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Save</button>
-    <a href="/settings"
-       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
-  </div>
+  {{ form_actions("/settings") }}
 </form>
 
 <div class="max-w-md space-y-2 border-t border-gray-100 pt-4 mt-6">

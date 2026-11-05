@@ -1,0 +1,20 @@
+{# "Email me this report (CSV)" form plus its result line, shared by the
+   /reports/* pages. Included with {% with %} so the caller sets:
+     report - the report key posted as the `report` field
+     hidden - list of (name, value) pairs rendered as extra hidden inputs,
+              in order, after `report`
+   email_notice and email_error are read from the page context. #}
+<form hx-post="/reports/email" hx-swap="outerHTML show:none">
+  <input type="hidden" name="report" value="{{ report }}">
+  {% for name, value in hidden %}
+  <input type="hidden" name="{{ name }}" value="{{ value }}">
+  {% endfor %}
+  <button type="submit"
+          class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
+    Email me this report (CSV)
+  </button>
+</form>
+
+{# Result sits right under the button so a phone user sees it without scrolling back up. #}
+{% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
+{% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
