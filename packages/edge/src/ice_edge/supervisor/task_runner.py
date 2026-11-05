@@ -131,8 +131,8 @@ class Timer:
     dropped *before* the callback runs, so ``armed`` is already false inside
     it (and a callback may re-arm, or clear a fault that re-enters
     ``cancel``, without cancelling its own task). ``armed`` is also false
-    once the underlying task is done for any other reason (cancelled by
-    ``TaskRunner.cancel_pending``) or when no loop was attached.
+    once the underlying task is done or has a cancellation pending (cancelled
+    by ``TaskRunner.cancel_pending``, even before the loop processes it) or when no loop was attached.
     """
 
     def __init__(self, tasks: TaskRunner, label: str) -> None:
@@ -142,7 +142,10 @@ class Timer:
 
     @property
     def armed(self) -> bool:
-        return self._handle is not None and not self._handle.done()
+        handle = self._handle
+        # A task cancelled this tick still reports done() == False until the
+        # loop processes the cancellation; cancelling() is already non-zero.
+        return handle is not None and not handle.done() and not handle.cancelling()
 
     def arm(self, delay: float, callback) -> None:
         """Replace any armed timer with one firing ``callback`` after ``delay``."""

@@ -63,6 +63,10 @@ class FakeTask:
     def cancel(self) -> None:
         self.cancelled = True
 
+    def cancelling(self) -> int:
+        """Mirror `asyncio.Task.cancelling()`: pending cancellation requests."""
+        return 1 if self.cancelled else 0
+
 
 @dataclass
 class ScheduledCall:

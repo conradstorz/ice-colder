@@ -1,4 +1,6 @@
-from ice_edge.supervisor.task_runner import Timer
+import asyncio
+
+from ice_edge.supervisor.task_runner import TaskRunner, Timer
 from tests.fakes import FakeTaskRunner
 
 
@@ -94,3 +96,21 @@ def test_no_loop_leaves_timer_unarmed():
     timer = Timer(TaskRunner(), "t")
     timer.arm(1.0, lambda: None)
     assert not timer.armed
+
+
+async def test_cancel_pending_then_arm_if_idle_arms_a_replacement_at_once():
+    runner = TaskRunner()
+    runner.attach(asyncio.get_running_loop())
+    timer = Timer(runner, "t")
+    hits = []
+    timer.arm(60.0, lambda: hits.append("old"))
+    assert timer.armed
+
+    runner.cancel_pending()
+    # No await: the cancelled task has not yet been processed by the loop.
+    assert not timer.armed
+    assert timer.arm_if_idle(0.01, lambda: hits.append("new")) is True
+    assert timer.armed
+
+    await asyncio.sleep(0.1)
+    assert hits == ["new"]
