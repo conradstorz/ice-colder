@@ -242,19 +242,21 @@ def _delivery(row: sqlite3.Row) -> Delivery:
 
 
 def _alert_state(row: sqlite3.Row) -> AlertState:
-    try:
-        faults = tuple(
-            FaultView.model_validate(f) for f in json.loads(row["faults_json"])
-        )
-    except ValidationError:
-        # A row written by an older cloud (e.g. dollar-keyed pending_sale) must
-        # not break ingest or the fleet-wide offline sweep: treat as no faults;
-        # the next ingest re-raises any active ones once and rewrites the row.
-        logger.warning(
-            "unreadable stored alert faults for {}; treating as empty",
-            row["fingerprint"],
-        )
-        faults = ()
+    # Validate each stored fault on its own: a row written by an older cloud
+    # (e.g. a dollar-keyed pending_sale) must not break ingest or the
+    # fleet-wide offline sweep, and one bad entry must not make the cloud
+    # forget the valid ones (which would miss their cleared events or raise
+    # them twice). Invalid entries are skipped; the next ingest rewrites the row.
+    kept: list[FaultView] = []
+    for entry in json.loads(row["faults_json"]):
+        try:
+            kept.append(FaultView.model_validate(entry))
+        except ValidationError:
+            logger.warning(
+                "skipping unreadable stored alert fault for {}",
+                row["fingerprint"],
+            )
+    faults = tuple(kept)
     return AlertState(
         fingerprint=row["fingerprint"],
         faults=faults,
