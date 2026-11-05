@@ -190,12 +190,7 @@ class SessionStore:
             # An existing copy is trusted only if it is byte-identical: a
             # crash mid-copy must not leave a truncated "preserved" file.
             if not (dest.exists() and dest.read_bytes() == data):
-                tmp = dest.with_name(dest.name + ".tmp")
-                with open(tmp, "wb") as f:
-                    f.write(data)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, dest)
+                atomic_write(dest, data)
             return dest
         except OSError as oe:
             logger.error(f"SessionStore: could not keep a copy of {self._path}: {oe}")
