@@ -466,3 +466,127 @@ def test_pre_cents_file_loads_as_an_open_error_snapshot(tmp_path):
 
     assert loaded.error
     assert loaded.is_open()
+
+
+def _previous_release_file(**overrides):
+    """Shaped like the previous release's save(): asdict() plus units, with
+    pending_refund_request_id serialised as null."""
+    raw = {
+        "state": "dispensing",
+        "credit_escrow_cents": 125,
+        "selected_sku": "ICE-1",
+        "dispense_slot": 2,
+        "dispense_mechanism": None,
+        "dispense_started_at": 123.0,
+        "pending_refund_request_id": None,
+        "pending_payouts": [],
+        "credits": [
+            {"method": "cash_bill", "cents": 125, "ts": 1.0, "event_id": "evt-1"}
+        ],
+        "pending_sale_shares": {"cash": 250},
+        "is_test": False,
+        "saved_at": 100.0,
+        "error": None,
+        "units": "cents",
+    }
+    raw.update(overrides)
+    return raw
+
+
+def test_previous_release_file_with_null_refund_id_loads_readable(tmp_path):
+    path = tmp_path / "session.json"
+    path.write_text(json.dumps(_previous_release_file()), encoding="utf-8")
+
+    loaded = SessionStore(path).load()
+
+    assert loaded.error is None
+    assert loaded.pending_sale_shares == {"cash": 250}
+    assert loaded.credits == [Credit("cash_bill", 125, 1.0, event_id="evt-1")]
+
+
+def test_non_null_legacy_refund_id_still_fails_safe(tmp_path):
+    path = tmp_path / "session.json"
+    path.write_text(
+        json.dumps(_previous_release_file(pending_refund_request_id="r" * 8)),
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded.error
+    assert loaded.is_open()
+
+
+def _write_precents_with_pending_sale(path):
+    path.write_text(
+        json.dumps(
+            {
+                "state": "dispensing",
+                "credit_escrow": 0.0,
+                "selected_sku": "ICE-1",
+                "pending_sale_shares": {"cash": 2.5},
+                "saved_at": 100.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_unreadable_file_is_preserved_and_survives_clear(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    original = path.read_bytes()
+    store = SessionStore(path)
+
+    loaded = store.load()
+
+    assert loaded.error and "raw file kept at" in loaded.error
+    kept = [p for p in tmp_path.glob("session.unreadable.*.json")]
+    assert len(kept) == 1 and kept[0].read_bytes() == original
+    assert kept[0].name in loaded.error
+
+    assert store.clear() is True  # Discard / Clear (as Discard)
+    assert not path.exists()
+    assert kept[0].read_bytes() == original
+
+
+def test_repeated_loads_of_an_unreadable_file_keep_one_copy(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    store = SessionStore(path)
+
+    first = store.load()
+    second = store.load()
+
+    assert first.error == second.error
+    assert len(list(tmp_path.glob("session.unreadable.*.json"))) == 1
+
+
+def test_truncated_preserved_copy_is_rewritten_with_full_bytes(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    original = path.read_bytes()
+    store = SessionStore(path)
+    store.load()
+    (kept,) = tmp_path.glob("session.unreadable.*.json")
+    kept.write_bytes(original[: len(original) // 2])  # simulated power loss
+
+    store.load()
+
+    assert kept.read_bytes() == original
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_preserved_copy_name_carries_16_hex_digest(tmp_path):
+    path = tmp_path / "session.json"
+    _write_precents_with_pending_sale(path)
+    SessionStore(path).load()
+    (kept,) = tmp_path.glob("session.unreadable.*.json")
+    assert len(kept.name.split(".")[2]) == 16
+
+
+def test_readable_file_leaves_no_preserved_copy(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(SessionSnapshot(state="idle", credit_escrow_cents=5))
+    assert store.load().error is None
+    assert not list(tmp_path.glob("session.unreadable.*"))

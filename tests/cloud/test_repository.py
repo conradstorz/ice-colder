@@ -23,6 +23,7 @@ from tests.cloud.sql_helpers import (
     put_alert_state,
     record_alert_events,
     sql_exec,
+    sql_rows,
 )
 
 T0 = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
@@ -470,6 +471,30 @@ def test_alert_state_put_get_replace_delete(repo, db_path):
     assert repo.alert_state(FP) == later
     sql_exec(db_path, "DELETE FROM machine_alert_state WHERE fingerprint = ?", (FP,))
     assert repo.alert_state(FP) is None
+
+
+def test_alert_state_skips_one_invalid_stored_fault_and_keeps_the_rest(repo, db_path):
+    import json
+
+    repo.register_machine(FP, KEY, "a", T0)
+    put_alert_state(db_path, _state(keys=("A", "B")))
+    (row,) = sql_rows(
+        db_path,
+        "SELECT faults_json FROM machine_alert_state WHERE fingerprint = ?",
+        (FP,),
+    )
+    stored = json.loads(row[0])
+    legacy = dict(stored[0], key="LEGACY", pending_sale={"price": 1.25})
+    stored.insert(1, legacy)
+    sql_exec(
+        db_path,
+        "UPDATE machine_alert_state SET faults_json = ? WHERE fingerprint = ?",
+        (json.dumps(stored), FP),
+    )
+
+    got = repo.alert_state(FP)
+
+    assert got.keys == {"A", "B"}
 
 
 def test_claimed_machines_with_state_only_claimed(repo, db_path):
