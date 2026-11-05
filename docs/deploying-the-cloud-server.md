@@ -206,8 +206,10 @@ commit you expect. Wait for the right CI run: `gh run list --branch main` shows 
 push, and pulling before the run for your commit finishes just re-pulls the previous image.
 
 When `docker/Caddyfile` or `docker/docker-compose.cloud.proxy.yml` change in the repository,
-copy them to `/opt/ice-cloud/docker/` and run the same `up -d`. Upgrade the cloud before the
-edges when the edge-cloud contract changes (README, Alerts).
+copy them to `/opt/ice-cloud/docker/` and run the same `up -d`. Upgrade order depends on the
+release: for an additive contract change (README, Alerts) upgrade the cloud before the edges; for
+the contract 1.0.0 (cents) release upgrade the edges first, verify each reports 1.0.0, then
+deploy this cloud (`docs/contracts/edge-cloud/CONTRACT.md`, "Deploy order").
 
 ## 6. Rebuilding from scratch
 
