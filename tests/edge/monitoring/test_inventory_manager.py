@@ -218,67 +218,82 @@ class TestSaveObservers:
 
 
 class TestSaveHealthFollowsWriteOrder:
-    """Health transitions follow the order the writes landed, even when an
-    earlier writer's notification is still in flight."""
+    """Health follows the order the writes landed, even when the earlier
+    writer is stalled after its write and before its health report."""
 
     @staticmethod
     def _run(tmp_path, monkeypatch, *, start_failing, first_fails):
+        from ice_common.observers import HealthEdge
         from ice_edge.monitoring import inventory_manager as im
 
-        inv = InventoryManager(_products(), path=tmp_path / "inventory.json")
-        outcomes = {"next": start_failing}
+        stalled = {"thread": None}
+        settled = threading.Event()  # first writer is stalled or finished
+        release = threading.Event()
+
+        class StallingHealthEdge(HealthEdge):
+            """Stalls the chosen thread when it reports an outcome the old
+            way (after leaving the write lock)."""
+
+            def _stall(self):
+                if threading.current_thread() is stalled["thread"]:
+                    settled.set()
+                    assert release.wait(5)
+
+            def failed(self):
+                self._stall()
+                super().failed()
+
+            def ok(self):
+                self._stall()
+                super().ok()
+
+        monkeypatch.setattr(im, "HealthEdge", StallingHealthEdge)
+
+        outcome = {"fail": start_failing}
+        first_written = threading.Event()
         real_write = im.atomic_write
-        second_written = threading.Event()
-        writes = []
 
         def fake_write(path, text):
-            writes.append(1)
-            if outcomes["next"]:
-                outcomes["next"] = None
+            fail = outcome["fail"]
+            if threading.current_thread() is stalled["thread"]:
+                first_written.set()
+            if fail:
                 raise OSError("disk full")
-            outcomes["next"] = None
             real_write(path, text)
 
         monkeypatch.setattr(im, "atomic_write", fake_write)
+        inv = InventoryManager(_products(), path=tmp_path / "inventory.json")
         calls: list[str] = []
-        release_first = threading.Event()
-        armed = False
-        first_in_callback = threading.Event()
-
-        def record(name):
-            def cb():
-                if armed and not calls:
-                    first_in_callback.set()
-                    assert release_first.wait(5)
-                calls.append(name)
-
-            return cb
-
-        inv.set_save_observers(record("failed"), record("ok"))
+        inv.set_save_observers(
+            lambda: calls.append("failed"), lambda: calls.append("ok")
+        )
         if start_failing:
-            outcomes["next"] = True
             inv.set_count("ICE-SM", 1)  # health is now failing
-            calls.clear()
-        armed = True
+        calls.clear()
 
-        outcomes["next"] = first_fails
-        a = threading.Thread(target=lambda: inv.set_count("ICE-SM", 2))
+        def first():
+            outcome["fail"] = first_fails
+            inv.set_count("ICE-SM", 2)
+            settled.set()
+
+        a = threading.Thread(target=first)
+        stalled["thread"] = a
         a.start()
-        assert first_in_callback.wait(5)
+        assert first_written.wait(5)
+        # Old code: A parks in its health report. Fixed code: A just finishes.
+        assert settled.wait(5)
 
         def second():
-            outcomes["next"] = not first_fails
+            outcome["fail"] = not first_fails
             inv.set_count("ICE-SM", 3)
-            second_written.set()
 
         b = threading.Thread(target=second)
         b.start()
-        # B cannot deliver while A's callback is in flight.
-        assert not second_written.wait(0.2)
-        release_first.set()
-        a.join(5)
         b.join(5)
-        assert not a.is_alive() and not b.is_alive()
+        assert not b.is_alive()
+        release.set()
+        a.join(5)
+        assert not a.is_alive()
         return calls
 
     def test_older_success_cannot_clear_a_newer_failure(self, tmp_path, monkeypatch):
