@@ -29,8 +29,15 @@ from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.ledger.event_recorder import EventRecorder, SaleRecordingFailed
 from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
+from tests.edge.fault_helpers import fault_codes
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from tests.fakes import FakeTaskRunner, drain_pending, settle
+from tests.fakes import (
+    FakeEventRecorder,
+    FakeMqtt,
+    FakeTaskRunner,
+    drain_pending,
+    settle,
+)
 from tests.payment_state_helpers import set_coin_status
 
 
@@ -136,18 +143,6 @@ def make_vmc(
     """See `make_machine` -- returns just the VMC, for the majority of
     callers that never touch a moved collaborator."""
     return make_machine(price, tmp_path, tasks=tasks, products=products).vmc
-
-
-class FakeEventRecorder:
-    def __init__(self):
-        self.events: list[tuple] = []
-        self.sales: list[tuple] = []
-
-    def record(self, event_type, value=1.0, metadata=None):
-        self.events.append((event_type, value, metadata))
-
-    def record_sale(self, sku, name, slot, price, methods, ts=None):
-        self.sales.append((sku, name, slot, price, methods))
 
 
 class FakeSoldOutInventory:
@@ -445,7 +440,7 @@ async def test_dispense_complete_sale_record_failure_raises_data_101_but_complet
     assert vmc.state == "idle"  # the vend still completed
     assert vmc.selected_product is None
     assert vmc.pending_sale_shares is None  # cleared even on the failure path
-    assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
+    assert "DATA-101" in fault_codes(vmc)
 
 
 async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
@@ -500,7 +495,7 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     assert vmc.state == "idle"  # the vend still completed regardless
     assert vmc.selected_product is None
 
-    faults = {f["code"] for f in vmc.active_faults()}
+    faults = fault_codes(vmc)
     assert "PAY-104" in faults
     assert "DATA-101" not in faults  # not treated as the ordinary path
 
@@ -709,7 +704,7 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
     machine2.attach_to_loop(asyncio.get_running_loop())
     machine2.set_session_store(SessionStore(store_path))  # loads open snap -> PAY-104
 
-    assert "PAY-104" in {f["code"] for f in vmc2.active_faults()}
+    assert "PAY-104" in fault_codes(vmc2)
     reloaded = SessionStore(store_path).load()
     assert reloaded.pending_sale_shares == {"cash_bill": 200, "card": 50}
     assert reloaded.selected_sku == "ICE-1"
@@ -1026,16 +1021,9 @@ class TestFaultRegistry:
     def test_hardware_io_handler_is_registered(self):
         machine = make_machine(products=two_products())
 
-        class FakeClient:
-            def __init__(self):
-                self.topics = []
-
-            def register(self, topic, handler):
-                self.topics.append(topic)
-
-        client = FakeClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
-        assert "hardware/io/+" in client.topics
+        assert "hardware/io/+" in [t for t, _ in client.registered]
 
 
 def _start_dispensing(vmc: VMC, index: int = 0):
@@ -1057,16 +1045,8 @@ class TestVendOutcomes:
         machine.attach_to_loop(asyncio.get_running_loop())
         rec = FakeEventRecorder()
         machine.set_event_recorder(rec)
-        published: list[tuple[str, object]] = []
-
-        class FakeClient:
-            def register(self, *_):
-                pass
-
-            async def publish(self, topic, payload, **kwargs):
-                published.append((topic, payload))
-
-        machine.set_mqtt_client(FakeClient())
+        client = FakeMqtt()
+        machine.set_mqtt_client(client)
         _start_dispensing(vmc, 0)
         price = vmc.products[0].price_cents
 
@@ -1085,7 +1065,7 @@ class TestVendOutcomes:
             price,
             {"code": code.value, "sku": "ICE-1", "outcome": outcome},
         ) in rec.events
-        assert not any(t == "cmd/payment/refund" for t, _ in published)
+        assert not any(t == "cmd/payment/refund" for t, *_ in client.published)
         assert vmc.faults.lockouts == {"ICE-1": code}
         assert not any(c.label == "dispense_timeout" for c in runner.scheduled)
 
@@ -1357,18 +1337,6 @@ class TestCreditLedger:
         machine3.cancel_pending_tasks()
 
 
-class RecordingClient:
-    def __init__(self):
-        self.published: list[tuple[str, object]] = []
-        self.registered: list[str] = []
-
-    def register(self, topic, *_):
-        self.registered.append(topic)
-
-    async def publish(self, topic, payload, **kwargs):
-        self.published.append((topic, payload))
-
-
 def seed_credit(vmc, cents, method="cash_coin"):
     """Put `cents` of cash credit in escrow without any of deposit_funds' side effects."""
     vmc.escrow_credits = [
@@ -1446,7 +1414,7 @@ class TestRefunds:
 
         assert payouts(machine) == []
         assert vmc.credit_escrow_cents == 0
-        assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
+        assert "PAY-103" in fault_codes(vmc)
 
     async def test_mixed_credit_pays_out_only_the_cash_part(self):
         machine = make_machine(products=two_products())
@@ -1459,7 +1427,7 @@ class TestRefunds:
 
         (payout,) = payouts(machine)
         assert payout.cents == 100
-        assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
+        assert "PAY-103" in fault_codes(vmc)
 
     async def test_on_error_pays_out_via_cash_payout(self, caplog):
         machine = make_machine(products=two_products())
@@ -1542,12 +1510,13 @@ class TestRefunds:
 
     def test_payment_event_and_state_handlers_are_registered(self):
         machine = make_machine(products=two_products())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
-        assert "payment/event" in client.registered
-        assert "payment/state" in client.registered
+        registered = [t for t, _ in client.registered]
+        assert "payment/event" in registered
+        assert "payment/state" in registered
         for legacy in ("payment/credit", "cmd/payment/refund/ack", "payment/status"):
-            assert legacy not in client.registered
+            assert legacy not in registered
 
 
 class TestFireAndForget:
@@ -1605,17 +1574,9 @@ def _wired_vmc(products=None, *, tasks: TaskRunner | None = None):
     machine.set_health_monitor(monitor)
     avail = Availability()
     machine.set_availability(avail)
-    published: list = []
-
-    class FakeMQTT:
-        def register(self, *a, **k):
-            pass
-
-        async def publish(self, topic, payload, qos=1, retain=False):
-            published.append((topic, payload))
-
-    machine.set_mqtt_client(FakeMQTT())
-    return vmc, monitor, avail, published, machine
+    client = FakeMqtt()
+    machine.set_mqtt_client(client)
+    return vmc, monitor, avail, client.published, machine
 
 
 def _all_alive(monitor: HealthMonitor, machine: Machine):
@@ -1639,57 +1600,82 @@ async def _enables(machine) -> list[bool]:
     return accepts(machine)
 
 
-async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment():
-    vmc, monitor, avail, published, machine = _wired_vmc()
+async def _wired_with_everything_alive():
+    vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
     set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
+    return vmc, monitor, avail, machine
+
+
+def _heartbeat(subsystem):
+    def restore(monitor, machine):
+        monitor.record_heartbeat(subsystem, {"uptime_seconds": 5})
+
+    return restore
+
+
+def _lose(subsystem):
+    def lose(monitor, machine):
+        monitor.mark_offline(subsystem)
+
+    return lose
+
+
+_LOSSES = [
+    pytest.param("COM-101", _lose("vending"), _heartbeat("vending"), id="vending"),
+    pytest.param(
+        "COM-102", _lose("ice_maker"), _heartbeat("ice_maker"), id="ice_maker"
+    ),
+    pytest.param("PAY-101", _lose("mdb"), _heartbeat("mdb"), id="mdb"),
+    pytest.param(
+        "COM-103",
+        lambda monitor, machine: machine.on_mqtt_connection(False),
+        lambda monitor, machine: machine.on_mqtt_connection(True),
+        id="mqtt",
+    ),
+]
+
+
+@pytest.mark.parametrize(("code", "lose", "restore"), _LOSSES)
+async def test_loss_raises_its_fault_and_recovery_clears_it(code, lose, restore):
+    vmc, monitor, avail, machine = await _wired_with_everything_alive()
+    assert code not in fault_codes(vmc)
+
+    lose(monitor, machine)
+    assert code in fault_codes(vmc)
+
+    restore(monitor, machine)
+    assert code not in fault_codes(vmc)
+
+
+@pytest.mark.parametrize(
+    ("subsystem", "blocked_reason"),
+    [("vending", "vending_alive"), ("ice_maker", None), ("mdb", "payment_alive")],
+)
+async def test_subsystem_loss_blocks_sales_not_payment(subsystem, blocked_reason):
+    vmc, monitor, avail, machine = await _wired_with_everything_alive()
+    assert avail.sale_available("ice")[0] is True
+
+    monitor.mark_offline(subsystem)
+    available, reasons = avail.sale_available("ice")
+    assert available is False
+    if blocked_reason is not None:
+        assert blocked_reason in reasons
     assert avail.payment_enabled is True
 
-    monitor.mark_offline("vending")
-    codes = {f["code"] for f in vmc.active_faults()}
-    assert "COM-101" in codes
-    assert avail.payment_enabled is True
-    assert avail.sale_available("ice")[0] is False
-    assert "vending_alive" in avail.sale_available("ice")[1]
-
-    monitor.record_heartbeat("vending", {"uptime_seconds": 5})
-    assert "COM-101" not in {f["code"] for f in vmc.active_faults()}
+    monitor.record_heartbeat(subsystem, {"uptime_seconds": 5})
     assert avail.sale_available("ice")[0] is True
 
 
-async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
-    vmc, monitor, avail, published, machine = _wired_vmc()
-    _all_alive(monitor, machine)
-    set_coin_status(avail, "ready")
-    await machine.telemetry.handle_hardware_io(
-        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
-    )
-    monitor.mark_offline("ice_maker")
-    assert "COM-102" in {f["code"] for f in vmc.active_faults()}
-    assert avail.sale_available("ice")[0] is False
-    assert avail.payment_enabled is True
-
-
-async def test_mdb_loss_is_pay_101_and_blocks_sales_not_payment():
-    vmc, monitor, avail, _, machine = _wired_vmc()
-    _all_alive(monitor, machine)
-    monitor.mark_offline("mdb")
-    assert "PAY-101" in {f["code"] for f in vmc.active_faults()}
-    assert avail.payment_enabled is True
-    assert "payment_alive" in avail.sale_available("ice")[1]
-
-
-async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
+async def test_mqtt_reconnect_republishes_the_payment_enable():
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
     machine.on_mqtt_connection(False)
-    assert "COM-103" in {f["code"] for f in vmc.active_faults()}
     before = len(await _enables(machine))
     machine.on_mqtt_connection(True)
-    assert "COM-103" not in {f["code"] for f in vmc.active_faults()}
     assert len(await _enables(machine)) > before
 
 
@@ -1746,14 +1732,7 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     avail = Availability()
     machine.set_availability(avail)
 
-    class FakeMQTT:
-        def register(self, *a, **k):
-            pass
-
-        async def publish(self, topic, payload, qos=1, retain=False):
-            pass
-
-    machine.set_mqtt_client(FakeMQTT())
+    machine.set_mqtt_client(FakeMqtt())
     assert machine.health_monitor is None
 
     await machine.telemetry.handle_hardware_io(
@@ -1797,7 +1776,7 @@ async def test_pay_104_on_boot_leaves_payment_enabled(tmp_path):
     store.save(SessionSnapshot(state="interacting_with_user", credit_escrow_cents=125))
     machine.set_session_store(store)
 
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
     assert avail.payment_enabled is True
     assert avail.payment_blocking_reasons() == []
     assert store.load() is not None  # evidence kept until an admin clears it
@@ -1890,7 +1869,7 @@ async def test_expire_session_is_a_noop_while_dispensing():
     machine = make_machine(products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     _start_dispensing(vmc, 0)
     assert vmc.state == "dispensing"
@@ -1923,7 +1902,7 @@ async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
     machine = make_machine(tasks=runner, products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
 
     vmc.credit_escrow_cents = 0
@@ -1969,7 +1948,7 @@ async def test_boot_with_escrow_raises_pay_104_without_blocking(tmp_path):
     machine.set_event_recorder(rec)
     store.save(SessionSnapshot(state="interacting_with_user", credit_escrow_cents=125))
     machine.set_session_store(store)
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
     assert avail.payment_enabled is True
     rows = {r["name"]: r for r in avail.table()}
     assert rows["transaction_certain"]["state"] == "fail"
@@ -1980,23 +1959,36 @@ async def test_boot_with_escrow_raises_pay_104_without_blocking(tmp_path):
     assert store.load() is not None  # kept as evidence until cleared
 
 
-async def test_boot_mid_dispense_raises_pay_104(tmp_path):
-    vmc, avail, _, machine = _boot_with(
-        tmp_path,
-        SessionSnapshot(
-            state="dispensing",
-            credit_escrow_cents=0,
-            selected_sku="ICE-1",
-            dispense_slot=0,
-        ),
+def _escrow_snapshot(tmp_path):
+    return SessionSnapshot(state="interacting_with_user", credit_escrow_cents=125)
+
+
+def _mid_dispense_snapshot(tmp_path):
+    return SessionSnapshot(
+        state="dispensing",
+        credit_escrow_cents=0,
+        selected_sku="ICE-1",
+        dispense_slot=0,
     )
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
 
 
-async def test_boot_with_corrupt_file_raises_pay_104(tmp_path):
+def _corrupt_file(tmp_path):
     (tmp_path / "session.json").write_text("garbage", encoding="utf-8")
-    vmc, avail, _, machine = _boot_with(tmp_path, None)
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    return None
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        pytest.param(_escrow_snapshot, id="escrow"),
+        pytest.param(_mid_dispense_snapshot, id="mid_dispense"),
+        pytest.param(_corrupt_file, id="corrupt_file"),
+    ],
+)
+async def test_boot_with_an_uncertain_session_raises_pay_104(tmp_path, prepare):
+    vmc, avail, _, machine = _boot_with(tmp_path, prepare(tmp_path))
+    assert "PAY-104" in fault_codes(vmc)
+    assert avail.payment_enabled is True
 
 
 async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
@@ -2019,7 +2011,7 @@ async def test_clear_pay_104_fails_closed_when_evidence_file_persists(tmp_path):
     )
     store.clear = lambda: False
     assert vmc.clear_fault("PAY-104", by="admin") is False
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
     assert avail.payment_enabled is True
     rows = {r["name"]: r for r in avail.table()}
     assert rows["transaction_certain"]["state"] == "fail"
@@ -2089,12 +2081,12 @@ async def test_status_publish_carries_destination_state():
 
     vmc.start_interaction()
     await asyncio.sleep(0)
-    statuses = [p for t, p in published if t == "status"]
+    statuses = [p for t, p, _ in published if t == "status"]
     assert statuses[-1].state == "interacting_with_user"
 
     vmc.error_occurred()
     await asyncio.sleep(0)
-    statuses = [p for t, p in published if t == "status"]
+    statuses = [p for t, p, _ in published if t == "status"]
     assert statuses[-1].state == "error"
 
 
@@ -2181,7 +2173,7 @@ async def test_status_republished_on_mqtt_connect():
     machine.on_mqtt_connection(True)
     await asyncio.sleep(0)
 
-    statuses = [p for t, p in published if t == "status"]
+    statuses = [p for t, p, _ in published if t == "status"]
     assert statuses
     assert statuses[-1].state == "idle"
 
@@ -2203,7 +2195,7 @@ class TestMakeIdleForService:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         vmc.set_state("dispensing")
         seed_credit(vmc, 100)
@@ -2220,7 +2212,7 @@ class TestMakeIdleForService:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
@@ -2244,7 +2236,7 @@ class TestMakeIdleForService:
         machine = make_machine(tasks=runner, products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         assert vmc.state == "idle"
         vmc.deposit_funds(200, payment_method="cash_coin")
@@ -2267,7 +2259,7 @@ class TestMakeIdleForService:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         vmc.set_state("error")
         seed_credit(vmc, 125)
@@ -2347,11 +2339,11 @@ class TestMaintenanceLease:
 
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         assert machine.maintenance_hold is None
 
     async def test_generic_clear_fault_cannot_clear_svc_102_while_lease_held(self):
@@ -2370,19 +2362,19 @@ class TestMaintenanceLease:
 
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         cleared = vmc.clear_fault("SVC-102", by="admin")
 
         assert cleared is False
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
         assert machine.maintenance_hold is not None
         assert machine.maintenance_hold.holder_session_id == "sess-1"
 
         # The real release path still works once the lease itself is ended.
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
 
     async def test_payment_disabled_while_held_and_restored_after_release(self):
         vmc, monitor, avail, published, machine = _wired_vmc()
@@ -2409,7 +2401,7 @@ class TestMaintenanceLease:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         rec = FakeEventRecorder()
         machine.set_event_recorder(rec)
@@ -2468,7 +2460,7 @@ class TestMaintenanceLease:
         machine.lease.run_finished()
 
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
 
     async def test_idle_timer_never_releases_with_run_in_flight(self):
         # Deterministic like the take-over tests below: backdate
@@ -2492,7 +2484,7 @@ class TestMaintenanceLease:
         # The timer fired, but a run is in flight: it must defer, not release.
         assert machine.maintenance_hold is not None
         assert machine.maintenance_hold.release_requested is True
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         machine.lease.run_finished()
 
@@ -2513,7 +2505,7 @@ class TestMaintenanceLease:
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         machine.maintenance_hold.last_activity_at -= (
             machine.lease.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
@@ -2523,7 +2515,7 @@ class TestMaintenanceLease:
         await asyncio.sleep(0)  # let the fire-and-forget publish task run
 
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         assert avail.payment_enabled is True
         enable_cmds = accepts(machine)
         assert enable_cmds, "expected a set_policy command to have been published"
@@ -2609,7 +2601,7 @@ class TestMaintenanceLease:
         # held and payment must still be disabled.
         assert machine.maintenance_hold is not None
         assert machine.maintenance_hold.runs_in_flight == 1
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
         assert avail.payment_enabled is False
 
         gate2.set()
@@ -2617,7 +2609,7 @@ class TestMaintenanceLease:
         await drain_pending(runner)  # let the release's fire-and-forget publish run
 
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         assert avail.payment_enabled is True
         enable_true = [a for a in accepts(machine) if a is True]
         assert len(enable_true) == 1, (
@@ -2687,7 +2679,7 @@ def _test_run_machine(
     products=None, tmp_path: Path | None = None, *, tasks: TaskRunner | None = None
 ):
     """A wired-up Machine (and its VMC) plus a FakeEventRecorder and
-    RecordingClient, for TestSaleRunner.run_test_sale tests. Mirrors make_vmc(products=two_products())'s
+    FakeMqtt, for TestSaleRunner.run_test_sale tests. Mirrors make_vmc(products=two_products())'s
     default two-product catalog (ICE-1 $2.50 slot 0, WATER-1 $1.00 slot 1)
     unless overridden. Also carries a loaded `DispenserProfiles` and a
     `FakeDispatcher` (plan: dispenser profiles, Task 3) -- every
@@ -2703,7 +2695,7 @@ def _test_run_machine(
     profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(tmp_path))
     machine.set_dispenser_profiles(profiles)
     machine.set_command_dispatcher(FakeDispatcher())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
@@ -2967,7 +2959,7 @@ class TestRunTestSale:
         machine = Machine(config=cfg)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         machine.set_event_recorder(recorder)
@@ -3229,7 +3221,7 @@ class TestRunTestSale:
         vmc2 = machine2.vmc
         machine2.set_session_store(SessionStore(store_path))
 
-        assert "PAY-104" not in {f["code"] for f in vmc2.active_faults()}
+        assert "PAY-104" not in fault_codes(vmc2)
         assert machine2.pending_sale_for_recovery() is None
         machine2.cancel_pending_tasks()
 
@@ -3279,7 +3271,7 @@ class TestRunTestSale:
 
         # Positive control: the fault really is active before asserting
         # what the accessor does about it.
-        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert "PAY-104" in fault_codes(vmc)
         assert machine.pending_sale_for_recovery() is None
 
     async def test_crashed_production_sale_is_still_offered_for_recovery_with_fifo_shares(
@@ -3325,7 +3317,7 @@ class TestRunTestSale:
         vmc2 = machine2.vmc
         machine2.set_session_store(SessionStore(store_path))
 
-        assert "PAY-104" in {f["code"] for f in vmc2.active_faults()}
+        assert "PAY-104" in fault_codes(vmc2)
         pending = machine2.pending_sale_for_recovery()
         assert pending is not None
         assert pending["sku"] == "ICE-1"
@@ -3464,7 +3456,7 @@ class TestRunTestSaleRunContext:
         machine = Machine(config=cfg)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        machine.set_mqtt_client(RecordingClient())
+        machine.set_mqtt_client(FakeMqtt())
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         machine.set_event_recorder(recorder)
 
@@ -3536,7 +3528,7 @@ def _test_run_vmc_with_availability(products=None):
     machine = Machine(config=cfg)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
@@ -3749,7 +3741,7 @@ class TestConcurrentTestSaleGuard:
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         task1 = asyncio.get_running_loop().create_task(
             machine.test_sales.run_test_sale("ICE-1")
@@ -3791,7 +3783,7 @@ class TestConcurrentTestSaleGuard:
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         await asyncio.sleep(0)  # let the release's fire-and-forget publish run
         assert avail.payment_enabled is True
 
@@ -3838,7 +3830,7 @@ class TestConcurrentTestSaleGuard:
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         await asyncio.sleep(0)
         assert avail.payment_enabled is True
 
@@ -3883,7 +3875,7 @@ class TestConcurrentTestSaleGuard:
         released = machine.lease.end_maintenance("sess-1")
         assert released is True
         assert machine.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
         await asyncio.sleep(0)
         assert avail.payment_enabled is True
 
@@ -4136,7 +4128,7 @@ class TestOnErrorTestMoney:
         machine = make_machine(products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
@@ -4158,7 +4150,7 @@ class TestOnErrorTestMoney:
         machine = make_machine()
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        client = RecordingClient()
+        client = FakeMqtt()
         machine.set_mqtt_client(client)
         lines: list[str] = []
         sink = logger.add(lambda m: lines.append(str(m)), level="DEBUG")

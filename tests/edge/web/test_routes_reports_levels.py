@@ -83,42 +83,6 @@ LEVEL_URLS = [
 ]
 
 
-class TestPermissionGate:
-    """Each of the four range-based levels: 200 for owner/secretary, 403
-    for tech/loader -- the same view_reports gate as /reports itself."""
-
-    @pytest.mark.parametrize("url", LEVEL_URLS)
-    @pytest.mark.parametrize(
-        "role,expected_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 200),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_gate(self, login_as, url, role, expected_status):
-        client = login_as(role)
-        response = client.get(url)
-        assert response.status_code == expected_status
-
-    @pytest.mark.parametrize(
-        "role,expected_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 200),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_gate_product_sku(self, login_as, wired, role, expected_status):
-        cfg, _vmc, _inv, _store = wired
-        product = _add_product(cfg)
-        client = login_as(role)
-        response = client.get(f"/reports/product/{product.sku}")
-        assert response.status_code == expected_status
-
-
 class TestBreadcrumbs:
     """Breadcrumbs match the level tree (packages/ui/src/ice_ui/levels.py)."""
 

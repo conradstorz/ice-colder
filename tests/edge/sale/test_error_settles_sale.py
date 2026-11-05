@@ -9,8 +9,8 @@ from ice_common.config_model import Product
 from ice_edge.ledger.event_recorder import SaleRecordingFailed
 from ice_edge.ledger.session_store import SessionStore
 from ice_edge.monitoring.inventory_manager import InventoryManager
+from tests.edge.fault_helpers import fault_codes
 from tests.edge.sale.test_vmc_flows import (
-    RecordingClient,
     payouts,
     make_machine,
     two_products,
@@ -53,7 +53,7 @@ async def test_error_from_interacting_with_credit_refunds_and_settles_once(tmp_p
     machine = make_machine(tmp_path=tmp_path)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     settled = []
     vmc.subscribe_sale_settled(lambda s, o, c: settled.append((o, c)))
@@ -83,7 +83,7 @@ async def test_error_during_sale_write_does_not_refund_dispensed_product(tmp_pat
     machine = make_machine(2.50, tmp_path)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     gate = threading.Event()
     sales = []
@@ -171,7 +171,7 @@ async def test_second_error_during_write_does_not_refund_or_settle_twice(tmp_pat
     machine = make_machine(2.50, tmp_path)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    client = RecordingClient()
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     recorder = _GatedRecorder()
     settled = []
@@ -195,7 +195,7 @@ async def test_error_during_failed_write_keeps_snapshot_for_pay104_recovery(tmp_
     machine = make_machine(2.50, tmp_path)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    machine.set_mqtt_client(RecordingClient())
+    machine.set_mqtt_client(FakeMqtt())
     store_path = tmp_path / "session.json"
     machine.set_session_store(SessionStore(store_path))
     recorder = _GatedRecorder(fail=True)
@@ -208,7 +208,7 @@ async def test_error_during_failed_write_keeps_snapshot_for_pay104_recovery(tmp_
     await asyncio.wait_for(report, timeout=5)
     await machine.drain_persistence()
 
-    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in fault_codes(vmc)
     snap = SessionStore(store_path).load()
     assert snap is not None
     assert snap.is_open() is True
@@ -223,7 +223,7 @@ async def test_stale_write_does_not_touch_the_next_customers_sale(tmp_path):
     machine = make_machine(tmp_path=tmp_path, products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    machine.set_mqtt_client(RecordingClient())
+    machine.set_mqtt_client(FakeMqtt())
     recorder = _GatedRecorder()
     settled = []
     vmc.subscribe_sale_settled(lambda s, o, c: settled.append((s.product.sku, o)))
@@ -254,7 +254,7 @@ async def test_error_during_write_still_decrements_inventory(tmp_path):
     machine = make_machine(2.50, tmp_path)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    machine.set_mqtt_client(RecordingClient())
+    machine.set_mqtt_client(FakeMqtt())
     vmc.products[0].track_inventory = True
     inventory = InventoryManager(list(vmc.products), path=tmp_path / "inv.json")
     inventory.set_count("ICE-1", 5)
@@ -274,7 +274,7 @@ async def test_repeated_error_from_interacting_settles_once(tmp_path):
     machine = make_machine(tmp_path=tmp_path)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    machine.set_mqtt_client(RecordingClient())
+    machine.set_mqtt_client(FakeMqtt())
     settled = []
     vmc.subscribe_sale_settled(lambda s, o, c: settled.append(o))
     vmc.select_product(vmc.products[0])

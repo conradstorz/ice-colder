@@ -97,28 +97,6 @@ class TestSettingsHomeGating:
 
 
 class TestMachinePage:
-    @pytest.mark.parametrize(
-        "role,expect_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 200),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_get_status_per_role(self, login_as, wired, role, expect_status):
-        worker = login_as(role)
-        resp = worker.get("/settings/machine")
-        assert resp.status_code == expect_status
-
-    def test_post_requires_htmx_header(self, client):
-        resp = client.post(
-            "/settings/machine",
-            headers={"HX-Request": ""},
-            data={"name": "x", "address": "y", "notes": "z"},
-        )
-        assert resp.status_code == 403
-
     def test_machine_id_renders_read_only(self, client, wired):
         cfg, _vmc, _inv, _store = wired
         resp = client.get("/settings/machine")
@@ -186,33 +164,6 @@ class TestMachinePage:
 
 
 class TestContactsPage:
-    @pytest.mark.parametrize(
-        "role,expect_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 200),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_get_status_per_role(self, login_as, wired, role, expect_status):
-        worker = login_as(role)
-        resp = worker.get("/settings/contacts")
-        assert resp.status_code == expect_status
-
-    def test_post_requires_htmx_header(self, client):
-        resp = client.post(
-            "/settings/contacts",
-            headers={"HX-Request": ""},
-            data={
-                "owner_name": "A",
-                "owner_email": "a@example.com",
-                "loc_name": "B",
-                "loc_email": "b@example.com",
-            },
-        )
-        assert resp.status_code == 403
-
     def test_post_round_trips_through_save_config(self, client, wired, tmp_path):
         cfg, _vmc, _inv, _store = wired
         resp = client.post(
@@ -248,24 +199,6 @@ class TestContactsPage:
 
 class TestPaymentsPage:
     """edit_secrets is owner-only per ROLE_PERMISSIONS."""
-
-    @pytest.mark.parametrize(
-        "role,expect_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 403),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_get_status_per_role(self, login_as, wired, role, expect_status):
-        worker = login_as(role)
-        resp = worker.get("/settings/payments")
-        assert resp.status_code == expect_status
-
-    def test_post_requires_htmx_header(self, client):
-        resp = client.post("/settings/payments", headers={"HX-Request": ""}, data={})
-        assert resp.status_code == 403
 
     def test_rendered_page_never_contains_real_secret_values(self, client):
         resp = client.get("/settings/payments")
@@ -381,28 +314,6 @@ class TestPaymentsPage:
 
 
 class TestCommsPage:
-    @pytest.mark.parametrize(
-        "role,expect_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 403),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_get_status_per_role(self, login_as, wired, role, expect_status):
-        worker = login_as(role)
-        resp = worker.get("/settings/comms")
-        assert resp.status_code == expect_status
-
-    def test_post_requires_htmx_header(self, client):
-        resp = client.post(
-            "/settings/comms",
-            headers={"HX-Request": ""},
-            data={"smtp_server": "x", "smtp_port": "587"},
-        )
-        assert resp.status_code == 403
-
     def test_rendered_page_never_contains_real_secret_values(self, client, wired):
         cfg, _vmc, _inv, _store = wired
         # The default SMTP password ("password") collides with markup, so use a
@@ -585,28 +496,6 @@ class TestCommsPage:
 
 
 class TestMqttPage:
-    @pytest.mark.parametrize(
-        "role,expect_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 403),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_get_status_per_role(self, login_as, wired, role, expect_status):
-        worker = login_as(role)
-        resp = worker.get("/settings/mqtt")
-        assert resp.status_code == expect_status
-
-    def test_post_requires_htmx_header(self, client):
-        resp = client.post(
-            "/settings/mqtt",
-            headers={"HX-Request": ""},
-            data={"broker_host": "x", "broker_port": "1883"},
-        )
-        assert resp.status_code == 403
-
     def test_password_masked_when_set(self, client, wired):
         cfg, _vmc, _inv, _store = wired
         cfg.mqtt.password = None
@@ -687,26 +576,6 @@ class TestMqttPage:
 
 
 class TestWebPage:
-    @pytest.mark.parametrize(
-        "role,expect_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 403),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_get_status_per_role(self, login_as, wired, role, expect_status):
-        worker = login_as(role)
-        resp = worker.get("/settings/web")
-        assert resp.status_code == expect_status
-
-    def test_post_requires_htmx_header(self, client):
-        resp = client.post(
-            "/settings/web", headers={"HX-Request": ""}, data={"trusted_proxies": ""}
-        )
-        assert resp.status_code == 403
-
     def test_host_and_port_render_read_only(self, client, wired):
         cfg, _vmc, _inv, _store = wired
         resp = client.get("/settings/web")

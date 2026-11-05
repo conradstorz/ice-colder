@@ -1,6 +1,7 @@
 from ice_contracts.board.payment import PaymentState, PayoutReason
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.payment.mdb.reconcile import Reconciler
+from tests.fakes import FakeFaults
 
 BOOT = "boot-0001"
 
@@ -42,14 +43,6 @@ class FakePayouts:
 
     def pay_out(self, cents, reason, sale_id):
         self.calls.append((cents, reason, sale_id))
-
-
-class FakeFaults:
-    def __init__(self):
-        self.raised = []
-
-    def raise_fault(self, code, *, sku=None, outcome=None):
-        self.raised.append((code, outcome))
 
 
 class Env:

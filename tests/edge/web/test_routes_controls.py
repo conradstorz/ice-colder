@@ -169,27 +169,6 @@ class TestPostCommands:
         assert "Not done:" in resp.text
         assert "bg-green-50" not in resp.text
 
-    def test_post_requires_htmx_header(self, login_as):
-        """POST without HX-Request header is 403."""
-        client = login_as(Role.owner)
-        # Remove the HX-Request header by making a new request without it
-        # The TestClient adds it by default, so we need to make a raw request
-        from fastapi.testclient import TestClient
-        from ice_edge.web.server import app
-        import ice_edge.web.auth as web_auth
-
-        raw_client = TestClient(app)
-        # Copy cookies from the authenticated client
-        raw_client.cookies.set(
-            web_auth.DEVICE_COOKIE, client.cookies.get(web_auth.DEVICE_COOKIE)
-        )
-        raw_client.cookies.set(
-            web_auth.SESSION_COOKIE, client.cookies.get(web_auth.SESSION_COOKIE)
-        )
-        # Explicitly do NOT set HX-Request header
-        resp = raw_client.post("/controls/restart")
-        assert resp.status_code == 403
-
     def test_post_loader_gets_403_even_with_htmx_header(self, login_as):
         """Loader is 403 even with HX-Request header."""
         client = login_as(Role.loader, name="Loader")

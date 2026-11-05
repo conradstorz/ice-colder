@@ -84,12 +84,10 @@ def test_login_page_has_no_identity_chip(cloud):
     assert 'href="/me"' not in r.text
 
 
-def test_login_page_offers_button_when_configured(settings, clock, provider, tmp_path):
+def test_login_page_offers_button_when_configured(
+    settings, clock, provider, tmp_path, make_cloud
+):
     from dataclasses import replace
-
-    from fastapi.testclient import TestClient
-
-    from ice_cloud.app import create_app
 
     configured = replace(
         settings,
@@ -97,7 +95,7 @@ def test_login_page_offers_button_when_configured(settings, clock, provider, tmp
         google_client_secret="secret",
         public_url="https://cloud.example.com",
     )
-    with TestClient(create_app(configured, now=clock, provider=provider)) as c:
+    with make_cloud(configured, now=clock, provider=provider) as c:
         r = c.get("/login?next=/fleet")
     assert "Sign in with Google" in r.text
     assert "/auth/google/start?next=/fleet" in r.text
@@ -152,12 +150,8 @@ def test_safe_next_accepts_local_paths(value):
     assert safe_next(value) == value
 
 
-def test_login_page_renders_only_safe_next(settings, clock, provider):
+def test_login_page_renders_only_safe_next(settings, clock, provider, make_cloud):
     from dataclasses import replace
-
-    from fastapi.testclient import TestClient
-
-    from ice_cloud.app import create_app
 
     configured = replace(
         settings,
@@ -165,8 +159,9 @@ def test_login_page_renders_only_safe_next(settings, clock, provider):
         google_client_secret="s",
         public_url="https://c.example.com",
     )
-    app = create_app(configured, now=clock, provider=provider)
-    with TestClient(app, follow_redirects=False) as c:
+    with make_cloud(
+        configured, now=clock, provider=provider, follow_redirects=False
+    ) as c:
         good = c.get("/login?next=/m/abcd-abcd-abcd-abcd").text
         assert "next=/m/abcd-abcd-abcd-abcd" in good
         bad = c.get("/login?next=//evil.example.com").text

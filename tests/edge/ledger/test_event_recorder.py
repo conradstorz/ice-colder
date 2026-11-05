@@ -15,6 +15,7 @@ from ice_edge.ledger.event_recorder import (
     EventRecorder,
     is_cash,
 )
+from tests.edge.db_helpers import db_rows, insert_event, insert_events, user_version
 
 
 @pytest.fixture
@@ -99,26 +100,16 @@ class TestGetSummary:
         db = str(tmp_path / "events.db")
         rec = EventRecorder(db_path=db)
         old_ts = time.time() - 25 * 3600
-        conn = sqlite3.connect(db)
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", old_ts, 500),
-        )
-        conn.commit()
-        conn.close()
+        insert_event(db, "payment", old_ts, 500)
         assert rec.get_summary(24)["money_in_cents"] == 0.0
 
     def test_uptime_with_heartbeats(self, recorder):
         # 360 heartbeats at a real 10s cadence (distinct buckets), covering
         # 3600s of a 24h (86400s) window → ~4.2%.
         now = time.time()
-        conn = sqlite3.connect(recorder.db_path)
-        conn.executemany(
-            "INSERT INTO events (event_type, timestamp, value) VALUES ('heartbeat', ?, 100)",
-            [(now - i * 10,) for i in range(360)],
+        insert_events(
+            recorder.db_path, [("heartbeat", now - i * 10, 100) for i in range(360)]
         )
-        conn.commit()
-        conn.close()
         assert recorder.get_summary(24)["uptime_pct"] == pytest.approx(4.2, abs=0.1)
 
     def test_vends_failed_and_refunds(self, recorder):
@@ -140,13 +131,7 @@ class TestUptimeComputation:
 
     @staticmethod
     def _insert_heartbeats(db_path, timestamps):
-        conn = sqlite3.connect(db_path)
-        conn.executemany(
-            "INSERT INTO events (event_type, timestamp, value) VALUES ('heartbeat', ?, 1)",
-            [(ts,) for ts in timestamps],
-        )
-        conn.commit()
-        conn.close()
+        insert_events(db_path, [("heartbeat", ts, 1) for ts in timestamps])
 
     # A multiple of every plausible bucket size, so windows align to buckets.
     START = 1_000_020.0 * 60
@@ -244,10 +229,11 @@ class TestHeartbeatCoalescing:
     @staticmethod
     def _rows(recorder, etype):
         recorder.flush()
-        with sqlite3.connect(recorder.db_path) as conn:
-            return conn.execute(
-                "SELECT timestamp FROM events WHERE event_type=?", (etype,)
-            ).fetchall()
+        return db_rows(
+            recorder.db_path,
+            "SELECT timestamp FROM events WHERE event_type=?",
+            (etype,),
+        )
 
     async def test_three_subsystems_in_one_bucket_write_one_row(self, recorder, clock):
         handler = _heartbeat_handler(recorder)
@@ -438,17 +424,7 @@ class TestGetHistoricalAverage:
         rec = EventRecorder(db_path=db)
         # Insert data in one prior 24h period only (25-49h ago) — not enough.
         ts = time.time() - 36 * 3600
-        conn = sqlite3.connect(db)
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("heartbeat", ts, 1),
-        )
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", ts, 5.00),
-        )
-        conn.commit()
-        conn.close()
+        insert_events(db, [("heartbeat", ts, 1), ("payment", ts, 5.00)])
         avg = rec.get_historical_average(24)
         assert avg["money_in_cents"] is None
         assert avg["products_out"] is None
@@ -458,27 +434,17 @@ class TestGetHistoricalAverage:
         rec = EventRecorder(db_path=db)
         now = time.time()
         period = 24 * 3600
-        conn = sqlite3.connect(db)
-        # Period 1: 25-49h ago → $10 + heartbeat
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 1.5 * period, 1000),
+        insert_events(
+            db,
+            [
+                # Period 1: 25-49h ago -> $10 + heartbeat
+                ("payment", now - 1.5 * period, 1000),
+                ("heartbeat", now - 1.5 * period, 1),
+                # Period 2: 49-73h ago -> $6 + heartbeat
+                ("payment", now - 2.5 * period, 600),
+                ("heartbeat", now - 2.5 * period, 1),
+            ],
         )
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("heartbeat", now - 1.5 * period, 1),
-        )
-        # Period 2: 49-73h ago → $6 + heartbeat
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 2.5 * period, 600),
-        )
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("heartbeat", now - 2.5 * period, 1),
-        )
-        conn.commit()
-        conn.close()
         avg = rec.get_historical_average(24)
         assert avg["money_in_cents"] == pytest.approx(800.0)  # (1000 + 600) / 2
 
@@ -488,32 +454,19 @@ class TestGetHistoricalAverage:
         rec = EventRecorder(db_path=db)
         now = time.time()
         period = 24 * 3600
-        conn = sqlite3.connect(db)
-        # Period 1 active: $10 + heartbeat
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 1.5 * period, 1000),
+        insert_events(
+            db,
+            [
+                # Period 1 active: $10 + heartbeat
+                ("payment", now - 1.5 * period, 1000),
+                ("heartbeat", now - 1.5 * period, 1),
+                # Period 2 active: $8 + heartbeat
+                ("payment", now - 2.5 * period, 800),
+                ("heartbeat", now - 2.5 * period, 1),
+                # Period 3 inactive: $20 payment but NO heartbeat -- machine was off, exclude
+                ("payment", now - 3.5 * period, 2000),
+            ],
         )
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("heartbeat", now - 1.5 * period, 1),
-        )
-        # Period 2 active: $8 + heartbeat
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 2.5 * period, 800),
-        )
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("heartbeat", now - 2.5 * period, 1),
-        )
-        # Period 3 inactive: $20 payment but NO heartbeat — machine was off, exclude
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 3.5 * period, 2000),
-        )
-        conn.commit()
-        conn.close()
         avg = rec.get_historical_average(24)
         assert avg["money_in_cents"] == pytest.approx(
             900.0
@@ -526,25 +479,15 @@ class TestHistoricalAverageCache:
 
     @staticmethod
     def _seed_two_active_periods(db, now, period):
-        conn = sqlite3.connect(db)
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 1.5 * period, 1000),
+        insert_events(
+            db,
+            [
+                ("payment", now - 1.5 * period, 1000),
+                ("heartbeat", now - 1.5 * period, 1),
+                ("payment", now - 2.5 * period, 600),
+                ("heartbeat", now - 2.5 * period, 1),
+            ],
         )
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("heartbeat", now - 1.5 * period, 1),
-        )
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 2.5 * period, 600),
-        )
-        conn.execute(
-            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("heartbeat", now - 2.5 * period, 1),
-        )
-        conn.commit()
-        conn.close()
 
     def test_cache_returns_cached_value_within_ttl(self, tmp_path, monkeypatch):
         db = str(tmp_path / "events.db")
@@ -2284,14 +2227,6 @@ class TestOpenFailureIsNotCorruption:
         assert rec.db_unavailable is False
 
 
-def _user_version(db: str) -> int:
-    conn = sqlite3.connect(db)
-    try:
-        return conn.execute("PRAGMA user_version").fetchone()[0]
-    finally:
-        conn.close()
-
-
 def _tables(db: str) -> set[str]:
     conn = sqlite3.connect(db)
     try:
@@ -2315,7 +2250,7 @@ class TestMigrations:
     def test_fresh_file_reaches_latest_version(self, tmp_path):
         db = str(tmp_path / "events.db")
         rec = EventRecorder(db_path=db)
-        assert _user_version(db) == len(event_recorder_module.MIGRATIONS)
+        assert user_version(db) == len(event_recorder_module.MIGRATIONS)
         assert {"events", "sales", "cash_collections"} <= _tables(db)
         assert rec.db_unavailable is False
 
@@ -2329,12 +2264,12 @@ class TestMigrations:
         )
         legacy.commit()
         legacy.close()
-        assert _user_version(db) == 0
+        assert user_version(db) == 0
 
         rec = EventRecorder(db_path=db)
 
         assert rec.db_unavailable is False
-        assert _user_version(db) == len(event_recorder_module.MIGRATIONS)
+        assert user_version(db) == len(event_recorder_module.MIGRATIONS)
         conn = sqlite3.connect(db)
         rows = conn.execute("SELECT sku, price_cents FROM sales").fetchall()
         conn.close()
@@ -2343,9 +2278,9 @@ class TestMigrations:
     def test_second_construction_applies_nothing(self, tmp_path):
         db = str(tmp_path / "events.db")
         EventRecorder(db_path=db)
-        before = _user_version(db)
+        before = user_version(db)
         rec = EventRecorder(db_path=db)
-        assert _user_version(db) == before
+        assert user_version(db) == before
         assert rec.db_unavailable is False
 
     def test_future_migration_is_applied(self, tmp_path, monkeypatch):
@@ -2362,7 +2297,7 @@ class TestMigrations:
         rec = EventRecorder(db_path=db)
         assert rec.db_unavailable is False
         assert "note" in _columns(db, "sales")
-        assert _user_version(db) == 3
+        assert user_version(db) == 3
 
     def test_database_newer_than_code_is_unavailable_and_untouched(self, tmp_path):
         db = str(tmp_path / "events.db")
@@ -2374,7 +2309,7 @@ class TestMigrations:
         rec = EventRecorder(db_path=db)
 
         assert rec.db_unavailable is True
-        assert _user_version(db) == 99
+        assert user_version(db) == 99
         assert {"events", "sales", "cash_collections"} <= _tables(db)
 
     def test_failing_migration_rolls_back_and_flags_unavailable(
@@ -2392,7 +2327,7 @@ class TestMigrations:
         )
         rec = EventRecorder(db_path=db)
         assert rec.db_unavailable is True
-        assert _user_version(db) == 2
+        assert user_version(db) == 2
         assert "half_done" not in _columns(db, "sales")
 
 
@@ -2430,7 +2365,7 @@ def test_corruption_raised_during_migration_is_quarantined(tmp_path, monkeypatch
     assert rec.db_was_corrupt is True
     assert rec.db_unavailable is False
     assert Path(rec.corrupt_backup_path).exists()
-    assert _user_version(str(db)) == len(event_recorder_module.MIGRATIONS)
+    assert user_version(str(db)) == len(event_recorder_module.MIGRATIONS)
 
 
 class TestSaleRecordedSince:
@@ -2576,11 +2511,7 @@ def _set_user_version(db: str, version: int) -> None:
 
 
 def _count(db: str, table: str) -> int:
-    conn = sqlite3.connect(db)
-    try:
-        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-    finally:
-        conn.close()
+    return db_rows(db, f"SELECT COUNT(*) FROM {table}")[0][0]
 
 
 class TestNewerSchemaIsReadOnly:

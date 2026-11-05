@@ -9,6 +9,7 @@ from ice_edge.customer_ui.display_controller import DisplayController
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context, routes
 from ice_edge.web.server import app
+from tests.dom_utils import bar
 
 NAMES = {
     Role.owner: None,
@@ -23,21 +24,16 @@ def _login(login_as, role):
     return client
 
 
-def _bar(html: str) -> str:
-    start = html.index('id="bar"')
-    return html[start : html.index("</header>", start)]
-
-
 @pytest.mark.parametrize("role", list(Role))
 def test_bar_shows_identity_chip(login_as, role):
     client = _login(login_as, role)
     resp = client.get("/")
     assert resp.status_code == 200
-    bar = _bar(resp.text)
-    assert 'href="/me"' in bar
-    assert role.value in bar
+    top = bar(resp.text)
+    assert 'href="/me"' in top
+    assert role.value in top
     name = NAMES[role] or context.access_store.owner().name
-    assert name in bar
+    assert name in top
 
 
 @pytest.mark.parametrize("role", list(Role))

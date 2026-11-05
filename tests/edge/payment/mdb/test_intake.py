@@ -3,6 +3,7 @@ import pytest
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.ledger.payment_cursor import PaymentCursorStore
 from ice_edge.payment.mdb.intake import EventIntake
+from tests.fakes import FakeFaults
 
 BOOT = "boot-0001"
 
@@ -19,25 +20,6 @@ def env(seq, event, boot=BOOT, eid=None):
 
 COIN = {"kind": "coin_accepted", "cents": 25, "routed": "tubes"}
 BILL = {"kind": "bill_stacked", "cents": 500}
-
-
-class FakeFaults:
-    def __init__(self):
-        self.active = set()
-        self.raised = []
-        self.cleared = []
-
-    def has(self, code):
-        return code in self.active
-
-    def raise_fault(self, code, *, sku=None, outcome=None):
-        self.active.add(code)
-        self.raised.append((code, outcome))
-
-    def clear_fault(self, key, by="admin"):
-        self.cleared.append(key)
-        self.active = {c for c in self.active if c.value != key}
-        return True
 
 
 class Rig:

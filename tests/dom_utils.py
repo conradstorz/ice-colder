@@ -112,3 +112,13 @@ def heading_texts(html: str, tag: str = "h1") -> list[str]:
         rf"<{tag}\b[^>]*>(.*?)</{tag}>", main_html(html), flags=re.DOTALL
     )
     return [" ".join(re.sub(r"<[^>]+>", "", f).split()) for f in found]
+
+
+def bar(html: str) -> str:
+    """The top bar markup only: from id="bar" through its closing </header>.
+
+    Fails loudly (ValueError from ``str.index``) if the bar is absent, so a
+    missing bar can never satisfy a containment check.
+    """
+    start = html.index('id="bar"')
+    return html[start : html.index("</header>", start)]

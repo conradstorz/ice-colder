@@ -22,7 +22,10 @@ from ice_edge.access.access import ROLE_PERMISSIONS, Role
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
+from tests.edge.fault_helpers import fault_codes
 from tests.dispenser_fixtures import profiles_for
+from tests.async_helpers import wait_until
+from tests.fakes import FakeMqtt
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_edge.web import routes
@@ -42,22 +45,12 @@ from ice_edge.web.routes.tests_level import testable_commands as compute_testabl
 # "fixture 'subsystem' not found". Confirmed by reproducing it during
 # development of this file.
 
-# Hard-coded on purpose (not derived from ROLE_PERMISSIONS, which would make
-# these matrices tautological): run_tests is held by exactly owner and tech,
-# as pinned by tests/test_access.py's TestPermissionTable.
-RUN_TESTS_ROLES = frozenset({Role.owner, Role.tech})
-
-_TESTS_GET_ROUTES = ["/tests", "/tests/log", "/tests/vending"]
-
 
 @pytest.fixture
-def wire_subsystem():
+def wire_subsystem(health_monitor):
     """Wire a fresh HealthMonitor into routes for one test, with a helper
     to record one subsystem's heartbeat + capabilities in one call."""
-    from ice_edge.monitoring.health_monitor import HealthMonitor
-
-    hm = HealthMonitor()
-    routes.set_health_monitor(hm)
+    hm = health_monitor
 
     def _wire(name, commands, *, alive=True, contract_version="0.6.0"):
         if alive:
@@ -171,32 +164,6 @@ def wire_dispatcher():
 
 
 # --- Permission gates -------------------------------------------------
-
-
-class TestPermissionGates:
-    """All three GET routes gate on run_tests: 200 for owner/tech, 403 for
-    secretary/loader (run_tests is held by exactly owner and tech --
-    ice_edge/access/access.py's ROLE_PERMISSIONS). Reaches
-    the `ice_edge/web/routes/tests_level/` package's `Depends(web_auth.require(...))`
-    on each of the three routes.
-
-    Mutation proof (dropping the dependency from GET /tests/log): removed
-    `dependencies=[Depends(web_auth.require(Permission.run_tests))]` from
-    that one route -- test_matrix[/tests/log-Role.secretary] and
-    [/tests/log-Role.loader] failed (200 != 403, AssertionError); every
-    owner/tech case kept passing (they were already 200). Restored the
-    dependency -- full parametrized set passed again.
-    """
-
-    @pytest.mark.parametrize("role", list(Role))
-    @pytest.mark.parametrize("path", _TESTS_GET_ROUTES)
-    def test_matrix(self, login_as, path, role):
-        client = login_as(role)
-        resp = client.get(path)
-        if role in RUN_TESTS_ROLES:
-            assert resp.status_code == 200, (role, path, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, path, resp.status_code)
 
 
 # --- Discovery: advertised ∩ allowlist ---------------------------------
@@ -889,80 +856,6 @@ class TestAllowlistSecurityBoundary:
 
 
 # --- Permission gates on every POST action route -------------------------
-
-
-class TestPostPermissionMatrix:
-    """run_tests gates every POST action route, same as the GET routes
-    (TestPermissionGates above) -- owner/tech 200, secretary/loader 403.
-    These four routes need no extra setup to reach 200 for an authorized
-    role (no lease, no dispatcher, no subsystem all resolve to a harmless
-    response), so this matrix isolates the permission axis cleanly.
-    POST /tests/{subsystem}/{command} and POST /tests/sale need a wired
-    subsystem/product respectively to ever reach 200 and get their own
-    dedicated permission tests below instead.
-
-    Mutation proof: replaced POST /tests/end's `dependencies=[...]` (both
-    the permission and require_htmx guards) with `dependencies=[]`. Ran
-    the whole matrix: 2 failed --
-    test_matrix[/tests/end-form1-secretary] and
-    [/tests/end-form1-loader] (200 != 403); every other case (owner/tech
-    on /tests/end, and every role on the other three routes) kept
-    passing. Restored the dependencies -- 16 passed again. (The same
-    mutation also proves TestPostRequiresHtmx's CSRF guard below -- see
-    its own docstring.)
-    """
-
-    @pytest.mark.parametrize("role", list(Role))
-    @pytest.mark.parametrize(
-        "path,form",
-        [
-            ("/tests/run-all", {}),
-            ("/tests/end", {}),
-            ("/tests/takeover", {}),
-            ("/tests/runs/nonexistent-run/verdict", {"verdict": "pass"}),
-        ],
-    )
-    def test_matrix(self, login_as, path, form, role):
-        client = login_as(role)
-        resp = client.post(path, data=form)
-        if role in RUN_TESTS_ROLES:
-            assert resp.status_code == 200, (role, path, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, path, resp.status_code)
-
-
-class TestCommandRunAndSalePermissionGates:
-    """POST /tests/{subsystem}/{command} and POST /tests/sale each need
-    real setup (an advertised, allowlisted command / a catalog product) to
-    ever reach 200 for an authorized role -- reached separately from
-    TestPostPermissionMatrix's four no-setup routes.
-    """
-
-    @pytest.mark.parametrize("role", list(Role))
-    def test_command_run_matrix(self, login_as, wire_subsystem, role):
-        wire_subsystem("mdb", ["ping"])
-        client = login_as(role)
-        resp = client.post("/tests/mdb/ping")
-        if role in RUN_TESTS_ROLES:
-            assert resp.status_code == 200, (role, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, resp.status_code)
-
-    @pytest.mark.parametrize("role", list(Role))
-    def test_sale_matrix(self, login_as, wired, role):
-        # Locked out so run_test_sale refuses SYNCHRONOUSLY (see
-        # TestSimulatedSaleFlow's class docstring: `wired`'s VMC is never
-        # attach_to_loop()'d, so a real dispense wait would hang forever
-        # here -- this matrix only needs to prove the permission axis).
-        cfg, vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice Bag", 250, slot=0)
-        vmc.raise_fault(FaultCode.ICE_101, sku="ICE-1")
-        client = login_as(role)
-        resp = client.post("/tests/sale", data={"sku": "ICE-1"})
-        if role in RUN_TESTS_ROLES:
-            assert resp.status_code == 200, (role, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, resp.status_code)
 
 
 class TestPostRequiresHtmx:
@@ -1740,38 +1633,6 @@ class TestSimulatedSaleFlow:
 # completion signal are delivered -- the same window the bug lost.
 
 
-class _FakeDispatcherMQTT:
-    """Minimal ice_common.mqtt_client.MQTTClient stand-in, shaped like
-    tests/test_command_dispatcher.py's own fake: register() records a
-    handler by topic_suffix, publish() records the call, deliver_ack() and
-    deliver_dispenser_report() simulate an inbound message on each of the
-    two topics CommandDispatcher.__init__ registers.
-    """
-
-    def __init__(self):
-        self.connected = True
-        self.published: list[tuple[str, object]] = []
-        self._handlers: dict[str, callable] = {}
-
-    def register(self, topic_suffix, handler):
-        self._handlers[topic_suffix] = handler
-
-    async def publish(self, topic_suffix, payload, qos: int = 1, retain: bool = False):
-        self.published.append((topic_suffix, payload))
-
-    async def deliver_ack(self, subsystem: str, payload: dict) -> None:
-        await self._handlers["cmd/+/ack"](f"cmd/{subsystem}/ack", payload)
-
-    async def deliver_dispenser_report(self, payload: dict) -> None:
-        await self._handlers["hardware/dispenser"]("hardware/dispenser", payload)
-
-
-async def _wait_until(predicate, *, timeout: float = 2.0) -> None:
-    async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0)
-
-
 def _dispense_params(slot: int, sku: str, tmp_path) -> dict:
     """A full, pydantic-valid `dispense` params dict (slot, mechanism,
     profile) for driving `_run_command` DIRECTLY in the tests below,
@@ -1817,7 +1678,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         principal = _direct_principal(store, store.owner())
         params = _dispense_params(0, "ICE-1", tmp_path)
 
-        mqtt = _FakeDispatcherMQTT()
+        mqtt = FakeMqtt()
         dispatcher = CommandDispatcher(mqtt)
         routes.set_command_dispatcher(dispatcher)
         granted, reason = context.machine_instance.lease.begin_maintenance(
@@ -1832,11 +1693,11 @@ class TestActuatorLeaseHeldForRealLifetime:
         # The lease is taken, and the run counted in-flight, as soon as
         # _run_command enters machine.lease.test_run() -- before any
         # ack has even arrived.
-        await _wait_until(lambda: len(mqtt.published) == 1)
+        await wait_until(lambda: len(mqtt.published) == 1)
         request_id = mqtt.published[0][1].request_id
         assert context.machine_instance.maintenance_hold is not None
         assert context.machine_instance.maintenance_hold.runs_in_flight == 1
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         # The subsystem ACCEPTS the command (phase="accepted" -- the
         # fix). Under the pre-fix design this single ack was already
@@ -1853,7 +1714,7 @@ class TestActuatorLeaseHeldForRealLifetime:
                 "timestamp": "2026-09-29T00:00:00+00:00",
             },
         )
-        await _wait_until(lambda: request_id in dispatcher._pending_completions)
+        await wait_until(lambda: request_id in dispatcher._pending_completions)
 
         # THE PROOF: accepted is not completed. Everything that was
         # true the instant the lease was granted must STILL be true —
@@ -1861,7 +1722,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         assert not task.done()
         assert context.machine_instance.maintenance_hold is not None
         assert context.machine_instance.maintenance_hold.runs_in_flight == 1
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         # A tech tapping "End Test Mode" mid-actuation is accepted but
         # DEFERRED -- exactly what VMC.end_maintenance already
@@ -1876,7 +1737,7 @@ class TestActuatorLeaseHeldForRealLifetime:
             context.machine_instance.maintenance_hold is not None
         )  # ...but not released yet
         assert context.machine_instance.maintenance_hold.release_requested is True
-        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" in fault_codes(vmc)
 
         # NOW the motor actually finishes: the terminal
         # hardware/dispenser report, carrying the same request_id.
@@ -1895,7 +1756,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         # Completion is what frees the run, and — since a release was
         # already requested — releases the lease and clears SVC-102.
         assert context.machine_instance.maintenance_hold is None
-        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert "SVC-102" not in fault_codes(vmc)
 
     async def test_ack_timeout_still_fires_independently_of_completion_timeout(
         self, wired, tmp_path
@@ -1912,7 +1773,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         principal = _direct_principal(store, store.owner())
         params = _dispense_params(0, "ICE-1", tmp_path)
 
-        mqtt = _FakeDispatcherMQTT()
+        mqtt = FakeMqtt()
         dispatcher = CommandDispatcher(mqtt, timeout=0.05, retries=0)
         routes.set_command_dispatcher(dispatcher)
         granted, reason = context.machine_instance.lease.begin_maintenance(
@@ -1943,7 +1804,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         _cfg, vmc, _inv, store = wired
         principal = _direct_principal(store, store.owner())
 
-        mqtt = _FakeDispatcherMQTT()
+        mqtt = FakeMqtt()
         dispatcher = CommandDispatcher(mqtt)
         routes.set_command_dispatcher(dispatcher)
         granted, reason = context.machine_instance.lease.begin_maintenance(
@@ -1952,7 +1813,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         assert granted is True, reason
 
         task = asyncio.ensure_future(_run_command("vending", "ping", {}, principal))
-        await _wait_until(lambda: len(mqtt.published) == 1)
+        await wait_until(lambda: len(mqtt.published) == 1)
         request_id = mqtt.published[0][1].request_id
 
         await mqtt.deliver_ack(

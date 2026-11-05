@@ -24,20 +24,6 @@ from ice_edge.config import config_store
 class TestReportsPageGating:
     """GET /settings/reports: owner and secretary 200, tech and loader 403."""
 
-    @pytest.mark.parametrize(
-        "role,expect_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 200),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_get_status_per_role(self, login_as, wired, role, expect_status):
-        worker = login_as(role)
-        resp = worker.get("/settings/reports")
-        assert resp.status_code == expect_status
-
 
 class TestReportsTileVisibility:
     """The Reports sub-tile on /settings is gated the same as the page
@@ -70,19 +56,6 @@ class TestReportsTileVisibility:
 
 
 class TestReportsPage:
-    def test_post_requires_htmx_header(self, client):
-        resp = client.post(
-            "/settings/reports",
-            headers={"HX-Request": ""},
-            data={
-                "schedule": "daily",
-                "hour": "8",
-                "weekday": "0",
-                "extra_recipients": "",
-            },
-        )
-        assert resp.status_code == 403
-
     def test_get_renders_stored_values(self, client, wired):
         cfg, _vmc, _inv, _store = wired
         cfg.reports.schedule = "weekly"

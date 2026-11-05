@@ -11,7 +11,7 @@ label rather than by poking a private task handle.
 `SlotProfile`/`DispenseCommand` the cycle builds is the real thing, not a
 hand-rolled stub. `FakeDispatcher` (same module) covers a successful ack,
 a rejected ack, `CommandTimeout`, and an arbitrary exception. `FakeFaults`
-and `FakeRecorder` are small local fakes recording exactly what
+and `FakeEventRecorder` (shared) are small local fakes recording exactly what
 `DispenseCycle` hands them, and `on_failed`/`on_request_id` are recording
 closures -- every test asserts on these recorded values, never bare call
 counts.
@@ -32,7 +32,7 @@ from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.ledger.event_recorder import SaleRecordingFailed
 from ice_edge.ledger.session_store import SessionSnapshot
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from tests.fakes import FakeTaskRunner
+from tests.fakes import FakeEventRecorder, FakeTaskRunner
 
 ICE = Product(sku="ICE-1", slot=0, kind="ice", name="Ice", price_cents=200)
 WATER = Product(sku="W-1", slot=1, kind="water", name="Water", price_cents=300)
@@ -57,25 +57,6 @@ class FakeFaults:
 
     def raise_fault(self, code, *, sku=None, outcome=None):
         self.raised.append((code, sku, outcome))
-
-
-class FakeRecorder:
-    """Stands in for the event recorder: records every `record`/
-    `record_sale` call; `fail_with`, when set, is raised by the next
-    `record_sale` call instead of recording it."""
-
-    def __init__(self):
-        self.events: list[tuple] = []
-        self.sales: list[tuple] = []
-        self.fail_with: Exception | None = None
-
-    def record(self, event_type, value=1.0, metadata=None):
-        self.events.append((event_type, value, metadata))
-
-    def record_sale(self, sku, name, slot, price, methods, ts=None):
-        if self.fail_with is not None:
-            raise self.fail_with
-        self.sales.append((sku, name, slot, price, methods))
 
 
 class FailureRecorder:
@@ -494,7 +475,7 @@ def test_classify_jam_on_water_fill_maps_to_mechanism_error_code(tmp_path, caplo
 
 
 async def test_record_writes_sale_with_share_sum_price():
-    recorder = FakeRecorder()
+    recorder = FakeEventRecorder()
     cycle, _ = make_cycle(
         product=ICE,
         shares={"cash": 100, "card": 75},
@@ -519,7 +500,7 @@ async def test_record_skipped_without_a_recorder():
 
 
 async def test_record_defaults_price_to_product_price_without_shares():
-    recorder = FakeRecorder()
+    recorder = FakeEventRecorder()
     cycle, _ = make_cycle(product=ICE, shares=None, recorder=lambda: recorder)
 
     recorded = await cycle.record()
@@ -537,7 +518,7 @@ async def test_record_defaults_price_to_product_price_without_shares():
 
 
 async def test_record_raises_data101_on_generic_failure():
-    recorder = FakeRecorder()
+    recorder = FakeEventRecorder()
     recorder.fail_with = RuntimeError("boom")
     faults = FakeFaults()
     cycle, _ = make_cycle(
@@ -554,7 +535,7 @@ async def test_record_raises_data101_on_generic_failure():
 
 
 async def test_record_raises_pay104_and_sets_transaction_uncertain():
-    recorder = FakeRecorder()
+    recorder = FakeEventRecorder()
     recorder.fail_with = SaleRecordingFailed("nowhere durable")
     faults = FakeFaults()
     certain_calls: list[bool] = []

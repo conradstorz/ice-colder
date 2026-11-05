@@ -14,6 +14,14 @@ async def settle(turns: int = 3) -> None:
         await asyncio.sleep(0)
 
 
+async def wait_until(predicate, *, timeout: float = 2.0) -> None:
+    """Yield to the loop until `predicate()` is true; `TimeoutError` after
+    `timeout` seconds. Polls with `sleep(0)`, so it never sleeps on the clock."""
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0)
+
+
 class _AsyncioWithSleep:
     """Stand-in for the `asyncio` module that overrides only `sleep`."""
 
@@ -37,4 +45,4 @@ def patch_module_sleep(module_name: str, sleep):
     return patch(f"{module_name}.asyncio", new=_AsyncioWithSleep(sleep))
 
 
-__all__ = ["settle", "patch_module_sleep"]
+__all__ = ["settle", "wait_until", "patch_module_sleep"]

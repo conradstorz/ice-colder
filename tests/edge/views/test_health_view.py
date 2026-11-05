@@ -13,6 +13,7 @@ import asyncio
 
 import pytest
 
+from tests.edge.fault_helpers import fault_codes
 from ice_common.config_model import ConfigModel
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.app.machine import Machine
@@ -147,7 +148,7 @@ def _pay104_machine(tmp_path):
 @pytest.fixture
 def scenario(tmp_path):
     machine, monitor, avail, recorder = _pay104_machine(tmp_path)
-    codes = {f["code"] for f in machine.vmc.active_faults()}
+    codes = fault_codes(machine.vmc)
     assert {"PAY-104", "ICE-301"} <= codes, "positive control: both faults active"
     assert machine.pending_sale_for_recovery() is not None
     yield machine, monitor, avail, recorder

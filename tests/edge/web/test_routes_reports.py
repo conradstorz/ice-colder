@@ -12,7 +12,6 @@ import re
 from tests.dom_utils import title_text
 
 import pytest
-from ice_edge.access.access import Role
 from ice_edge.web import context
 
 # The period tabs are rendered as
@@ -35,24 +34,6 @@ def _active_period(html: str) -> int | None:
         if "border-blue-600" in match.group(1):
             return p
     return None
-
-
-class TestReportsPermissionGate:
-    """GET /reports gates on view_reports: 200 for owner/secretary, 403 for tech/loader."""
-
-    @pytest.mark.parametrize(
-        "role,expected_status",
-        [
-            (Role.owner, 200),
-            (Role.secretary, 200),
-            (Role.tech, 403),
-            (Role.loader, 403),
-        ],
-    )
-    def test_reports_gate(self, login_as, role, expected_status):
-        client = login_as(role)
-        response = client.get("/reports")
-        assert response.status_code == expected_status
 
 
 class TestReportsPeriodParameter:

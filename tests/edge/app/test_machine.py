@@ -3,7 +3,7 @@ reduction plan, Task 5).
 
 These exercise `Machine` directly -- no routes, no real MQTT/health/
 availability -- with the same small fake sinks `tests/fakes.py` already
-provides, plus a couple of local fakes (`RecordingMqtt`, `FakeSessionStore`)
+provides, plus a couple of local fakes (`FakeSessionStore`)
 for the pieces that need a `load()`/recording `register()` those shared
 fakes don't offer.
 """
@@ -25,21 +25,7 @@ from ice_edge.ledger.event_recorder import EventRecorder
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from ice_edge.faults.availability import Availability
-from tests.fakes import FakeAvailability, FakeTaskRunner, settle
-
-
-class RecordingMqtt:
-    """Records every `register()` call, in order, plus every publish."""
-
-    def __init__(self) -> None:
-        self.registered: list[tuple[str, object]] = []
-        self.published: list[tuple[str, object, bool]] = []
-
-    def register(self, topic, handler) -> None:
-        self.registered.append((topic, handler))
-
-    async def publish(self, topic, payload, qos=1, retain=False) -> None:
-        self.published.append((topic, payload, retain))
+from tests.fakes import FakeAvailability, FakeMqtt, FakeTaskRunner, settle
 
 
 class FakeSessionStore:
@@ -175,7 +161,7 @@ class TestConstruction:
 class TestSetMqttClient:
     def test_registers_every_topic_in_order_to_bound_methods(self):
         machine = Machine(ConfigModel())
-        mqtt = RecordingMqtt()
+        mqtt = FakeMqtt()
         machine.set_mqtt_client(mqtt)
 
         assert machine.mqtt_client is mqtt

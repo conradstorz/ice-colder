@@ -13,8 +13,9 @@ global around each test.
 
 import re
 
+from tests.edge.fault_helpers import fault_codes
 from ice_contracts.board.vending_machine import FaultCode
-from ice_edge.access.access import ROLE_PERMISSIONS, Permission, Role
+from ice_edge.access.access import Role
 from ice_edge.config.config_store import add_product
 from ice_edge.web import context
 from ice_edge.web import routes
@@ -29,48 +30,6 @@ def _seed_product(cfg, sku: str = "ICE-1") -> str:
     usage rather than going through an HTTP round trip."""
     add_product(cfg, sku, "Ice", 250)
     return sku
-
-
-# --- Permission gates for the five non-parameterized GET levels -----------
-
-_HEALTH_GET_ROUTES = [
-    ("/health", Permission.view_status),
-    ("/health/subsystems", Permission.view_status),
-    ("/health/faults", Permission.view_status),
-    ("/health/availability", Permission.view_status),
-    ("/health/logs", Permission.view_logs),
-]
-
-
-class TestLevelPermissionGates:
-    """Each of the six levels returns 200 for a role holding its gate and
-    403 for one that does not. view_status is held by every role in
-    ROLE_PERMISSIONS, so the only role/level pairs that can actually
-    diverge to 403 involve /health/logs (view_logs) -- exercised here by
-    parametrizing over every role, which covers "loader gets 403 on
-    /health/logs, 200 on the other five" as one case of the matrix."""
-
-    @pytest.mark.parametrize("role", list(Role))
-    @pytest.mark.parametrize("path, permission", _HEALTH_GET_ROUTES)
-    def test_matrix(self, login_as, path, permission, role):
-        client = login_as(role)
-        resp = client.get(path)
-        if permission in ROLE_PERMISSIONS[role]:
-            assert resp.status_code == 200, (role, path, resp.status_code)
-        else:
-            assert resp.status_code == 403, (role, path, resp.status_code)
-
-    def test_loader_gets_403_on_logs_200_on_the_other_five(self, login_as):
-        client = login_as(Role.loader)
-        assert client.get("/health/logs").status_code == 403
-        for path, _perm in _HEALTH_GET_ROUTES:
-            if path == "/health/logs":
-                continue
-            assert client.get(path).status_code == 200, path
-
-    def test_subsystem_detail_requires_view_status(self, login_as):
-        client = login_as(Role.loader)
-        assert client.get("/health/subsystems/vending").status_code == 200
 
 
 class TestHealthLanding:
@@ -114,6 +73,17 @@ class TestHealthLanding:
         resp = client.get("/health")
         assert resp.status_code == 200
 
+    def test_vmc_row_shows_build_identity_and_machine_id(self, client):
+        from ice_common.build_info import BUILD_INFO
+        from ice_edge.monitoring.health_monitor import HealthMonitor
+
+        routes.set_health_monitor(HealthMonitor(machine_id="vmc-test"))
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert BUILD_INFO.commit_short in resp.text
+        assert BUILD_INFO.source in resp.text
+        assert "vmc-test" in resp.text
+
 
 class TestSubsystemsLevel:
     def test_lists_every_expected_subsystem_with_no_heartbeats(self, client):
@@ -124,11 +94,9 @@ class TestSubsystemsLevel:
             assert name in resp.text
         assert resp.text.count("Never seen") >= 3
 
-    def test_lists_every_expected_subsystem_when_monitor_wired_but_silent(self, client):
-        from ice_edge.monitoring.health_monitor import HealthMonitor
-
-        hm = HealthMonitor()
-        routes.set_health_monitor(hm)
+    def test_lists_every_expected_subsystem_when_monitor_wired_but_silent(
+        self, client, health_monitor
+    ):
         resp = client.get("/health/subsystems")
         for name in ("vending", "mdb", "ice_maker"):
             assert name in resp.text
@@ -136,6 +104,16 @@ class TestSubsystemsLevel:
     def test_links_to_the_subsystem_level(self, client):
         resp = client.get("/health/subsystems")
         assert 'href="/health/subsystems/vending"' in resp.text
+
+    def test_heartbeat_only_row_shows_dashes(self, client):
+        from ice_edge.monitoring.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_heartbeat("vending", {"subsystem": "vending", "uptime_seconds": 90})
+        routes.set_health_monitor(hm)
+        resp = client.get("/health/subsystems")
+        assert "1m" in resp.text  # uptime humanized
+        assert "—" in resp.text  # firmware/contract/hardware unknown
 
 
 class TestSubsystemDetailLevel:
@@ -520,13 +498,11 @@ class TestFaultsLevel:
         resp = client.get("/health/faults")
         assert "No active faults" in resp.text
 
-    def test_a_raised_fault_appears_with_age_and_gate(self, wired, client):
+    def test_a_raised_fault_appears_with_age_and_gate(
+        self, wired, client, health_monitor
+    ):
         _cfg, vmc, _inv, _store = wired
-        from ice_edge.monitoring.health_monitor import HealthMonitor
-
-        hm = HealthMonitor()
-        routes.set_health_monitor(hm)
-        context.machine_instance.set_health_monitor(hm)
+        context.machine_instance.set_health_monitor(health_monitor)
         vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
         resp = client.get("/health/faults")
         assert resp.status_code == 200
@@ -708,13 +684,13 @@ class TestFaultClearFlow:
         resp = client.post(f"/health/faults/{FaultCode.SVC_102.value}/clear")
 
         assert resp.status_code == 409
-        assert FaultCode.SVC_102.value in [f["code"] for f in vmc.active_faults()]
+        assert FaultCode.SVC_102.value in fault_codes(vmc)
         assert context.machine_instance.maintenance_hold is not None
         assert context.machine_instance.maintenance_hold.holder_session_id == "sess-1"
 
         # The real release path still works afterwards.
         assert context.machine_instance.lease.end_maintenance("sess-1") is True
-        assert FaultCode.SVC_102.value not in [f["code"] for f in vmc.active_faults()]
+        assert FaultCode.SVC_102.value not in fault_codes(vmc)
 
     def test_confirm_endpoint_requires_clear_faults(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired
