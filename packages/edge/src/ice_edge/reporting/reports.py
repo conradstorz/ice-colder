@@ -555,7 +555,7 @@ def collections(recorder, limit: int = 50) -> list[dict]:
     return result
 
 
-def _last_collection_ts(conn: sqlite3.Connection) -> str | None:
+def _last_collection_ts(conn: sqlite3.Connection) -> float | None:
     """`ts` of the newest collection (`id DESC` breaks a tied `ts`), or
     None when there is none. `EventRecorder._insert_cash_collection` keeps
     an identical query (the ledger layer cannot import reporting)."""
