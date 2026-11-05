@@ -1,6 +1,7 @@
 """atomic_write: the one tmp + fsync + (bak) + replace + dir-fsync helper."""
 
 import os
+import stat
 
 import pytest
 
@@ -35,6 +36,18 @@ def test_mode_is_applied_under_permissive_umask(tmp_path):
         os.umask(previous)
     assert target.stat().st_mode & 0o777 == 0o600
     assert (tmp_path / "secret.json.bak").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+@pytest.mark.parametrize("umask", [0o077, 0o177, 0o400])
+def test_mode_is_applied_exactly_under_restrictive_umask(tmp_path, umask):
+    target = tmp_path / "secret.json"
+    previous = os.umask(umask)
+    try:
+        atomic_write(target, "{}", mode=0o600)
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
 def test_backup_keeps_previous_content(tmp_path):
