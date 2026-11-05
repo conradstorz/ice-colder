@@ -2,13 +2,12 @@
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
-from loguru import logger
 from pydantic import SecretStr
 
-from ice_edge.config import config_store
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
+from ice_edge.web.routes.settings.common import save_or_rerender
 from ice_ui.levels import (
     LEVEL_SETTINGS_PAYMENTS,
 )
@@ -82,9 +81,6 @@ async def update_payments(
         if _secret_changed(paypal_client_secret):
             paypal.client_secret = SecretStr(paypal_client_secret)
 
-    try:
-        config_store.save_config(context.config)
-    except Exception as e:
-        logger.error(f"settings/payments: save_config failed: {e}")
-        return _render_payments_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/payments"})
+    return save_or_rerender(
+        "payments", lambda error: _render_payments_form(request, error=error)
+    )

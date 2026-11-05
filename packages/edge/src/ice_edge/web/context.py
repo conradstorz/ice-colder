@@ -22,10 +22,10 @@ import asyncio  # noqa: F401
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from ice_common.config_model import ConfigModel
+from ice_common.config_model import ConfigModel, Product
 from loguru import logger
 
 from ice_contracts.cloud.report import HealthSummary
@@ -276,6 +276,36 @@ def template_context(request: Request, level: str | None = None, **extra) -> dic
         ctx["badge"] = badge
     ctx.update(extra)
     return ctx
+
+
+def confirming_flag(confirming: str | None = Query(default=None)) -> bool:
+    """confirm_button.html's confirm_url contract: True (render the
+    Confirm/Cancel pair) unless the query value is the literal "false"."""
+    return confirming != "false"
+
+
+def render_confirm(request: Request, template: str, **ctx):
+    """Render a confirm-state fragment: `template` with `template_context`."""
+    return templating.templates.TemplateResponse(
+        request, template, template_context(request, **ctx)
+    )
+
+
+def hx_redirect(url: str) -> HTMLResponse:
+    """An empty 200 whose HX-Redirect header makes htmx navigate to *url*."""
+    return HTMLResponse("", headers={"HX-Redirect": url})
+
+
+def find_product(sku: str) -> Product | None:
+    return next((p for p in config.products if p.sku == sku), None)
+
+
+def product_or_404(sku: str) -> Product:
+    """A missing or deleted SKU is a shell 404, never a bare JSON 404."""
+    product = find_product(sku)
+    if product is None:
+        raise HTTPException(status_code=404, detail=f"No such product: {sku}")
+    return product
 
 
 def _can_email_owner(owner) -> bool:

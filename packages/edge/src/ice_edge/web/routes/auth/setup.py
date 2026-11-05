@@ -146,17 +146,8 @@ async def setup_submit(
     # §3.3 step 3) before the codes step; ordinary first-owner setup
     # goes straight to the codes step as before.
     next_step = "/setup/review" if in_transfer else "/setup/codes"
-    resp = HTMLResponse("", headers={"HX-Redirect": next_step})
-    web_auth.set_cookie(
-        resp, request, web_auth.SESSION_COOKIE, session_id, max_age=None
-    )
-    web_auth.set_cookie(
-        resp,
-        request,
-        web_auth.DEVICE_COOKIE,
-        token,
-        max_age=web_auth.DEVICE_COOKIE_MAX_AGE,
-    )
+    resp = context.hx_redirect(next_step)
+    web_auth.start_session(resp, request, session_id, token)
     return resp
 
 
@@ -263,7 +254,7 @@ async def finish_setup(request: Request):
     context._pending_codes = []
     if context.display_controller is not None:
         context.display_controller.clear_setup_code()
-    return HTMLResponse("", headers={"HX-Redirect": "/"})
+    return context.hx_redirect("/")
 
 
 # --- Task 19: reviewing retained users after a completed transfer ---
@@ -331,7 +322,7 @@ def _review_response_after(request: Request, order: list, user_id: str):
         if candidate is not None:
             return _setup_review_response(request, candidate)
         idx += 1
-    return HTMLResponse("", headers={"HX-Redirect": "/setup/codes"})
+    return context.hx_redirect("/setup/codes")
 
 
 @router.get(

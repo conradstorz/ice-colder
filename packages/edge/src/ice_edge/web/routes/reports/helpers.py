@@ -5,7 +5,6 @@ from datetime import datetime
 from ice_contracts.money import cents_to_dollar_text, format_cents
 
 from ice_edge.reporting import reports as reports_service
-from ice_edge.web import context
 
 # Bucket defaults per range preset (design §3's "By period" row): day for
 # 7d/30d, week for 90d, month for 12m/all.
@@ -72,10 +71,6 @@ def resolve_bucket(range_key: str, bucket: str | None) -> str:
     if bucket in _VALID_BUCKETS and not (range_key == "all" and bucket == "day"):
         return bucket
     return _default_bucket(range_key)
-
-
-def _find_product(sku: str):
-    return next((p for p in context.config.products if p.sku == sku), None)
 
 
 def _ts_display(ts: float) -> str:

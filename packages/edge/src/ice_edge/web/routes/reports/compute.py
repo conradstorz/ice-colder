@@ -2,7 +2,7 @@
 
 import asyncio
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 
 from ice_contracts.money import format_cents
 from ice_edge.reporting import reports as reports_service
@@ -25,7 +25,6 @@ from .helpers import (
     PERIOD_HEADER,
     PRODUCT_CSV_MONEY,
     PRODUCT_HEADER,
-    _find_product,
     csv_rows as csv_rows_for,
     _fmt,
     _totalize_period,
@@ -40,18 +39,31 @@ from .helpers import (
 # ------------------------------------------------------------------
 
 
-async def _compute_period(range_key: str, bucket_key: str) -> dict:
+async def _period_rows(
+    range_key: str, bucket_key: str, sku: str | None = None
+) -> tuple[list[dict], dict, list[dict], list[str]]:
+    """The by-period query shared by the period and per-product reports:
+    (rows, total, csv_rows, body_lines), body_lines ending in the Total line."""
     rows: list[dict] = []
     if context.event_recorder:
         window = reports_service.resolve_window(range_key)
-        rows = await asyncio.to_thread(
-            reports_service.by_period, context.event_recorder, window, bucket_key
-        )
+        if sku is None:
+            rows = await asyncio.to_thread(
+                reports_service.by_period, context.event_recorder, window, bucket_key
+            )
+        else:
+            rows = await asyncio.to_thread(
+                reports_service.by_period,
+                context.event_recorder,
+                window,
+                bucket_key,
+                None,
+                sku,
+            )
     total = _totalize_period(rows)
     csv_rows = csv_rows_for(
         [*rows, {"bucket_start": "Total", **total}], PERIOD_CSV_MONEY
     )
-
     lines = [
         f"{r['bucket_start']}: revenue {_fmt(r['revenue_cents'], money=True)}, "
         f"vends {r['vends']}, failed {_fmt(r['failed_vends'])}, "
@@ -65,6 +77,11 @@ async def _compute_period(range_key: str, bucket_key: str) -> dict:
         f"refunds {_fmt(total['refunds_cents'], money=True)}, "
         f"uptime {_fmt(total['uptime_pct'])}"
     )
+    return rows, total, csv_rows, lines
+
+
+async def _compute_period(range_key: str, bucket_key: str) -> dict:
+    rows, total, csv_rows, lines = await _period_rows(range_key, bucket_key)
 
     return {
         "rows": rows,
@@ -110,25 +127,9 @@ async def _compute_product_sku(range_key: str, bucket_key: str, sku: str) -> dic
     # every other level's shell 404: a real SKU with zero sales in the
     # window must still render 200 with a zero row, never a 404, and
     # this ordering is what guarantees that.
-    product = _find_product(sku)
-    if product is None:
-        raise HTTPException(status_code=404, detail=f"No such product: {sku}")
+    product = context.product_or_404(sku)
 
-    rows: list[dict] = []
-    if context.event_recorder:
-        window = reports_service.resolve_window(range_key)
-        rows = await asyncio.to_thread(
-            reports_service.by_period,
-            context.event_recorder,
-            window,
-            bucket_key,
-            None,
-            sku,
-        )
-    total = _totalize_period(rows)
-    csv_rows = csv_rows_for(
-        [*rows, {"bucket_start": "Total", **total}], PERIOD_CSV_MONEY
-    )
+    rows, total, csv_rows, lines = await _period_rows(range_key, bucket_key, sku)
 
     # The breadcrumb uses the CATALOG's product name -- never a name
     # derived from query rows, which carry no `name` field at all for
@@ -145,19 +146,6 @@ async def _compute_product_sku(range_key: str, bucket_key: str, sku: str) -> dic
         f"/reports/product/{sku_url_segment(sku)}",
     )
 
-    lines = [
-        f"{r['bucket_start']}: revenue {_fmt(r['revenue_cents'], money=True)}, "
-        f"vends {r['vends']}, failed {_fmt(r['failed_vends'])}, "
-        f"refunds {_fmt(r['refunds_cents'], money=True)}, "
-        f"uptime {_fmt(r['uptime_pct'])}"
-        for r in rows
-    ]
-    lines.append(
-        f"Total: revenue {_fmt(total['revenue_cents'], money=True)}, "
-        f"vends {total['vends']}, failed {_fmt(total['failed_vends'])}, "
-        f"refunds {_fmt(total['refunds_cents'], money=True)}, "
-        f"uptime {_fmt(total['uptime_pct'])}"
-    )
     body = f"{product.name} ({sku}) by period:\n" + "\n".join(lines)
 
     return {

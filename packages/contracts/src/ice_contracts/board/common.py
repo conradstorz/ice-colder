@@ -67,10 +67,17 @@ class ChannelDescriptor(BaseModel):
 # subsystem answers `unsupported` at runtime, the model never rejects it.
 
 
+# Inclusive (min, max) bounds of the two actuator params; the validators below
+# and the Tests level's param widgets both read these.
+WATER_VALVE_SECONDS_RANGE: tuple[int, int] = (1, 10)
+POWER_CYCLE_DWELL_RANGE: tuple[int, int] = (5, 300)
+
+
 def _validate_power_cycle(params: dict) -> None:
+    lo, hi = POWER_CYCLE_DWELL_RANGE
     dwell = params.get("dwell_seconds")
-    if dwell is None or not (5 <= dwell <= 300):
-        raise ValueError("power_cycle requires dwell_seconds in [5, 300]")
+    if dwell is None or not (lo <= dwell <= hi):
+        raise ValueError(f"power_cycle requires dwell_seconds in [{lo}, {hi}]")
 
 
 def _validate_set_interval(params: dict) -> None:
@@ -80,9 +87,10 @@ def _validate_set_interval(params: dict) -> None:
 
 
 def _validate_water_valve(params: dict) -> None:
+    lo, hi = WATER_VALVE_SECONDS_RANGE
     seconds = params.get("seconds")
-    if seconds is None or not (1 <= seconds <= 10):
-        raise ValueError("water_valve requires seconds in [1, 10]")
+    if seconds is None or not (lo <= seconds <= hi):
+        raise ValueError(f"water_valve requires seconds in [{lo}, {hi}]")
 
 
 def _validate_dispense_params(params: dict) -> None:

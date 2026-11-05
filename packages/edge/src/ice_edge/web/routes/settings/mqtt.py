@@ -8,14 +8,13 @@ module avoids importing main.py and creating a cycle through the web app.
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
-from loguru import logger
 from pydantic import SecretStr
 
-from ice_edge.config import config_store
 from ice_edge.access.access import Permission
 from ice_edge.config.env_overrides import mqtt_env_overrides
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
+from ice_edge.web.routes.settings.common import save_or_rerender
 from ice_ui.levels import (
     LEVEL_SETTINGS_MQTT,
 )
@@ -95,9 +94,6 @@ async def update_mqtt(
         mqtt.password = SecretStr(password)
     mqtt.broker_port = broker_port
 
-    try:
-        config_store.save_config(context.config)
-    except Exception as e:
-        logger.error(f"settings/mqtt: save_config failed: {e}")
-        return _render_mqtt_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/mqtt"})
+    return save_or_rerender(
+        "mqtt", lambda error: _render_mqtt_form(request, error=error)
+    )

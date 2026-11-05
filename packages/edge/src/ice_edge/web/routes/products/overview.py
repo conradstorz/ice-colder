@@ -11,12 +11,10 @@ from ice_ui.levels import LEVEL_PRODUCTS
 from ice_ui.templating import templates
 
 from .helpers import (
-    _get_or_404,
     _inventory_count,
     _is_tracked,
     _locked_skus,
     _product_level,
-    _require_any,
 )
 
 router = APIRouter()
@@ -26,7 +24,9 @@ router = APIRouter()
     "/products",
     response_class=HTMLResponse,
     dependencies=[
-        Depends(_require_any(Permission.edit_catalog, Permission.edit_placement))
+        Depends(
+            web_auth.require_any(Permission.edit_catalog, Permission.edit_placement)
+        )
     ],
 )
 async def products_list(request: Request):
@@ -54,13 +54,14 @@ async def products_list(request: Request):
     "/products/{sku}",
     response_class=HTMLResponse,
     dependencies=[
-        Depends(_require_any(Permission.edit_catalog, Permission.edit_placement))
+        Depends(
+            web_auth.require_any(Permission.edit_catalog, Permission.edit_placement)
+        )
     ],
 )
 async def product_detail(request: Request, sku: str):
-    principal = web_auth.current_principal(request)
-    perms = principal.perms if principal else frozenset()
-    product = _get_or_404(sku)
+    perms = web_auth.perms_of(request)
+    product = context.product_or_404(sku)
     count = _inventory_count(sku)
     tracked = _is_tracked(sku)
     locked_code = _locked_skus().get(sku)

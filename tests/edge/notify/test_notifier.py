@@ -125,6 +125,7 @@ async def test_predicate_exception_delivers_locally():
 
 def _email_notifier(monkeypatch, smtp, clock=None):
     """A Notifier whose email gateway is 'configured' and whose SMTP call is `smtp`."""
+    from ice_edge.notify import mailer as mailer_mod
     from ice_edge.notify import notifier as notifier_mod
 
     n = Notifier(ConfigModel(), clock=clock)
@@ -135,7 +136,7 @@ def _email_notifier(monkeypatch, smtp, clock=None):
         lambda self, owner: (notifier_mod.Channel.email, gw),
     )
     monkeypatch.setattr(notifier_mod, "_is_placeholder_host", lambda _addr: False)
-    monkeypatch.setattr(notifier_mod, "smtp_send", smtp)
+    monkeypatch.setattr(mailer_mod, "smtp_send", smtp)
     return n
 
 

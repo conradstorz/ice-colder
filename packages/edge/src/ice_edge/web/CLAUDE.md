@@ -8,7 +8,7 @@ FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `route
 
 **The v2 shell** (`base.html` + `packages/ui/src/ice_ui/levels.py`) replaces the tabbed dashboard. Every level is a real URL and every level has its own breadcrumb trail and Back button that goes to the parent, not through history. `base.html` defines three blocks: `title` (for `<title>`), `body` (the sole content of `<main>`, where your level goes), and `bar_variant` (the bar header, not to be overridden). The bar itself uses `hx-swap-oob="true"` to deliver an out-of-band swap on every response, so a boosted navigation updates it with no reload. The navigation tree is a hierarchy of 25 named levels plus three parameterized ones (a product SKU, a subsystem name, a user id). Each level is defined in `packages/ui/src/ice_ui/levels.py` as a frozen dataclass with `title`, `url`, `parent`, and properties `crumbs`, `parent_url`, plus a classmethod `Level.child(parent, title, url)` for parameterized levels. The bar shows a signed-in chip (role chip plus name, the name hidden below `md`) linking to `/me` whenever `current_user` is set, so the login, setup and enrol pages have none.
 
-The tree, every URL with the permission that gates it (`Permission.<x>` from `packages/edge/src/ice_edge/access/access.py`; "A or B" is `_require_any(A, B)`, a local OR-semantics dependency defined in `products/helpers.py` and `settings/overview.py` — `web_auth.require()` itself is AND-only):
+The tree, every URL with the permission that gates it (`Permission.<x>` from `packages/edge/src/ice_edge/access/access.py`; "A or B" is `web_auth.require_any(A, B)`; `web_auth.require()` itself is AND-only):
 
 | URL | Gate |
 |---|---|

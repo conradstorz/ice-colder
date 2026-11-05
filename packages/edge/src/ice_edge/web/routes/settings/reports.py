@@ -2,14 +2,13 @@
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
-from loguru import logger
 from pydantic import ValidationError
 
 from ice_common.config_model import ReportsConfig
-from ice_edge.config import config_store
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
+from ice_edge.web.routes.settings.common import save_or_rerender, split_lines
 from ice_ui.levels import (
     LEVEL_SETTINGS_REPORTS,
 )
@@ -17,17 +16,6 @@ from ice_ui.templating import templates
 
 
 router = APIRouter()
-
-
-def _parse_extra_recipients(raw: str) -> list[str]:
-    """One address per line (commas also accepted, matching /settings/web's
-    trusted_proxies convention in this same module) -> a clean list with
-    blank lines dropped. A wholly blank textarea must produce `[]`, never
-    `[""]` — the value that would later make the scheduler try to email an
-    empty address (task 12 brief)."""
-    return [
-        line.strip() for line in raw.replace(",", "\n").splitlines() if line.strip()
-    ]
 
 
 def _reports_validation_message(exc: ValidationError) -> str:
@@ -101,7 +89,7 @@ async def update_reports(
     weekday: int = Form(...),
     extra_recipients: str = Form(""),
 ):
-    recipients = _parse_extra_recipients(extra_recipients)
+    recipients = split_lines(extra_recipients)
     try:
         new_reports = ReportsConfig(
             schedule=schedule,
@@ -124,9 +112,6 @@ async def update_reports(
         )
 
     context.config.reports = new_reports
-    try:
-        config_store.save_config(context.config)
-    except Exception as e:
-        logger.error(f"settings/reports: save_config failed: {e}")
-        return _render_reports_form(request, error=f"Could not save changes: {e}")
-    return HTMLResponse("", headers={"HX-Redirect": "/settings/reports"})
+    return save_or_rerender(
+        "reports", lambda error: _render_reports_form(request, error=error)
+    )

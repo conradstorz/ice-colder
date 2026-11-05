@@ -45,8 +45,7 @@ def _render_devices_page(request: Request, *, notice: str | None = None):
     owner = context.access_store.owner()
     devices = sorted(context.access_store.devices.values(), key=lambda d: d.label)
     user_names = {u.id: u.name for u in context.access_store.users.values()}
-    principal = web_auth.current_principal(request)
-    perms = principal.perms if principal else frozenset()
+    perms = web_auth.perms_of(request)
     rows = []
     for d in devices:
         may_write = (
@@ -102,7 +101,7 @@ async def forget_device_route(request: Request, device_id: str):
     # it logged in one request longer than necessary.
     context.access_store.end_sessions_for_device(device_id)
     context.access_store.forget_device(device_id)
-    return HTMLResponse("", headers={"HX-Redirect": "/devices"})
+    return context.hx_redirect("/devices")
 
 
 @router.post(
@@ -118,4 +117,4 @@ async def toggle_device_shared_route(request: Request, device_id: str):
     principal = web_auth.current_principal(request)
     _guard_owner_device(principal, device)
     context.access_store.set_device_shared(device_id, not device.shared)
-    return HTMLResponse("", headers={"HX-Redirect": "/devices"})
+    return context.hx_redirect("/devices")

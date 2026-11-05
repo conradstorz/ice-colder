@@ -5,7 +5,8 @@ from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import LEVEL_TESTS_SALE
-from ice_edge.web.routes.tests_level.lease import _acquire_lease_or_refusal
+from ice_edge.web.routes.tests_level.commands import products_by_slot
+from ice_edge.web.routes.tests_level.lease import _refusal, _require_lease
 from ice_ui.templating import templates
 
 
@@ -26,13 +27,12 @@ async def tests_sale_picker(request: Request):
     is: "sale" would otherwise be swallowed as a (nonexistent)
     subsystem name by that single-segment route.
     """
-    products = (
-        sorted(context.config.products, key=lambda p: p.slot) if context.config else []
-    )
     return templates.TemplateResponse(
         request,
         "tests_sale.html",
-        context.template_context(request, level=LEVEL_TESTS_SALE, products=products),
+        context.template_context(
+            request, level=LEVEL_TESTS_SALE, products=products_by_slot()
+        ),
     )
 
 
@@ -68,22 +68,11 @@ async def tests_sale_run(request: Request, sku: str = Form(...)):
     if product is None:
         raise HTTPException(status_code=404, detail=f"No such product: {sku}")
 
+    refused = _require_lease(request, principal)
+    if refused is not None:
+        return refused
+
     machine = context.machine_instance
-    if machine is None:
-        return templates.TemplateResponse(
-            request,
-            "partials/test_refusal.html",
-            context.template_context(request, reason="VMC not initialized"),
-        )
-
-    refusal = _acquire_lease_or_refusal(machine, principal)
-    if refusal:
-        return templates.TemplateResponse(
-            request,
-            "partials/test_refusal.html",
-            context.template_context(request, reason=refusal),
-        )
-
     try:
         result = await machine.test_sales.run_test_sale(
             sku, user_id=principal.user.id, user_name=principal.user.name
@@ -95,11 +84,7 @@ async def tests_sale_run(request: Request, sku: str = Form(...)):
         # run_test_sale's own "could not select" guard (locked out,
         # sold out) or "no lease held" (a race against the check above).
         # Either way this is a refusal, not a 500.
-        return templates.TemplateResponse(
-            request,
-            "partials/test_refusal.html",
-            context.template_context(request, reason=str(exc)),
-        )
+        return _refusal(request, str(exc))
 
     return templates.TemplateResponse(
         request,

@@ -3,39 +3,14 @@
 import re
 from decimal import Decimal, InvalidOperation
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 
 from ice_common.config_model import MAX_PRICE_CENTS
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
 from ice_contracts.money import dollars_to_cents
-from ice_edge.access.access import Permission
-from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import LEVEL_PRODUCTS, LEVEL_PRODUCTS_NEW, Level
 from ice_ui.templating import templates
-
-
-def _require_any(*permissions: Permission):
-    """FastAPI dependency: a live session holding at least one of
-    *permissions*.
-
-    web_auth.require() requires every listed permission (AND semantics);
-    GET /products and GET /products/{sku} must be reachable by
-    edit_catalog OR edit_placement (brief: "gate edit_catalog or
-    edit_placement"), which needs OR semantics that helper doesn't offer.
-    Mirrors web_auth.require()'s own unauthenticated/403 shape exactly, so
-    the two dependencies behave identically except for the AND/OR choice.
-    """
-
-    def dependency(request: Request) -> web_auth.Principal:
-        principal = web_auth.current_principal(request)
-        if principal is None:
-            raise web_auth._unauthenticated(request)
-        if not any(p in principal.perms for p in permissions):
-            raise HTTPException(status_code=403, detail="Not permitted")
-        return principal
-
-    return dependency
 
 
 def parse_price_form(text: str) -> int:
@@ -98,19 +73,6 @@ def _locked_skus() -> dict[str, str]:
     }
 
 
-def _find_product(sku: str):
-    return next((p for p in context.config.products if p.sku == sku), None)
-
-
-def _get_or_404(sku: str):
-    """A missing or deleted SKU is a shell 404 on every route that takes
-    one (brief resolution 7) — never a bare JSON 404."""
-    product = _find_product(sku)
-    if product is None:
-        raise HTTPException(status_code=404, detail=f"No such product: {sku}")
-    return product
-
-
 def _inventory_count(sku: str) -> int:
     """Counts live in InventoryManager, never in the stale
     Product.inventory_count seed field (part 1's d58da37, brief resolution
@@ -152,7 +114,7 @@ def _render_product_form(
     status_code: int = 200,
 ):
     if mode == "copy" and source_sku:
-        source_product = _find_product(source_sku)
+        source_product = context.find_product(source_sku)
         if source_product is not None:
             level = Level.child(
                 _product_level(source_product),

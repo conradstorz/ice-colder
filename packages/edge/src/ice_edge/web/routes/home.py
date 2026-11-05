@@ -89,8 +89,7 @@ router = APIRouter()
     dependencies=[Depends(web_auth.require(Permission.view_status))],
 )
 async def dashboard(request: Request):
-    principal = web_auth.current_principal(request)
-    perms = principal.perms if principal else frozenset()
+    perms = web_auth.perms_of(request)
     tiles = build_tiles(perms, _tile_lines())
     return templates.TemplateResponse(
         request,

@@ -34,8 +34,7 @@ def _alerts_mode() -> str | None:
     dependencies=[Depends(web_auth.require(Permission.view_status))],
 )
 async def health_home(request: Request):
-    principal = web_auth.current_principal(request)
-    perms = principal.perms if principal else frozenset()
+    perms = web_auth.perms_of(request)
     monitor_summary = (
         context.health_monitor.get_summary() if context.health_monitor else None
     )

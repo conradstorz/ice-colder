@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import AccessError, Permission
@@ -70,22 +70,19 @@ async def codes_page(request: Request):
     dependencies=[Depends(web_auth.require(Permission.manage_ownership))],
 )
 async def codes_regenerate_confirm(
-    request: Request, confirming: str | None = Query(default=None)
+    request: Request, confirming: bool = Depends(context.confirming_flag)
 ):
     """confirm_button.html's confirm_url contract (Task 5): absent or
     anything but the literal string "false" renders the confirming
     (Confirm/Cancel) state; "false" renders the plain first-tap button
     — this is what its Cancel button sends via hx-vals (brief
     resolution 8)."""
-    return templates.TemplateResponse(
+    return context.render_confirm(
         request,
         "partials/codes_regenerate.html",
-        context.template_context(
-            request,
-            confirming=(confirming != "false"),
-            new_codes=None,
-            error=None,
-        ),
+        confirming=confirming,
+        new_codes=None,
+        error=None,
     )
 
 

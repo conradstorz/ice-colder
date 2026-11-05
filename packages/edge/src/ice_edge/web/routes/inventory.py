@@ -23,7 +23,7 @@ import asyncio
 import sqlite3
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import Permission
@@ -94,19 +94,6 @@ def _latest_cash_collection_row(db_path: str):
         conn.close()
 
 
-def _find_product(sku: str):
-    return next((p for p in context.config.products if p.sku == sku), None)
-
-
-def _get_or_404(sku: str):
-    """An unknown SKU is a shell 404 on both GET and POST (brief resolution
-    9) — never a bare JSON 404."""
-    product = _find_product(sku)
-    if product is None:
-        raise HTTPException(status_code=404, detail=f"No such product: {sku}")
-    return product
-
-
 def _row_for(product) -> dict:
     """This row's template data. With no InventoryManager wired, nothing
     is tracked (brief resolution 4) — the page still renders, every
@@ -157,7 +144,7 @@ async def inventory_view(request: Request):
     ],
 )
 async def adjust_inventory(request: Request, sku: str, delta: str = Form(...)):
-    product = _get_or_404(sku)
+    product = context.product_or_404(sku)
 
     # delta is declared as `str`, not `int` — FastAPI's own validation
     # would otherwise turn a non-integer form value into a 422 before
@@ -203,7 +190,7 @@ async def adjust_inventory(request: Request, sku: str, delta: str = Form(...)):
     dependencies=[Depends(web_auth.require(Permission.collect_cash))],
 )
 async def collect_confirm(
-    request: Request, confirming: str | None = Query(default=None)
+    request: Request, confirming: bool = Depends(context.confirming_flag)
 ):
     """confirm_button.html's confirm_url contract: absent or anything but
     the literal string "false" renders the confirming (Confirm/Cancel)
@@ -214,21 +201,19 @@ async def collect_confirm(
     the last collection, the same figure the POST will record). A missing
     recorder or an unreadable database degrades to wording without a
     figure rather than failing the confirm."""
-    is_confirming = confirming != "false"
     expected_cash_cents = None
-    if is_confirming and context.event_recorder:
+    if confirming and context.event_recorder:
         try:
             expected_cash_cents = await asyncio.to_thread(
                 reports.cash_since_last_collection, context.event_recorder
             )
         except sqlite3.Error:
             expected_cash_cents = None
-    return templates.TemplateResponse(
+    return context.render_confirm(
         request,
         "partials/collect_cash_button.html",
-        context.template_context(
-            request, confirming=is_confirming, expected_cash_cents=expected_cash_cents
-        ),
+        confirming=confirming,
+        expected_cash_cents=expected_cash_cents,
     )
 
 
