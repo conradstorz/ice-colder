@@ -11,6 +11,7 @@ import asyncio
 import json
 import os  # noqa: F401  (tests patch inventory_manager.os.replace)
 import threading
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
@@ -42,6 +43,8 @@ class InventoryManager:
         # tmp-write-then-replace sequence against concurrent writers.
         self._save_lock = threading.Lock()
         self._save_health = HealthEdge(None, None)
+        self._notify_queue: deque[Callable[[], None] | None] = deque()
+        self._notify_lock = threading.RLock()
         self._load(products)
 
     def _load(self, products: list):
@@ -87,13 +90,21 @@ class InventoryManager:
                 atomic_write(Path(self._path), json.dumps(dict(self._counts), indent=2))
             except Exception as e:
                 logger.error(f"Failed to save inventory: {e}")
-                failed = True
+                cb = self._save_health.mark_failed()
             else:
-                failed = False
-        if failed:
-            self._save_health.failed()
-        else:
-            self._save_health.ok()
+                cb = self._save_health.mark_ok()
+            # Health follows write order: the transition is recorded under the
+            # write lock, the notification queued in the same order.
+            self._notify_queue.append(cb)
+        # Deliver outside the write lock, in write order. Whichever thread
+        # gets here first drains everyone's queued notifications.
+        with self._notify_lock:
+            while True:
+                try:
+                    pending = self._notify_queue.popleft()
+                except IndexError:
+                    break
+                self._save_health.deliver(pending)
 
     def get_count(self, sku: str) -> int:
         """Return current inventory count for a SKU."""

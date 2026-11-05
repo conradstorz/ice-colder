@@ -217,6 +217,79 @@ class TestSaveObservers:
         inv.set_count("ICE-SM", 4)
 
 
+class TestSaveHealthFollowsWriteOrder:
+    """Health transitions follow the order the writes landed, even when an
+    earlier writer's notification is still in flight."""
+
+    @staticmethod
+    def _run(tmp_path, monkeypatch, *, start_failing, first_fails):
+        from ice_edge.monitoring import inventory_manager as im
+
+        inv = InventoryManager(_products(), path=tmp_path / "inventory.json")
+        outcomes = {"next": start_failing}
+        real_write = im.atomic_write
+        second_written = threading.Event()
+        writes = []
+
+        def fake_write(path, text):
+            writes.append(1)
+            if outcomes["next"]:
+                outcomes["next"] = None
+                raise OSError("disk full")
+            outcomes["next"] = None
+            real_write(path, text)
+
+        monkeypatch.setattr(im, "atomic_write", fake_write)
+        calls: list[str] = []
+        release_first = threading.Event()
+        armed = False
+        first_in_callback = threading.Event()
+
+        def record(name):
+            def cb():
+                if armed and not calls:
+                    first_in_callback.set()
+                    assert release_first.wait(5)
+                calls.append(name)
+
+            return cb
+
+        inv.set_save_observers(record("failed"), record("ok"))
+        if start_failing:
+            outcomes["next"] = True
+            inv.set_count("ICE-SM", 1)  # health is now failing
+            calls.clear()
+        armed = True
+
+        outcomes["next"] = first_fails
+        a = threading.Thread(target=lambda: inv.set_count("ICE-SM", 2))
+        a.start()
+        assert first_in_callback.wait(5)
+
+        def second():
+            outcomes["next"] = not first_fails
+            inv.set_count("ICE-SM", 3)
+            second_written.set()
+
+        b = threading.Thread(target=second)
+        b.start()
+        # B cannot deliver while A's callback is in flight.
+        assert not second_written.wait(0.2)
+        release_first.set()
+        a.join(5)
+        b.join(5)
+        assert not a.is_alive() and not b.is_alive()
+        return calls
+
+    def test_older_success_cannot_clear_a_newer_failure(self, tmp_path, monkeypatch):
+        calls = self._run(tmp_path, monkeypatch, start_failing=True, first_fails=False)
+        assert calls == ["ok", "failed"]
+
+    def test_older_failure_cannot_outlive_a_newer_recovery(self, tmp_path, monkeypatch):
+        calls = self._run(tmp_path, monkeypatch, start_failing=False, first_fails=True)
+        assert calls == ["failed", "ok"]
+
+
 def test_save_fsyncs_the_file_before_replacing_it(tmp_path, monkeypatch):
     import os
 

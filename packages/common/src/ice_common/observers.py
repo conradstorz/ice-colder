@@ -72,16 +72,33 @@ class HealthEdge:
         return self._failing
 
     def failed(self) -> None:
-        with self._lock:
-            self._failing = True
-        self._call(self._on_failed)
+        self._call(self.mark_failed())
 
     def ok(self) -> None:
+        self._call(self.mark_ok())
+
+    def mark_failed(self) -> Callable[[], None] | None:
+        """Record a failure now; return the callback to deliver via ``deliver``.
+
+        For callers that must fix the state in write order under their own
+        lock and deliver the notification later, outside it."""
+        with self._lock:
+            self._failing = True
+        return self._on_failed
+
+    def mark_ok(self) -> Callable[[], None] | None:
+        """Record a success now; return the recovery callback to deliver, or
+        ``None`` when the previous outcome was not a failure."""
         with self._lock:
             if not self._failing:
-                return
+                return None
             self._failing = False
-        self._call(self._on_ok)
+        return self._on_ok
+
+    @staticmethod
+    def deliver(cb: Callable[[], None] | None) -> None:
+        """Run a callback returned by ``mark_*``; a raise is logged only."""
+        HealthEdge._call(cb)
 
     @staticmethod
     def _call(cb: Callable[[], None] | None) -> None:
