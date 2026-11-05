@@ -157,6 +157,7 @@ async def create_product(
             tracked=tracked,
             button=button,
             error="Inventory count cannot be negative.",
+            status_code=400,
         )
 
     try:
@@ -175,6 +176,7 @@ async def create_product(
             tracked=tracked,
             button=button,
             error="Slot must be a whole number.",
+            status_code=400,
         )
 
     success = add_product(
@@ -203,6 +205,7 @@ async def create_product(
                 "Could not add product — the SKU may already exist, or "
                 "the slot is invalid or already in use."
             ),
+            status_code=400,
         )
 
     if context.inventory_manager:
@@ -313,6 +316,7 @@ async def update_catalog(
                 error="Could not save changes.",
                 button_value=button,
             ),
+            status_code=400,
         )
     if context.machine_instance:
         context.machine_instance.gate.catalog_changed()

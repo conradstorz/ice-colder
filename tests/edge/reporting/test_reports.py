@@ -1028,6 +1028,27 @@ class TestCollections:
         assert rows[1]["user_id"] == "alice"
         assert rows[1]["expected_cash_cents"] == 100
 
+    def test_tied_ts_summary_and_cash_since_agree(self, recorder, monkeypatch):
+        """Two collections sharing a `ts`: `summary` and
+        `cash_since_last_collection` use the one shared last-collection
+        lookup and must report the same figure."""
+        frozen_ts = time.time()
+        recorder.record_sale("A", "Alpha", 1, 100, {"cash": 100}, ts=frozen_ts - 10)
+        monkeypatch.setattr(
+            "ice_edge.ledger.event_recorder.time.time", lambda: frozen_ts
+        )
+        recorder.record_cash_collection("alice", "Alice")
+        recorder.record_cash_collection("bob", "Bob")
+        recorder.flush()
+        monkeypatch.undo()
+        recorder.record_sale("B", "Beta", 2, 500, {"cash": 500}, ts=frozen_ts + 10)
+
+        window = (frozen_ts - 100, frozen_ts + 100)
+        assert reports.cash_since_last_collection(recorder) == 500
+        assert reports.summary(recorder, window)[
+            "cash_since_last_collection_cents"
+        ] == reports.cash_since_last_collection(recorder)
+
 
 # --------------------------------------------------------------------------
 # CSV rendering and filenames

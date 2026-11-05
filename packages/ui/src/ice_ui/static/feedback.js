@@ -24,6 +24,21 @@
     { passive: true }
   );
 
+  // htmx 1.9 does not swap 4xx responses. A route that rejects a form with
+  // 400/422 re-renders it as HTML with the error message, so swap those in.
+  // JSON error bodies (HTTPException) are left alone by the content-type test.
+  document.addEventListener("htmx:beforeSwap", function (evt) {
+    var xhr = evt.detail.xhr;
+    if (!xhr || (xhr.status !== 400 && xhr.status !== 422)) {
+      return;
+    }
+    var type = xhr.getResponseHeader("Content-Type") || "";
+    if (type.indexOf("text/html") === 0) {
+      evt.detail.shouldSwap = true;
+      evt.detail.isError = false;
+    }
+  });
+
   var TAPPABLE =
     'button, [type="submit"], [type="button"], a[href], label[for], summary, input:not([type="hidden"]), select, textarea';
 

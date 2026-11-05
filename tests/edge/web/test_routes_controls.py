@@ -67,6 +67,20 @@ class TestControlsInitialRender:
         assert "Reset" in resp.text
         assert "Shutdown" in resp.text
 
+    def test_initial_render_uses_confirm_command_tone(self, client):
+        """The first GET renders each command exactly as the confirm endpoint's
+        first-tap fragment does, so Restart and Shutdown keep the danger tone."""
+        page = client.get("/controls").text
+        for cmd in ["restart", "reset", "shutdown"]:
+            fragment = client.get(
+                f"/controls/confirm/{cmd}?confirming=false"
+            ).text.strip()
+            assert fragment in page, (
+                f"First render differs from confirm fragment for {cmd}"
+            )
+        assert "border-red-300" in page
+        assert "text-red-700" in page
+
     def test_initial_render_shows_three_button_wrappers(self, client):
         """Each button has its own wrapper with a unique ID."""
         resp = client.get("/controls")

@@ -638,6 +638,75 @@ class TestDevices:
         assert naive.id in s.devices
         assert stale.id not in s.devices
 
+    def test_creating_a_device_prunes_stale_untrusted_ones(self, tmp_path):
+        wall = FakeWallClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=FakeClock(), wall_clock=wall
+        )
+        abandoned, _ = s.create_device("Drive-by", shared=False)
+        wall.advance(hours=25)
+        fresh, _ = s.create_device("New phone", shared=False)
+        assert abandoned.id not in s.devices
+        assert fresh.id in s.devices
+        on_disk = json.loads(s.path.read_text(encoding="utf-8"))
+        assert abandoned.id not in on_disk["devices"]
+
+    def test_creating_a_device_keeps_a_trusted_one_of_the_same_age(self, tmp_path):
+        wall = FakeWallClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=FakeClock(), wall_clock=wall
+        )
+        user = s.create_user("Ada", None, Role.owner, "1379")
+        kept, _ = s.create_device("Tablet", shared=True)
+        s.trust_device(kept.id, user.id)
+        wall.advance(hours=25)
+        s.create_device("New phone", shared=False)
+        assert kept.id in s.devices
+
+    def test_load_prunes_a_stale_untrusted_device_in_the_file(self, tmp_path):
+        path = tmp_path / "access.json"
+        wall = FakeWallClock()
+        s1 = AccessStore(path=path, clock=FakeClock(), wall_clock=wall)
+        abandoned, _ = s1.create_device("Drive-by", shared=False)
+        wall.advance(hours=25)
+        s2 = AccessStore(path=path, clock=FakeClock(), wall_clock=wall)
+        assert abandoned.id not in s2.devices
+        on_disk = json.loads(path.read_text(encoding="utf-8"))
+        assert abandoned.id not in on_disk["devices"]
+
+    def test_load_never_writes_a_corrupt_file(self, tmp_path):
+        path = tmp_path / "access.json"
+        path.write_text("{not json", encoding="utf-8")
+        AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        assert path.read_text(encoding="utf-8") == "{not json"
+
+    def test_prune_skips_a_device_with_a_live_enroll_token(self, tmp_path):
+        wall = FakeWallClock()
+        clock = FakeClock()
+        s = AccessStore(path=tmp_path / "access.json", clock=clock, wall_clock=wall)
+        user = s.create_user("Ada", None, Role.owner, "1379")
+        mid, _ = s.create_device("Mid-enrolment", shared=False)
+        s.issue_enroll_token(user.id, mid.id)
+        wall.advance(hours=25)
+        assert s.prune_devices() == 0
+        assert mid.id in s.devices
+        clock.advance(601)  # token expired
+        assert s.prune_devices() == 1
+        assert mid.id not in s.devices
+
+    def test_prune_skips_a_device_with_a_live_pending_otp(self, tmp_path):
+        wall = FakeWallClock()
+        clock = FakeClock()
+        s = AccessStore(path=tmp_path / "access.json", clock=clock, wall_clock=wall)
+        user = s.create_user("Ada", None, Role.owner, "1379")
+        mid, _ = s.create_device("Mid-enrolment", shared=False)
+        s.issue_otp(user.id, mid.id)
+        wall.advance(hours=25)
+        assert s.prune_devices() == 0
+        assert mid.id in s.devices
+        clock.advance(601)
+        assert s.prune_devices() == 1
+
 
 class TestSessions:
     def test_session_resolves_to_its_user_and_device(self, store):
