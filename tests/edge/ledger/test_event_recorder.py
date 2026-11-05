@@ -1486,6 +1486,45 @@ class TestSalesJournalRejectedRows:
         assert json.loads(rejected_lines[0])["name"] == "Bad"
 
 
+class TestSalesJournalPreCentsRows:
+    """A pre-cents row is not converted (spec D1) but must never be silently
+    set aside: it stays in the journal so DATA-101 stays raised."""
+
+    def test_precents_row_stays_in_journal_and_is_counted(self, tmp_path, journal_path):
+        rec = EventRecorder(db_path=str(tmp_path / "e.db"))
+        legacy = {
+            "ts": 1.0,
+            "sku": "OLD",
+            "name": "Old",
+            "slot": 1,
+            "price": 2.5,
+            "methods": {"cash": 2.5},
+        }
+        good = {
+            "ts": 2.0,
+            "sku": "NEW",
+            "name": "New",
+            "slot": 1,
+            "price_cents": 100,
+            "methods": {"cash": 100},
+        }
+        journal_path.write_text(
+            "\n".join(json.dumps(e) for e in (legacy, good)) + "\n",
+            encoding="utf-8",
+        )
+
+        count = rec.replay_sales_journal()
+
+        assert count == 1
+        kept = journal_path.read_text(encoding="utf-8").splitlines()
+        assert [json.loads(k)["sku"] for k in kept] == ["OLD"]
+        assert rec.precents_journal_rows == 1
+        rejected = journal_path.with_name(
+            f"{journal_path.stem}.rejected{journal_path.suffix}"
+        )
+        assert not rejected.exists()
+
+
 class TestCorruptRecoveryRetryFailure:
     """Round 3, Finding A (CRITICAL): the post-quarantine retry of
     _init_db()/prune() inside __init__ must not be allowed to raise --
