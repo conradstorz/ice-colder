@@ -9,6 +9,7 @@ event loop.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import time
@@ -125,6 +126,14 @@ class SessionStore:
             raw_credits = raw.get("credits")
             # The "units" marker is still written but no longer interpreted.
             raw.pop("units", None)
+            # The previous release serialised the removed refund-id field as
+            # null on every save; a null carries no information and is
+            # dropped. A non-null id is a real legacy pending refund and is
+            # left in place so the unknown-key error below fails safe.
+            if "pending_refund_request_id" in raw and (
+                raw["pending_refund_request_id"] is None
+            ):
+                del raw["pending_refund_request_id"]
             if raw_credits is not None:
                 raw["credits"] = [Credit(**c) for c in raw_credits]
             # saved_at is money-load-bearing (PAY-104 recovery keys on the
@@ -157,7 +166,35 @@ class SessionStore:
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")
-            return SessionSnapshot(state="unknown", credit_escrow_cents=0, error=str(e))
+            detail = str(e)
+            kept = self._preserve_unreadable()
+            if kept is not None:
+                detail += f"; raw file kept at {kept}"
+            return SessionSnapshot(state="unknown", credit_escrow_cents=0, error=detail)
+
+    def _preserve_unreadable(self) -> Optional[Path]:
+        """Copy an unreadable snapshot beside the original, once per content.
+
+        An unreadable file may be the only record of a pending sale (for
+        example a pre-cents file, which is never converted). Clearing PAY-104
+        deletes ``session.json``; this copy is what survives for the owner.
+        The name carries a content hash so repeated loads do not pile up
+        copies and a different file never overwrites an earlier one.
+        """
+        try:
+            data = self._path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()[:16]
+            dest = self._path.with_name(
+                f"{self._path.stem}.unreadable.{digest}{self._path.suffix}"
+            )
+            # An existing copy is trusted only if it is byte-identical: a
+            # crash mid-copy must not leave a truncated "preserved" file.
+            if not (dest.exists() and dest.read_bytes() == data):
+                atomic_write(dest, data)
+            return dest
+        except OSError as oe:
+            logger.error(f"SessionStore: could not keep a copy of {self._path}: {oe}")
+            return None
 
     def clear(self) -> bool:
         """Remove the evidence file. Returns True only if it is gone afterwards."""

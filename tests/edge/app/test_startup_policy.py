@@ -186,6 +186,40 @@ def test_reconcile_replays_nonempty_journal_and_clears_data_101(tmp_path, monkey
     assert json.loads(methods_json) == {"cash_bill": 250}
 
 
+def test_reconcile_keeps_data_101_for_a_precents_journal_row(tmp_path, monkeypatch):
+    """A pre-cents row is not converted and must not clear DATA-101; the
+    fault message tells the operator it needs manual handling."""
+    journal_path = tmp_path / "sales-journal.jsonl"
+    monkeypatch.setattr(event_recorder_module, "JOURNAL_PATH", journal_path)
+    journal_path.write_text(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "sku": "OLD",
+                "name": "Old",
+                "slot": 0,
+                "price": 2.5,
+                "methods": {"cash": 2.5},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+    machine = Machine(config=ConfigModel())
+
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(str(m)), level="ERROR")
+    try:
+        reconcile_sales_journal_faults(machine, recorder)
+    finally:
+        logger.remove(sink)
+
+    assert "DATA-101" in {f["code"] for f in machine.vmc.active_faults()}
+    assert any("FAULT DATA-101" in m and "pre-cents" in m for m in messages)
+    assert journal_path.read_text(encoding="utf-8").strip()
+
+
 def test_reconcile_replay_returning_zero_does_not_wrongly_clear_data_101(
     tmp_path, monkeypatch
 ):

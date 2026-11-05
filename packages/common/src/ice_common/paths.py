@@ -76,6 +76,12 @@ def atomic_write(
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
             0o666 if mode is None else mode,
         )
+        if mode is not None:
+            # os.open's mode is filtered by the umask; apply it exactly.
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, mode)
+            elif os.name == "posix":
+                os.chmod(tmp, mode)
         if isinstance(data, bytes):
             f = os.fdopen(fd, "wb")
         else:

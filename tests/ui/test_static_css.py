@@ -209,3 +209,48 @@ def test_app_css_carries_touch_feedback_rules():
         "@media (hover:hover)",
     ):
         assert needle in css, f"{needle!r} missing from app.css — rebuild it"
+
+
+def _render_form_macro_variants() -> str:
+    """Render every form macro in every class-changing variant/flag combination.
+
+    `_control_class` returns bare class text that the caller drops into
+    `class="{{ ... }}"`, which `extract_classes` treats as dynamic; so the
+    template scan never sees those classes. Rendering the macros and
+    extracting from the output checks them against app.css.
+    """
+    from ice_ui.templating import templates
+
+    macros = templates.env.get_template("partials/form_macros.html").module
+    parts: list[str] = []
+    for variant in ("default", "plain"):
+        for mono in (False, True):
+            for extra_class in (None, "extra-probe"):
+                parts.append(
+                    str(
+                        macros.field(
+                            "f",
+                            "F",
+                            variant=variant,
+                            mono=mono,
+                            extra_class=extra_class,
+                            hint="h",
+                        )
+                    )
+                )
+        parts.append(str(macros.select("s", "S", [("a", "A")], "a", variant=variant)))
+    parts.append(str(macros.field("r", "R", readonly=True)))
+    parts.append(str(macros.textarea("t", "T", hint="h")))
+    for inline_cancel in (False, True):
+        parts.append(str(macros.form_actions("/x", inline_cancel=inline_cancel)))
+    parts.append(str(macros.form_error("boom")))
+    return "\n".join(parts)
+
+
+def test_every_form_macro_rendered_class_is_in_app_css():
+    css_text = APP_CSS_PATH.read_text(encoding="utf-8")
+    rendered = _render_form_macro_variants()
+    classes = extract_classes(rendered) - {"extra-probe"}
+    assert "font-mono" in classes and "rounded-md" in classes, classes
+    missing = sorted(c for c in classes if not class_is_covered(c, css_text))
+    assert not missing, f"form macro classes absent from app.css: {missing}"
