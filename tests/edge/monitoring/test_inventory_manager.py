@@ -305,6 +305,80 @@ class TestSaveHealthFollowsWriteOrder:
         assert calls == ["failed", "ok"]
 
 
+class TestSaveDelivery:
+    def test_delivery_is_outside_the_write_lock_and_in_write_order(
+        self, tmp_path, monkeypatch
+    ):
+        from ice_edge.monitoring import inventory_manager as im
+
+        real_write = im.atomic_write
+        fail_next = {"v": False}
+        second_written = threading.Event()
+        parked = threading.Event()
+        release = threading.Event()
+        calls: list[str] = []
+
+        def fake_write(path, text):
+            if fail_next["v"]:
+                raise OSError("disk full")
+            real_write(path, text)
+            if threading.current_thread().name == "second":
+                second_written.set()
+
+        monkeypatch.setattr(im, "atomic_write", fake_write)
+        inv = InventoryManager(_products(), path=tmp_path / "inventory.json")
+
+        def on_failed():
+            parked.set()
+            assert release.wait(5)
+            calls.append("failed")
+
+        inv.set_save_observers(on_failed, lambda: calls.append("ok"))
+
+        fail_next["v"] = True
+        a = threading.Thread(target=lambda: inv.set_count("ICE-SM", 2), name="first")
+        a.start()
+        assert parked.wait(5)  # A's failed-save notification is in flight
+
+        fail_next["v"] = False
+        b = threading.Thread(target=lambda: inv.set_count("ICE-SM", 3), name="second")
+        b.start()
+        # B's write is not blocked by A's parked delivery ...
+        assert second_written.wait(5)
+        assert json.loads((tmp_path / "inventory.json").read_text())["ICE-SM"] == 3
+        assert calls == []  # ... but its notification waits its turn
+        release.set()
+        a.join(5)
+        b.join(5)
+        assert not a.is_alive() and not b.is_alive()
+        assert calls == ["failed", "ok"]
+
+    def test_observer_may_save_again_without_deadlock(self, tmp_path):
+        inv = InventoryManager(_products(), path=tmp_path / "inventory.json")
+        calls: list[str] = []
+
+        def on_failed():
+            calls.append("failed:start")
+            (tmp_path / "inventory.json.tmp").rmdir()
+            inv.set_count("ICE-SM", 9)  # nested save from inside delivery
+            calls.append("failed:end")
+
+        inv.set_save_observers(on_failed, lambda: calls.append("ok"))
+        (tmp_path / "inventory.json.tmp").mkdir()
+        done = threading.Event()
+
+        def run():
+            inv.set_count("ICE-SM", 4)
+            done.set()
+
+        t = threading.Thread(target=run)
+        t.start()
+        assert done.wait(5)
+        t.join(5)
+        assert calls == ["failed:start", "ok", "failed:end"]
+        assert json.loads((tmp_path / "inventory.json").read_text())["ICE-SM"] == 9
+
+
 def test_save_fsyncs_the_file_before_replacing_it(tmp_path, monkeypatch):
     import os
 

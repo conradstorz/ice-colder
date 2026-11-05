@@ -132,7 +132,8 @@ class Timer:
     it (and a callback may re-arm, or clear a fault that re-enters
     ``cancel``, without cancelling its own task). ``armed`` is also false
     once the underlying task is done or has a cancellation pending (cancelled
-    by ``TaskRunner.cancel_pending``, even before the loop processes it) or when no loop was attached.
+    by ``TaskRunner.cancel_pending``, even before the loop processes it) or
+    when no loop was attached.
     """
 
     def __init__(self, tasks: TaskRunner, label: str) -> None:

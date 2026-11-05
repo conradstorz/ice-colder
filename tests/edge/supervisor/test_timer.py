@@ -109,8 +109,14 @@ async def test_cancel_pending_then_arm_if_idle_arms_a_replacement_at_once():
     runner.cancel_pending()
     # No await: the cancelled task has not yet been processed by the loop.
     assert not timer.armed
-    assert timer.arm_if_idle(0.01, lambda: hits.append("new")) is True
+    fired = asyncio.Event()
+
+    def new_cb():
+        hits.append("new")
+        fired.set()
+
+    assert timer.arm_if_idle(0.01, new_cb) is True
     assert timer.armed
 
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(fired.wait(), 5)
     assert hits == ["new"]

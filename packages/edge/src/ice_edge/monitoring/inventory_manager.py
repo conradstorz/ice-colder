@@ -78,9 +78,11 @@ class InventoryManager:
     ) -> None:
         """Observe save health. `on_failed` runs after each failed save;
         `on_ok` after a successful save only when the previous one failed.
-        Both run on the thread that called `_save` (the event loop, or the
-        `save_async` worker thread); a raising observer is logged, never
-        propagated."""
+        Notifications are delivered in write order, outside the write lock, by
+        whichever saving thread gets there first (the event loop or the
+        `save_async` worker), so a thread may deliver another's. Delivery is
+        serialised under `_notify_lock`: observers must not block. A raising
+        observer is logged, never propagated."""
         self._save_health = HealthEdge(on_failed, on_ok)
 
     def _save(self):
