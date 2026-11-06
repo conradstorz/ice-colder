@@ -49,7 +49,7 @@ from ice_contracts.board.vending_machine import (
 )
 from ice_edge.vend.dispenser_gate import DispenserProfileGate
 from ice_edge.faults.fault_service import FaultService
-from ice_edge.supervisor.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner, Timer
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.ledger.event_recorder import SaleRecordingFailed
 from ice_contracts.board.mqtt_messages import DispenseCommand
@@ -131,7 +131,7 @@ class DispenseCycle:
 
         self._request_id: str | None = None
         self._mechanism: str | None = None
-        self._timeout_task = None
+        self._timeout = Timer(tasks, "dispense_timeout")
         self._settled = False
 
     @property
@@ -201,9 +201,7 @@ class DispenseCycle:
         )
 
         snap = snapshot_for("dispensing")
-        self._timeout_task = self._tasks.schedule(
-            self._timeout_seconds(), self._timed_out, label="dispense_timeout"
-        )
+        self._timeout.arm(self._timeout_seconds(), self._timed_out)
         self._tasks.fire_and_forget(self._run(snap, cmd, request_id), persistent=True)
 
     async def _run(
@@ -289,7 +287,6 @@ class DispenseCycle:
         here would otherwise be silently dropped, leaving the FSM stuck
         in `dispensing` with no timer to retry or fail it.
         """
-        self._timeout_task = None
         logger.error(
             f"Dispense timed out after {self._timeout_seconds():.0f}s with no "
             f"terminal report (slot {self.sale.product.slot})"
@@ -484,9 +481,7 @@ class DispenseCycle:
     def cancel(self) -> None:
         """Cancel the dispense-timeout timer, if still live. Today's
         `_cancel_dispense_timeout` body (ice_edge/sale/vmc.py)."""
-        if self._timeout_task is not None and not self._timeout_task.done():
-            self._timeout_task.cancel()
-        self._timeout_task = None
+        self._timeout.cancel()
 
     def settle(self) -> None:
         """Mark the cycle terminal and cancel the timeout. Called

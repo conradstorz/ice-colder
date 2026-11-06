@@ -117,7 +117,7 @@ channels, accessories), validated against the product catalog and the board's de
 edge sends the whole profile with each dispense command, and verifies the outcome per mechanism — bagged ice
 and water fill each have their own outcome table mapping to a customer result and a fault. A failed vend
 restores credit and locks out the product. Check a profile file with
-`uv run python -m ice_edge.vend.dispensers --check`.
+`uv run python -m ice_edge.vend --check`.
 
 → [Dispenser profiles design](superpowers/specs/2026-10-06-dispenser-profiles-design.md) ·
 [Schema plan](superpowers/plans/2026-10-07-dispenser-profiles-schema.md) ·

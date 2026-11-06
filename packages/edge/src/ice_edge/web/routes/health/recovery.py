@@ -127,7 +127,7 @@ async def pay104_record_sale(request: Request):
     database itself (part 3 review, round 4): the call below passes
     `ts=pending["saved_at"]` (the session snapshot's dispense-time
     timestamp, stable across any number of reloads of the same
-    snapshot -- see `VMC._snapshot`/`SessionSnapshot.saved_at`) and
+    snapshot -- see `VMC.snapshot`/`SessionSnapshot.saved_at`) and
     `idempotent=True`, so a second attempt at the same pending sale --
     same process, a different process, after a restart, disk fixed or
     not -- inserts zero rows because `(ts, sku)` is already present.
@@ -176,7 +176,7 @@ async def pay104_record_sale(request: Request):
             # round 4): the session snapshot's dispense-time timestamp
             # is a deterministic key for *this* pending sale (stable
             # across any number of snapshot reloads -- see
-            # VMC._snapshot/SessionSnapshot.saved_at), so a second
+            # VMC.snapshot/SessionSnapshot.saved_at), so a second
             # attempt at recording it -- from this process, another
             # process, or after a restart -- inserts zero rows instead
             # of a duplicate. Every other caller of record_sale (the

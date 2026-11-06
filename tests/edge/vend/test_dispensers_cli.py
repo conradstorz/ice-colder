@@ -1,5 +1,5 @@
 # tests/test_dispensers_cli.py
-"""Tests for the dispensers CLI (`python -m ice_edge.vend.dispensers`)."""
+"""Tests for the dispensers CLI (`python -m ice_edge.vend`)."""
 
 import json
 import tempfile
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ice_edge.vend.dispensers import main
+from ice_edge.vend.__main__ import main
 from tests.dispenser_fixtures import GOOD
 
 BAD = """\

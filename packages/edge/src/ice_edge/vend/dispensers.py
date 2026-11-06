@@ -21,7 +21,6 @@ import os
 import re
 import shutil
 import tomllib
-import types
 import typing
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -29,9 +28,7 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Literal
 
-import annotated_types
 from pydantic import BaseModel, TypeAdapter, ValidationError
-from pydantic.fields import FieldInfo
 
 from ice_common.config_model import ConfigModel, Product
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
@@ -39,12 +36,23 @@ from ice_contracts.board.vending_machine import SubsystemCapabilities
 from ice_contracts.board.dispenser_schema import (
     CHANNEL_ID_DESCRIPTION,
     MECHANISM_FOR_KIND,
+    IceFillStep,
+    ReleaseStep,
     SlotProfile,
+    WaterFillStep,
     drive_channels,
     sense_channels,
     worst_case_seconds,
 )
-from ice_common.paths import config_path, fsync_dir
+from ice_common.paths import fsync_dir
+from ice_edge.vend.schema_introspect import (
+    bounds_and_unit,
+    discriminator_field,
+    union_tag_order,
+    union_tags,
+    union_variants,
+    unwrap_annotated,
+)
 
 _SLOT_PROFILE_ADAPTER = TypeAdapter(SlotProfile)
 
@@ -57,19 +65,15 @@ _SLOT_KEY_RE = re.compile(r"^(0|[1-9][0-9]{0,5})$")
 # tomllib's TOMLDecodeError message always ends in "(at line N, column M)".
 _SYNTAX_LOCATION_RE = re.compile(r"at line (\d+), column (\d+)")
 
-# Discriminator literal values used anywhere in the SlotProfile union tree.
-# Pydantic error `loc` tuples are prefixed with these tags; `humanize`
-# strips them so the reported path is just the dotted field path.
-_DISCRIMINATOR_TAGS = frozenset(
-    {
-        "bagged_ice",
-        "water_fill",
-        "bag_full_sensor",
-        "timed",
-        "door_sensor",
-        "catch",
-        "flow_volume",
-    }
+# Discriminator literal values used anywhere in the SlotProfile union tree,
+# derived from the schema itself. Pydantic error `loc` tuples are prefixed
+# with these tags; `humanize` strips them so the reported path is just the
+# dotted field path.
+_DISCRIMINATOR_TAGS = frozenset().union(
+    *(
+        union_tags(alias)
+        for alias in (SlotProfile, IceFillStep, ReleaseStep, WaterFillStep)
+    )
 )
 
 # `_check_accessories_name_known_steps` (ice_contracts/board/dispenser_schema.py, C6)
@@ -84,9 +88,6 @@ _DISCRIMINATOR_TAGS = frozenset(
 _ON_DURING_CONTIGUOUS_RE = re.compile(
     r'^accessory "([^"]+)": on_during steps must be consecutive'
 )
-
-# The two discriminator field names used anywhere in the SlotProfile tree.
-_DISCRIMINATOR_FIELDS = ("mechanism", "proof")
 
 # Pydantic's own synthetic labels for the arm of an *untagged* union that
 # failed (e.g. the `float | Literal["unmonitored"]` current-sense fields) --
@@ -229,31 +230,6 @@ def _file_finding(severity: Literal["error", "warning"], message: str) -> Findin
     return Finding(slot=None, path="", line=None, severity=severity, message=message)
 
 
-def _unwrap_annotated(tp: object) -> tuple[object, tuple]:
-    """Strip one layer of `Annotated[...]`, returning (real_type, metadata)."""
-
-    if hasattr(tp, "__metadata__"):
-        args = typing.get_args(tp)
-        return args[0], args[1:]
-    return tp, ()
-
-
-def _union_variants(tp: object) -> tuple | None:
-    """Return a Union's member types, or `None` if `tp` is not a union."""
-
-    origin = typing.get_origin(tp)
-    if origin is types.UnionType or origin is typing.Union:
-        return typing.get_args(tp)
-    return None
-
-
-def _discriminator_field(model_cls: type[BaseModel]):
-    for name in _DISCRIMINATOR_FIELDS:
-        if name in model_cls.model_fields:
-            return model_cls.model_fields[name]
-    return None
-
-
 def _navigate(loc: Sequence) -> tuple[type[BaseModel] | None, object | None]:
     """Best-effort walk of the `SlotProfile` model tree following a
     Pydantic error `loc` tuple, discriminator tags included.
@@ -265,7 +241,7 @@ def _navigate(loc: Sequence) -> tuple[type[BaseModel] | None, object | None]:
     `None`.
     """
 
-    current, _ = _unwrap_annotated(SlotProfile)
+    current, _ = unwrap_annotated(SlotProfile)
     parent_model: type[BaseModel] | None = None
     field_info = None
 
@@ -278,23 +254,23 @@ def _navigate(loc: Sequence) -> tuple[type[BaseModel] | None, object | None]:
             # The loc token is the dict key itself (e.g. an accessory
             # name, as in `dict[str, Accessory]`), not a field name --
             # consume it and continue navigating into the value type.
-            current, _ = _unwrap_annotated(args[1])
+            current, _ = unwrap_annotated(args[1])
             if isinstance(current, type) and issubclass(current, BaseModel):
                 parent_model = current
             field_info = None
             continue
 
-        variants = _union_variants(current)
+        variants = union_variants(current)
         if variants is not None:
             matched = None
             for variant in variants:
-                variant_type, _ = _unwrap_annotated(variant)
+                variant_type, _ = unwrap_annotated(variant)
                 if not (
                     isinstance(variant_type, type)
                     and issubclass(variant_type, BaseModel)
                 ):
                     continue
-                disc = _discriminator_field(variant_type)
+                disc = discriminator_field(variant_type)
                 if disc is None:
                     continue
                 if token in typing.get_args(disc.annotation):
@@ -313,78 +289,12 @@ def _navigate(loc: Sequence) -> tuple[type[BaseModel] | None, object | None]:
             if token not in fields:
                 return parent_model, None
             field_info = fields[token]
-            current, _ = _unwrap_annotated(field_info.annotation)
+            current, _ = unwrap_annotated(field_info.annotation)
             continue
 
         return parent_model, None
 
     return parent_model, field_info
-
-
-def _range_from_field_info(field_info) -> tuple[object | None, object | None, str]:
-    """Read `ge`/`le` bounds and a unit off a `FieldInfo`, digging into a
-    union's `Annotated` arm (the `"unmonitored"` fields) when the bounds
-    are not on the field itself."""
-
-    if field_info is None:
-        return None, None, ""
-
-    unit = ""
-    if field_info.json_schema_extra:
-        unit = field_info.json_schema_extra.get("unit", "")
-
-    lo = hi = None
-
-    def _scan(metadata) -> None:
-        nonlocal lo, hi
-        for m in metadata:
-            # `Field(ge=..., le=...)` used *inside* an `Annotated[...]` arm
-            # (the current-sense fields' `float | Literal["unmonitored"]`
-            # shape) stores its bounds on a nested FieldInfo, not as bare
-            # annotated_types instances -- recurse into it.
-            if isinstance(m, FieldInfo):
-                _scan(m.metadata)
-                continue
-            if isinstance(m, annotated_types.Ge):
-                lo = m.ge
-            elif isinstance(m, annotated_types.Gt):
-                lo = m.gt
-            elif isinstance(m, annotated_types.Le):
-                hi = m.le
-            elif isinstance(m, annotated_types.Lt):
-                hi = m.lt
-
-    _scan(field_info.metadata)
-    if lo is None and hi is None:
-        for arg in typing.get_args(field_info.annotation):
-            _, metadata = _unwrap_annotated(arg)
-            _scan(metadata)
-            if lo is not None or hi is not None:
-                break
-
-    return lo, hi, unit
-
-
-def _expected_tags_for_annotation(annotation: object) -> list[str]:
-    """Every discriminator tag declared by a discriminated union's member
-    models, in declaration order -- the fallback used when Pydantic's own
-    `union_tag_not_found` error has no `ctx["expected_tags"]` to read."""
-
-    unwrapped, _ = _unwrap_annotated(annotation)
-    variants = _union_variants(unwrapped)
-    if variants is None:
-        return []
-
-    tags: list[str] = []
-    for variant in variants:
-        variant_type, _ = _unwrap_annotated(variant)
-        if not (isinstance(variant_type, type) and issubclass(variant_type, BaseModel)):
-            continue
-        disc = _discriminator_field(variant_type)
-        if disc is None:
-            continue
-        tags.extend(str(v) for v in typing.get_args(disc.annotation))
-    return tags
 
 
 def humanize(err: dict, slot: int) -> Finding:
@@ -444,7 +354,10 @@ def humanize(err: dict, slot: int) -> Finding:
 
     elif err_type in ("greater_than_equal", "less_than_equal"):
         _, field_info = _navigate(nav_loc)
-        lo, hi, unit = _range_from_field_info(field_info)
+        lo = hi = None
+        unit = ""
+        if field_info is not None:
+            lo, _, hi, _, unit = bounds_and_unit(field_info)
         if lo is not None and hi is not None:
             unit_part = f" {unit}" if unit else ""
             message = (
@@ -486,7 +399,7 @@ def humanize(err: dict, slot: int) -> Finding:
                 annotation = field_info.annotation if field_info is not None else None
             else:
                 annotation = SlotProfile
-            tags = _expected_tags_for_annotation(annotation) if annotation else []
+            tags = union_tag_order(annotation) if annotation else ()
             expected_tags = ", ".join(tags)
         message = (
             f'missing required field "{discriminator}"; must be one of {expected_tags}'
@@ -1096,112 +1009,3 @@ class DispenserProfiles:
             return self.report
         self.report = self.validate_text(self._text)
         return self.report
-
-
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for dispensers validation.
-
-    Returns:
-        0: validation ok (or --example)
-        1: validation has errors
-        2: directory path or unreadable config
-    """
-    import argparse
-    import json
-    import sys
-
-    parser = argparse.ArgumentParser(
-        prog="python -m ice_edge.vend.dispensers",
-        description="Validate dispensers.toml against the product catalog",
-    )
-    parser.add_argument(
-        "path",
-        nargs="?",
-        help="Path to dispensers.toml (default: $ICE_COLDER_DISPENSERS or dispensers.toml)",
-    )
-    parser.add_argument(
-        "--config",
-        help="Path to config.json (default: $ICE_COLDER_CONFIG or config.json)",
-    )
-    parser.add_argument(
-        "--capabilities",
-        metavar="FILE",
-        help="Path to JSON file with SubsystemCapabilities",
-    )
-
-    action_group = parser.add_mutually_exclusive_group()
-    action_group.add_argument(
-        "--example",
-        action="store_true",
-        help="Print example dispensers.toml and exit",
-    )
-    action_group.add_argument(
-        "--check",
-        action="store_true",
-        help="Check dispensers.toml (default action)",
-    )
-
-    args = parser.parse_args(argv)
-
-    # Handle --example first (no file I/O needed)
-    if args.example:
-        from ice_edge.vend.dispensers_doc import render_example
-
-        example_text = render_example()
-        sys.stdout.write(example_text)
-        return 0
-
-    # Resolve paths
-    dispensers_file_path = dispensers_path() if args.path is None else Path(args.path)
-    config_path_str = args.config or str(config_path())
-
-    # Load config (try block for config errors)
-    try:
-        with open(config_path_str, "r", encoding="utf-8") as f:
-            config_data = json.load(f)
-        config = ConfigModel.model_validate(config_data)
-    except ValidationError as exc:
-        error_msg = f"{exc.error_count()} validation error(s) in {config_path_str}"
-        print(f"Error reading config: {error_msg}", file=sys.stderr)
-        return 2
-    except (OSError, ValueError) as exc:
-        error_msg = str(exc).splitlines()[0]
-        print(f"Error reading config: {error_msg}", file=sys.stderr)
-        return 2
-
-    # Load dispensers file and check for directory
-    profiles = DispenserProfiles(config, dispensers_file_path)
-    try:
-        report = profiles.load()
-    except OSError as exc:
-        error_msg = str(exc).splitlines()[0]
-        print(f"Error reading dispensers file: {error_msg}", file=sys.stderr)
-        return 2
-
-    # Load capabilities if provided
-    if args.capabilities:
-        try:
-            with open(args.capabilities, "r", encoding="utf-8") as f:
-                caps_data = json.load(f)
-            caps = SubsystemCapabilities.model_validate(caps_data)
-            report = profiles.set_capabilities(caps)
-        except ValidationError as exc:
-            error_msg = (
-                f"{exc.error_count()} validation error(s) in {args.capabilities}"
-            )
-            print(f"Error reading capabilities: {error_msg}", file=sys.stderr)
-            return 2
-        except (OSError, ValueError) as exc:
-            error_msg = str(exc).splitlines()[0]
-            print(f"Error reading capabilities: {error_msg}", file=sys.stderr)
-            return 2
-
-    # Print report and return status
-    output = report.render_text()
-    print(output)
-
-    return 0 if report.ok else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

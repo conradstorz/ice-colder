@@ -266,7 +266,7 @@ async def test_begin_test_sale_clears_flag_and_sale_and_escrow_when_select_produ
     `SaleContext`, and the just-deposited "test" credit must all be
     cleared before the exception propagates. A leaked flag here would
     refuse every later `run_test_sale` call forever, and would make
-    `_snapshot()` wrongly mark a later, genuinely production sale's crash
+    `snapshot()` wrongly mark a later, genuinely production sale's crash
     snapshot `is_test=True`."""
     machine, vmc, dispatcher, client, runner = _vmc_with_profiles(tmp_path)
     product = vmc.products[0]

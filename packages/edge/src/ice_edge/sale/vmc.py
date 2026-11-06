@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict
 from loguru import logger
+from ice_common.observers import Subscribers
 from ice_contracts.board.mqtt_messages import ButtonPress
 from ice_contracts.board.vending_machine import DispenserOutcome, FaultCode
 from ice_common.config_model import ConfigModel, Product
@@ -95,10 +96,9 @@ class VMC:
         self._in_maintenance: Callable[[], bool] = in_maintenance
         # True for exactly one run_test_sale call (double-submit guard).
         self._test_sale_in_progress: bool = False
-        self._state_change_observers = [self._payment_retry.on_state]
-        self._sale_settled_observers: list[
-            Callable[[SaleContext, str, str | None], None]
-        ] = []
+        self._state_change: Subscribers[[str]] = Subscribers()
+        self._state_change.subscribe(self._payment_retry.on_state)
+        self._sale_settled: Subscribers[[SaleContext, str, str | None]] = Subscribers()
         self._faults = faults
         self._gate = gate
         self._payments = payments
@@ -128,9 +128,6 @@ class VMC:
 
     def snapshot(self, state: str | None = None) -> SessionSnapshot:
         """Build a `SessionSnapshot` of the current live state (pure, no side effects)."""
-        return self._snapshot(state)
-
-    def _snapshot(self, state: str | None = None) -> SessionSnapshot:
         product = self.selected_product
         effective_state = state or self.state
         return SessionSnapshot(
@@ -353,7 +350,7 @@ class VMC:
             if sale is not None:
                 draw_stock(self._inventory(), self._tasks, self._journal, sale.product)
                 self._outputs.persist()
-                self._notify_settled(sale, "dispensed", None)
+                self._sale_settled.publish(sale, "dispensed", None)
             return
         self._settle("dispensed", None, self._finish_dispensing)
 
@@ -392,7 +389,7 @@ class VMC:
         sale = self._sale
         run()
         if sale is not None:
-            self._notify_settled(sale, outcome, fault_code)
+            self._sale_settled.publish(sale, outcome, fault_code)
 
     def _schedule(
         self, delay_seconds, callback, *, label: str = ""
@@ -419,36 +416,14 @@ class VMC:
 
     def subscribe_state_change(self, cb: Callable[[str], None]) -> Callable[[], None]:
         """Subscribe to every FSM state transition; returns an unsubscribe closure."""
-        self._state_change_observers.append(cb)
-
-        def _unsubscribe() -> None:
-            if cb in self._state_change_observers:
-                self._state_change_observers.remove(cb)
-
-        return _unsubscribe
+        return self._state_change.subscribe(cb)
 
     def subscribe_sale_settled(
         self, cb: Callable[[SaleContext, str, str | None], None]
     ) -> Callable[[], None]:
         """Subscribe to a sale settling: `(sale, outcome, fault_code)`, with `sale`
         captured before the transition clears it. Returns an unsubscribe closure."""
-        self._sale_settled_observers.append(cb)
-
-        def _unsubscribe() -> None:
-            if cb in self._sale_settled_observers:
-                self._sale_settled_observers.remove(cb)
-
-        return _unsubscribe
-
-    def _notify_settled(
-        self, sale: SaleContext, outcome: str, fault_code: str | None
-    ) -> None:
-        """Run every sale-settled observer; one raising is logged, never stops the rest."""
-        for cb in list(self._sale_settled_observers):
-            try:
-                cb(sale, outcome, fault_code)
-            except Exception:
-                logger.exception("sale-settled observer raised")
+        return self._sale_settled.subscribe(cb)
 
     # --- FSM triggers ---
     # idle --start_interaction--> interacting_with_user --dispense_product--> dispensing
@@ -509,11 +484,7 @@ class VMC:
     def _after_state_change(self):
         """Runs after every FSM transition with self.state already updated."""
         self._outputs.state_changed(self.state)
-        for cb in list(self._state_change_observers):
-            try:
-                cb(self.state)
-            except Exception:
-                logger.exception("state-change observer raised")
+        self._state_change.publish(self.state)
 
     @logger.catch()
     def on_start_interaction(self):
@@ -531,7 +502,7 @@ class VMC:
         if self._tasks.loop and self.selected_product:
             self._cycle = self._dispense_factory(self._sale)
             self._cycle.start(
-                lambda s: self._snapshot(s) if self._outputs.session_store else None
+                lambda s: self.snapshot(s) if self._outputs.session_store else None
             )
 
     @logger.catch()
@@ -658,7 +629,7 @@ class VMC:
             self.request_refund(reason="error")
         self._outputs.display("error")
         if sale is not None and not written and not sale.settled:
-            self._notify_settled(sale, "error", None)
+            self._sale_settled.publish(sale, "error", None)
             self._sale = sale.with_(settled=True)
 
     # --- Business Logic Methods ---

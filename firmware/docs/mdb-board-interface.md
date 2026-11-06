@@ -1,15 +1,16 @@
 # MDB board interface
 
 The ESP32-S3 board that is MDB master for the IM600XL's coin changer, bill validator and cashless
-reader, and speaks `ice_contracts.board.payment` over MQTT. Companion to the
+reader, through an external MDB-to-RS232 converter, and speaks `ice_contracts.board.payment` over
+MQTT. Companion to the
 [design spec](../../docs/superpowers/specs/2026-10-18-mdb-board-firmware-design.md) (whose section 11
 lists what was built differently from the plan) and the
-[payment contract](../../docs/contracts/payment/CONTRACT.md). This document is what the carrier
-board and the bench work need; the firmware behaviour itself is specified by the contract and the spec.
+[payment contract](../../docs/contracts/payment/CONTRACT.md). This document is what the wiring
+and the bench work need; the firmware behaviour itself is specified by the contract and the spec.
 
 ## 1. Purpose and contract
 
-The board drives no actuator and has no digital input. It owns the MDB bus (9600 baud, three
+The board drives no actuator and has no digital input. It is the MDB master (9600 baud, three
 peripherals: changer 0x08, validator 0x30, cashless reader 0x10) and publishes every money event to
 the edge with at-least-once delivery. It implements `ice_contracts.board.payment` **1.1.0**
 (`capabilities/mdb.contract_version = "1.1.0"`); 1.1.0 adds the `cash_sale` command over 1.0.0.
@@ -32,65 +33,95 @@ the edge with at-least-once delivery. It implements `ice_contracts.board.payment
 - `vend_request` is acked `rejected` with `detail: "price_scale"` when `cents` is not a multiple of the
   reader's scale factor (no event is emitted).
 
-## 2. Carrier board and power
+## 2. Hardware and power
 
-An ESP32-S3-DevKitC-1 (N8R8 class) socketed on a small carrier that holds the MDB transceiver
-(section 4), the MDB connector (section 3) and a 24 V to 5 V buck module fed from the machine's
-control rail. There are no relays and no actuators, so there is no master-enable backstop (the
-peripherals disable themselves when polling stops). USB is for flashing and the console only.
+The board does not sit on the MDB bus itself. An external **MDB-to-RS232 converter** owns the MDB
+side (connector, bus transceiver, isolation); the ESP32 talks to the converter's RS232 port through a
+TTL-to-RS232 level-shifter module. The converter only translates: it does not poll, ACK or retry, so
+the ESP32 remains the MDB master and `mdbcore` keeps every timing rule (section 5).
 
-Carrier requirements the layout must meet:
+```
+  MDB bus          RS232                       UART-TTL
+┌──────────┐    ┌───────────┐  TX/RX/GND  ┌──────────┐  RX/TX/GND/3V3  ┌───────────────┐
+│ changer  │    │  MDB to   │<----------->│ RS232 to │<--------------->│ ESP32-S3-     │<-- 5 V (buck)
+│ validator│<-->│  RS232    │             │ TTL      │                 │ DevKitC-1     │<-- GND
+│ reader   │    │ converter │             │ (MAX3232)│                 │               │
+└──────────┘    └───────────┘             └──────────┘                 └───────────────┘
+```
 
-- Buck input range covers the control rail (24 V nominal) with margin; output feeds the DevKitC 5 V
-  pin. The USB port may be connected while the buck is powered, so the DevKitC's own USB-to-5 V path
-  must not back-feed the buck (diode or buck with reverse protection).
-- The MDB side (bus power, power return, signal lines) is isolated from the 5 V logic side by the
-  optocouplers only. No shared ground between the bus side and the logic side.
-- Strapping pins (GPIO 0, 3, 45, 46) are left free.
+Parts:
+
+- **ESP32-S3-DevKitC-1** (N8R8 class). USB is for flashing and the console only.
+- **TTL-to-RS232 module**, MAX3232 class (3.0 to 5.5 V supply), powered from the DevKitC **3V3** pin so
+  its TTL output is 3.3 V. The ESP32's pins are not 5 V tolerant: a MAX232 (5 V-only) module needs a
+  divider (for example 1 kΩ / 2 kΩ) on the line into GPIO 18, or should be swapped for a MAX3232.
+- **24 V to 5 V buck** fed from the machine's control rail, into the DevKitC 5 V pin. Its input range
+  covers the control rail (24 V nominal) with margin; USB may be connected while the buck is powered,
+  so the DevKitC's own USB-to-5 V path must not back-feed the buck (diode or buck with reverse
+  protection).
+- **The converter**, powered as its manual specifies, cabled to the machine's MDB harness.
+
+There are no relays and no actuators, so there is no master-enable backstop (the peripherals disable
+themselves when polling stops). Strapping pins (GPIO 0, 3, 45, 46) are left free.
+
+**Isolation.** The ESP32, the level shifter and the converter's RS232 side share one ground. Isolation
+between that ground and the MDB bus (bus power, power return) is the converter's job; confirm its
+manual says it is isolated. If it is not, the converter's RS232 ground must not be tied to the logic
+ground without an isolator.
 
 **Open item: bus power.** The VMC side supplies the peripherals' power (34 VDC nominal; peripherals
-accept roughly 20 to 45 V). Whether that supply is a separate PSU in the IM600XL or lives inside the
-PLC's MDB interface is unknown. If separate, it is reused and the carrier only carries the signal
-lines through; if not, the carrier needs a bus supply. This is the first thing to find at the machine
-(section 9, section 10).
+accept roughly 20 to 45 V). Whether the converter supplies it, passes it through from a supply in the
+IM600XL, or expects one on its own input is unknown until the converter is chosen; the machine's own
+supply may be a separate PSU or live inside the PLC's MDB interface (section 9, section 10).
 
-## 3. MDB connector pinout
+## 3. MDB connection
 
-The standard 6-pin MDB connector (MDB/ICP 4.3). Pin numbers below follow the standard as the spec
-recalls it; **confirm them against the spec and the machine's own harness before wiring**
-(section 10).
+The ESP32 side has no MDB connector. The converter's MDB connector or terminals take the machine's
+harness. For reference, the standard 6-pin MDB connector (MDB/ICP 4.3) as the spec recalls it; **confirm
+it against the spec, the converter's manual and the machine's own harness before wiring** (section 10):
 
-| Pin | Signal | Carrier connection |
+| Pin | Signal |
+|---|---|
+| 1 | Bus power (34 VDC nominal) |
+| 2 | Power return |
+| 3 | Master receive (peripheral to master) |
+| 4 | Master transmit (master to peripheral) |
+| 5 | Communications common |
+| 6 | Not used |
+
+## 4. RS232 link and pin map
+
+The firmware pin map is `firmware/mdb/boards/mdb-s3.h`.
+
+| Function | GPIO | Connects to |
 |---|---|---|
-| 1 | Bus power (34 VDC nominal) | bus supply; not connected to the logic side |
-| 2 | Power return | bus-side ground of the transceiver |
-| 3 | Master receive (peripheral to master) | receive optocoupler input |
-| 4 | Master transmit (master to peripheral) | transmit optocoupler output |
-| 5 | Communications common | bus-side signal return of the transceiver |
-| 6 | Not used | unconnected |
-
-## 4. Transceiver and pin map
-
-Two high-speed optocouplers (6N137 class) following the master transmit and master receive reference
-circuits in MDB/ICP 4.3 section 5; the 5 V comms side comes from the board regulator and the bus side
-is powered from the bus. The KiCad design of the open-source `mdb-esp32-master` project is a second
-check. The firmware pin map is `firmware/mdb/boards/mdb-s3.h`.
-
-| Function | GPIO | Notes |
-|---|---|---|
-| MDB TX (UART1) | 17 | through the transmit opto |
-| MDB RX (UART1) | 18 | through the receive opto |
+| MDB TX (UART1) | 17 | level shifter TTL input (RXD / DIN) |
+| MDB RX (UART1) | 18 | level shifter TTL output (TXD / ROUT) |
+| Level shifter VCC | 3V3 | level shifter VCC |
+| Ground | GND | level shifter GND |
 | Status LED | 48 | the DevKitC's WS2812 |
 | Console and flash | native USB (GPIO 19/20) | not available for other use |
+
+Module labels vary: some name TXD/RXD from the module's side, some from the host's. If nothing gets
+through, swap the two TTL lines (safe). On the RS232 side the converter's DB9 may be DTE or DCE, so it
+needs a straight or a null-modem cable accordingly; the converter's manual decides. No hardware flow
+control is wired unless the converter requires it (then RTS/CTS go through the module's second channel
+and take two more GPIOs).
 
 There are no digital inputs. `cash_collected` comes from the bill validator only (cash box out of
 position and back); `cash_collected{coin}` is not implemented, because the changer-tube-count heuristic
 was dropped as unreliable.
 
-## 5. The 9-bit path as shipped
+## 5. The 9-bit path
 
-MDB frames are 8 data bits plus a mode bit plus one stop bit; the ESP32 UART has no 9-bit mode, so the
-mode bit is emulated with the parity bit.
+MDB frames are 8 data bits plus a mode bit plus one stop bit. How that ninth bit crosses the RS232
+link is set by the converter, and the converter is not chosen yet. The current `src/uart_bus.cpp`
+assumes the converter is transparent at the MDB level: **9600 baud, 8 data bits, the mode bit carried
+as the parity bit, one stop bit**. That is the code as shipped, written for a direct transceiver; if
+the converter frames the mode bit differently (a prefix or escape byte, a different baud rate), only
+`uart_bus.cpp` changes, behind `mdbcore::BusPort`. `mdbcore`, the ledger, comms and MQTT do not.
+
+As shipped:
 
 - **Transmit.** Per byte the port waits for the UART to finish (`uart_wait_tx_done`), sets the parity
   (even or odd) so the parity bit equals the wanted mode bit, and writes one byte. The shared parity
@@ -112,10 +143,22 @@ mode bit is emulated with the parity bit.
   batches, orphan parity errors and lost RX bytes, and logs the non-zero counters once a minute. The
   bus task never logs itself: it only counts, and the ledger task logs.
 
-**Unverified on silicon.** The decode relies on the ordering of the driver's data and parity-error
-events, read from the ESP-IDF 5.5.3 source and not yet observed on hardware. The first bench check
-(section 9) confirms it with a logic analyser against the real changer; the fallback if it misbehaves
-is forcing `mode = false` in the receive handler (a one-line source change).
+**What the converter must preserve.** The ESP32 stays inside MDB's timing only if the converter adds
+little delay:
+
+- Its latency in each direction, plus the ESP32's, must leave the peripheral's 5 ms response window
+  (t-response) intact, and it must not stretch the master's bytes into gaps over MDB's 1 ms
+  inter-byte limit.
+- If it buffers received bytes and forwards them in bursts, the 1 ms idle gap that ends a block may
+  vanish on the RS232 side; blocks then end on the mode bit alone and the checksum still validates
+  them. The disagreement counter shows this as a steady count.
+- It must not ACK, NAK or retry on its own. If it does, it is a smart adapter, and the master must not
+  ACK a second time; that is a different port, not a setting.
+
+**Unverified on silicon.** The receive decode relies on the ordering of the driver's data and
+parity-error events, read from the ESP-IDF 5.5.3 source and not yet observed on hardware, and on the
+converter passing the mode bit as parity. The first bench check (section 9) confirms both; the fallback
+if the decode misbehaves is forcing `mode = false` in the receive handler (a one-line source change).
 
 ## 6. Provisioning
 
@@ -219,19 +262,33 @@ One WS2812 on GPIO 48, deliberately dim. First match wins:
 
 ## 9. Bench checklist
 
-Tabletop: board on its carrier with a USB cable, the real changer, validator and reader on a bench MDB
-harness with their bus supply, an MQTT broker reachable, `machine_id` set, a logic analyser on GPIO 17
-and 18. Commands go to `vmc/<machine_id>/cmd/mdb` as `{"command", "params", "request_id", "timestamp"}`;
+Tabletop: the DevKitC with a USB cable, the level shifter and the converter (section 2), the real
+changer, validator and reader on a bench MDB harness with their bus supply, an MQTT broker reachable,
+`machine_id` set, a logic analyser on GPIO 17 and 18 and, where it can reach, on the converter's MDB
+lines. Commands go to `vmc/<machine_id>/cmd/mdb` as `{"command", "params", "request_id", "timestamp"}`;
 acks come back on `cmd/mdb/ack`.
 
-- [ ] **Bus power.** Find the machine's bus supply (section 2 open item) and measure it under load: 34 V
-  nominal, within each peripheral's 20 to 45 V range.
-- [ ] **Connector pinout.** Confirm the 6-pin assignment (section 3) against the spec and the machine's
-  harness before connecting anything.
-- [ ] **RX mode-bit decode.** With a logic analyser against the real changer, confirm the decoded mode
-  bit on every received byte: send known bytes with the mode bit set and read the mode-bit disagreement,
-  ambiguous and orphan counters in `self_test` and the once-a-minute log line. Confirm the driver's
-  DATA-then-parity-error event ordering (section 5). If it misbehaves, switch to the `mode = false`
+- [ ] **Converter framing.** From the converter's manual: RS232 baud rate and framing, how the mode
+  bit is carried, and that it does not ACK or retry on its own (section 5). If it differs from 9600 8E1
+  with mode-as-parity, `uart_bus.cpp` is changed before any other check.
+- [ ] **Level shifter supply.** Confirm the module is a MAX3232 class part on 3V3, or that a divider
+  protects GPIO 18 (section 2). Measure GPIO 18 idle and active: never above 3.3 V.
+- [ ] **RS232 link.** With the converter powered and no peripherals, confirm clean bytes both ways
+  (straight or null-modem cable, TTL lines the right way round; section 4) before trusting any decode.
+- [ ] **Isolation.** Confirm from the manual, and with a meter, that the converter isolates the MDB bus
+  from its RS232 ground (section 2).
+- [ ] **Bus power.** Find what powers the bus (section 2 open item: converter, machine PSU or the PLC's
+  interface) and measure it under load: 34 V nominal, within each peripheral's 20 to 45 V range.
+- [ ] **Connector pinout.** Confirm the 6-pin assignment (section 3) against the spec, the converter's
+  manual and the machine's harness before connecting anything.
+- [ ] **Converter latency.** On the analyser, measure the delay through the converter each way and the
+  inter-byte gaps of a master block on the MDB side: the peripheral's reply must still reach the
+  ESP32 inside the 5 ms first-byte allowance, and no master byte gap may exceed 1 ms (section 5).
+- [ ] **RX mode-bit decode.** Against the real changer, confirm the decoded mode bit on every received
+  byte: send known bytes with the mode bit set and read the mode-bit disagreement, ambiguous and orphan
+  counters in `self_test` and the once-a-minute log line. Confirm the driver's DATA-then-parity-error
+  event ordering (section 5). A steady disagreement count with clean checksums means the converter is
+  bursting bytes and hiding the idle gap. If the decode misbehaves, switch to the `mode = false`
   fallback and confirm the idle-gap termination alone still frames every block.
 - [ ] **Idle-gap fallback.** Exercise the 1 ms idle-gap terminator with the mode-bit path forced to
   `mode = false` and confirm blocks still validate by checksum.
@@ -287,8 +344,12 @@ acks come back on `cmd/mdb/ack`.
 
 ## 10. Open items
 
-None changes the architecture; each affects a default or this document.
+None changes the architecture; each affects a default, `uart_bus.cpp` or this document.
 
+- The MDB-to-RS232 converter make and model, and from its manual: RS232 framing and baud rate, the
+  mode-bit encoding, latency, whether it ACKs or retries on its own, isolation, bus power and DB9
+  wiring (sections 2 to 5). A framing other than 9600 8E1 with mode-as-parity means a new
+  `uart_bus.cpp`; a converter that ACKs on its own means a different port.
 - The existing MDB interface make and model in the IM600XL (I/O list section 8), to confirm a clean
   swap to this board as bus master.
 - The bus power source (section 2).
@@ -302,6 +363,11 @@ None changes the architecture; each affects a default or this document.
 ## 11. As built: deviations from the plan
 
 Collected from the task reports; the full list is spec section 11.
+
+- **External converter instead of an on-carrier transceiver** (2026-11-03, documentation only). The
+  spec's carrier with two 6N137 optocouplers and an MDB connector is replaced by an external
+  MDB-to-RS232 converter and a MAX3232 level shifter (sections 2 to 5). No firmware changed: the UART
+  port still assumes mode-as-parity framing at 9600 baud until the converter's manual says otherwise.
 
 - **Log full inhibits acceptance** (192 pending, release at 128) instead of "keep accepting at
   capacity", so money already taken is always recordable (section 7).

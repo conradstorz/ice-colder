@@ -681,7 +681,7 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
 
     Driven entirely through the real deposit/process-payment/reboot
     pipeline (not a hand-built SessionSnapshot), so a regression in
-    `_snapshot()` dropping `pending_sale_shares` would be caught here.
+    `snapshot()` dropping `pending_sale_shares` would be caught here.
     """
     store_path = tmp_path / "session.json"
     machine = make_machine(price=2.50)
@@ -3174,7 +3174,7 @@ class TestRunTestSale:
         Drives run_test_sale for real up to the exact point _process_
         payment persists the 'dispensing' snapshot (Task 4's unmodified
         persistence path -- unchanged by this fix), which now carries
-        is_test=True because VMC._snapshot() reads the SaleContext's is_test.
+        is_test=True because VMC.snapshot() reads the SaleContext's is_test.
         Then, rather than reading any flag off the live vmc1 object, this
         constructs a FRESH SessionStore and a FRESH VMC from the same
         on-disk file -- a real process boundary, exactly the shape
@@ -3183,7 +3183,7 @@ class TestRunTestSale:
         and no PAY-104 fires.
 
         Production paths reached: VMC.process_payment (unmodified),
-        VMC._snapshot (this fix's `is_test=self._sale.is_test`),
+        VMC.snapshot (this fix's `is_test=self._sale.is_test`),
         Machine.set_session_store (this fix's is_test boot branch), and
         Machine.pending_sale_for_recovery (this fix's is_test guard).
         """
@@ -3287,7 +3287,7 @@ class TestRunTestSale:
 
         Production paths reached: VMC.deposit_funds, VMC.select_product,
         VMC.process_payment/_consume_credits_fifo (all unmodified),
-        VMC._snapshot (is_test=False for a real sale), Machine.set_session_store
+        VMC.snapshot (is_test=False for a real sale), Machine.set_session_store
         (the pre-existing is_open() branch, untouched by this fix), and
         Machine.pending_sale_for_recovery (returns the pending sale as before).
         """

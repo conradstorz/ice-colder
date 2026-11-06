@@ -31,7 +31,6 @@ from typing import Any
 
 import annotated_types
 from pydantic import StringConstraints
-from pydantic.fields import FieldInfo
 
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
 from ice_contracts.board.dispenser_schema import (
@@ -55,11 +54,11 @@ from ice_contracts.board.dispenser_schema import (
     WaterFillTimed,
 )
 
-# Reused from ice_edge/vend/dispensers.py: stripping one layer of `Annotated[...]`
-# is a plain, correctness-neutral operation (no exclusivity to lose), so it
-# is not worth re-solving here. No import cycle -- dispensers.py does not
-# import this module.
-from ice_edge.vend.dispensers import _unwrap_annotated
+from ice_edge.vend.schema_introspect import (
+    bounds_and_unit,
+    union_tag_order,
+    unwrap_annotated,
+)
 
 _EN_DASH = "–"
 _GE = "≥"
@@ -73,7 +72,7 @@ _LE = "≤"
 
 
 def _literal_values(annotation: object) -> list[str] | None:
-    unwrapped, _ = _unwrap_annotated(annotation)
+    unwrapped, _ = unwrap_annotated(annotation)
     if typing.get_origin(unwrapped) is typing.Literal:
         return [str(v) for v in typing.get_args(unwrapped)]
     return None
@@ -93,15 +92,9 @@ def _union_members_and_tags(union_alias: object) -> tuple[tuple[type, ...], list
     field can honestly list every variant, not just the one that happens
     to be live in a given sample slot."""
 
-    unwrapped, _ = _unwrap_annotated(union_alias)
+    unwrapped, _ = unwrap_annotated(union_alias)
     members = typing.get_args(unwrapped)
-    tags: list[str] = []
-    for member in members:
-        disc_name = _discriminator_name(member)
-        values = _literal_values(member.model_fields[disc_name].annotation)
-        if values is None:
-            raise ValueError(f"{member.__name__}.{disc_name} has no Literal values")
-        tags.extend(values)
+    tags = list(union_tag_order(union_alias))
     return members, tags
 
 
@@ -130,62 +123,6 @@ def _variant_tags_for(*classes: type) -> list[str]:
             return tags
     names = ", ".join(cls.__name__ for cls in classes)
     raise ValueError(f"no known discriminated union has all of {{{names}}} as members")
-
-
-def _scan_bounds(
-    metadata: tuple,
-) -> tuple[float | None, bool, float | None, bool]:
-    """One metadata tuple's `Ge`/`Gt`/`Le`/`Lt` bounds, exclusivity kept
-    distinct -- `ice_edge.vend.dispensers._range_from_field_info` deliberately
-    collapses `Gt`/`Lt` into the same slot as `Ge`/`Le`, which is fine for
-    its own error messages but would misdocument a `gt=0` field (e.g.
-    `pulses_per_liter`) as accepting 0."""
-
-    lo: float | None = None
-    lo_exclusive = False
-    hi: float | None = None
-    hi_exclusive = False
-    for m in metadata:
-        # `Field(ge=..., le=...)` used *inside* an `Annotated[...]` arm
-        # (the current-sense fields' `float | Literal["unmonitored"]`
-        # shape) stores its bounds on a nested FieldInfo, not as bare
-        # annotated_types instances -- recurse into it.
-        if isinstance(m, FieldInfo):
-            nested = _scan_bounds(m.metadata)
-            if nested[0] is not None or nested[2] is not None:
-                lo, lo_exclusive, hi, hi_exclusive = nested
-            continue
-        if isinstance(m, annotated_types.Ge):
-            lo, lo_exclusive = m.ge, False
-        elif isinstance(m, annotated_types.Gt):
-            lo, lo_exclusive = m.gt, True
-        elif isinstance(m, annotated_types.Le):
-            hi, hi_exclusive = m.le, False
-        elif isinstance(m, annotated_types.Lt):
-            hi, hi_exclusive = m.lt, True
-    return lo, lo_exclusive, hi, hi_exclusive
-
-
-def _bounds_and_unit(
-    field_info: Any,
-) -> tuple[float | None, bool, float | None, bool, str]:
-    """`(lo, lo_exclusive, hi, hi_exclusive, unit)`, digging into the
-    `Annotated` arm of a `float | Literal["unmonitored"]` union (the
-    current-sense fields) when the field itself carries no bounds."""
-
-    unit = ""
-    if field_info.json_schema_extra:
-        unit = field_info.json_schema_extra.get("unit", "")
-
-    lo, lo_exclusive, hi, hi_exclusive = _scan_bounds(field_info.metadata)
-    if lo is None and hi is None:
-        for arg in typing.get_args(field_info.annotation):
-            _, metadata = _unwrap_annotated(arg)
-            lo, lo_exclusive, hi, hi_exclusive = _scan_bounds(metadata)
-            if lo is not None or hi is not None:
-                break
-
-    return lo, lo_exclusive, hi, hi_exclusive, unit
 
 
 def _format_number(n: float) -> str:
@@ -232,7 +169,7 @@ def _string_constraints(field_info: Any) -> tuple[str | None, int | None]:
     pattern, min_length = _scan_string_constraints(field_info.metadata)
     if pattern is None and min_length is None:
         for arg in typing.get_args(field_info.annotation):
-            _, metadata = _unwrap_annotated(arg)
+            _, metadata = unwrap_annotated(arg)
             pattern, min_length = _scan_string_constraints(metadata)
             if pattern is not None or min_length is not None:
                 break
@@ -288,7 +225,7 @@ def _comment_for(
             extra = f"{extra} Steps for {mechanism}: {', '.join(step_names)}."
         return f"# {_join_sentence(description, extra)}"
 
-    lo, lo_exclusive, hi, hi_exclusive, unit = _bounds_and_unit(field_info)
+    lo, lo_exclusive, hi, hi_exclusive, unit = bounds_and_unit(field_info)
     if lo is None and hi is None:
         return f"# {description}"
 
@@ -706,7 +643,7 @@ _HEADER_LINES = [
     _KIND_REQUIREMENT_LINE,
     "#",
     "# Validate any dispensers.toml with:",
-    "#     uv run python -m ice_edge.vend.dispensers --check",
+    "#     uv run python -m ice_edge.vend --check",
     "#",
     "# This file is GENERATED by scripts/gen_dispensers_example.py from the",
     "# models in ice_contracts/board/dispenser_schema.py -- every comment below is",

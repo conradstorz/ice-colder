@@ -2,9 +2,9 @@
 #include <string.h>
 #include <unity.h>
 
-#include "ack_cache.h"
+#include "boardcore/ack_cache.h"
 
-using namespace vendcore;
+using namespace boardcore;
 
 void setUp(void) {}
 void tearDown(void) {}

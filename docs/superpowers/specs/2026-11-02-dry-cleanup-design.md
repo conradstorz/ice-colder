@@ -163,7 +163,7 @@ The isolation rule decides where helpers live. Edge-only helpers go under `tests
 
 - **`ice_common.paths.atomic_write(path, data, *, mode=None, backup=False)`.**
   - Behaviour: temp file in the same directory, optional `O_CREAT` 0600 open, fsync, optional `.bak` copy made before the replace, `os.replace`, `fsync_dir`, and temp cleanup on failure.
-  - Replaces the hand-rolled copies in `session_store`, `payment_cursor`, `event_recorder`, `config_store`, `dispensers`, `access`, `inventory_manager`, `uplink/identity`, `ui/bundle`, and the cloud `snapshots`/`ui_registry` where they match. Each call keeps its current byte format and mode.
+  - Replaces the hand-rolled copies in `session_store`, `payment_cursor`, `event_recorder`, `config_store`, `dispensers`, `access`, `inventory_manager`, `uplink/identity`, and the cloud `snapshots`/`ui_registry` where they match. Each call keeps its current byte format and mode. `ice_ui/bundle.py` keeps its local implementation because `ice_ui` may not import `ice_common`.
   - Tests: the helper gets its own tests, including one that a failure leaves the target intact and removes the temp file. The inventory test proves the fsync now happens.
 - **`ice_common.paths.config_path()`.** Use it in `startup_config`, `config_store`, `dispensers.main` and `sims/base`. An empty
   string means the default.

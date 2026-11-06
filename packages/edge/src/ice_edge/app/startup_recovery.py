@@ -52,26 +52,22 @@ def reconcile_sales_journal_faults(machine: Machine, recorder: EventRecorder) ->
             # Never auto-cleared: the database is opened once at boot, so
             # only an operator clear or the next restart ends this fault.
             if getattr(recorder, "db_newer_than_code", False):
-                machine.faults.raise_fault(
-                    FaultCode.DATA_103,
-                    outcome=(
-                        "event database is from a newer release; sales are "
-                        "journalled until the newer build returns"
-                    ),
+                outcome = (
+                    "event database is from a newer release; sales are "
+                    "journalled until the newer build returns"
                 )
-                logger.error(
+                logged = (
                     "Event database is from a newer release (downgrade); "
                     "sales are journalled until the newer build returns"
                 )
             else:
-                machine.faults.raise_fault(
-                    FaultCode.DATA_103,
-                    outcome="event database could not be opened at startup",
-                )
-                logger.error(
+                outcome = "event database could not be opened at startup"
+                logged = (
                     "Event database unavailable; sales are being journalled "
                     "to the fallback file"
                 )
+            machine.faults.raise_fault(FaultCode.DATA_103, outcome=outcome)
+            logger.error(logged)
 
         try:
             inserted = recorder.replay_sales_journal()

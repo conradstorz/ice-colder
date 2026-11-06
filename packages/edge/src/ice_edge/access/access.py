@@ -14,7 +14,8 @@ import os
 import secrets
 import time
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Container
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -120,6 +121,28 @@ class User:
     created_at: str = ""
     last_login_at: str | None = None
 
+    @classmethod
+    def from_dict(cls, uid: str, data: dict) -> User:
+        """Build from a stored record; a missing optional key takes its default."""
+        return cls(
+            id=uid,
+            name=data["name"],
+            email=data.get("email"),
+            role=Role(data["role"]),
+            pin_hash=data["pin_hash"],
+            pin_salt=data["pin_salt"],
+            disabled=bool(data.get("disabled", False)),
+            created_at=data.get("created_at", ""),
+            last_login_at=data.get("last_login_at"),
+        )
+
+    def to_dict(self) -> dict:
+        """The stored record: every field but ``id`` (the dict key), in field order."""
+        doc = asdict(self)
+        del doc["id"]
+        doc["role"] = self.role.value
+        return doc
+
 
 @dataclass
 class Device:
@@ -130,6 +153,27 @@ class Device:
     trusted_user_ids: list[str] = field(default_factory=list)
     created_at: str = ""
     last_seen_at: str = ""
+
+    @classmethod
+    def from_dict(cls, did: str, data: dict, known_users: Container[str]) -> Device:
+        """Build from a stored record, dropping trust in users that no longer exist."""
+        return cls(
+            id=did,
+            token_hash=data["token_hash"],
+            label=data.get("label", ""),
+            shared=bool(data.get("shared", False)),
+            trusted_user_ids=[
+                u for u in data.get("trusted_user_ids", []) if u in known_users
+            ],
+            created_at=data.get("created_at", ""),
+            last_seen_at=data.get("last_seen_at", ""),
+        )
+
+    def to_dict(self) -> dict:
+        """The stored record: every field but ``id`` (the dict key), in field order."""
+        doc = asdict(self)
+        del doc["id"]
+        return doc
 
 
 SHARED_IDLE_SECONDS = 300.0
@@ -206,8 +250,8 @@ class AccessStore:
         except Exception as e:  # a read-only disk must not stop boot
             logger.warning(f"AccessStore: could not prune stale devices: {e}")
 
-    def _read(self) -> bool:
-        """Load the file into memory; True only when it was read cleanly."""
+    def _reset(self) -> None:
+        """Forget everything loaded from disk (the not-corrupt, empty state)."""
         self.users = {}
         self.devices = {}
         self._emergency_codes: list[dict] = []
@@ -216,6 +260,10 @@ class AccessStore:
         self._pending_link: dict | None = None
         self._raw_extra = {}
         self.corrupt = False
+
+    def _read(self) -> bool:
+        """Load the file into memory; True only when it was read cleanly."""
+        self._reset()
         if not self._path.exists():
             return False
         self._tighten_permissions()
@@ -224,29 +272,9 @@ class AccessStore:
             if not isinstance(raw, dict):
                 raise ValueError("access file is not a JSON object")
             for uid, data in raw.get("users", {}).items():
-                self.users[uid] = User(
-                    id=uid,
-                    name=data["name"],
-                    email=data.get("email"),
-                    role=Role(data["role"]),
-                    pin_hash=data["pin_hash"],
-                    pin_salt=data["pin_salt"],
-                    disabled=bool(data.get("disabled", False)),
-                    created_at=data.get("created_at", ""),
-                    last_login_at=data.get("last_login_at"),
-                )
+                self.users[uid] = User.from_dict(uid, data)
             for did, data in raw.get("devices", {}).items():
-                self.devices[did] = Device(
-                    id=did,
-                    token_hash=data["token_hash"],
-                    label=data.get("label", ""),
-                    shared=bool(data.get("shared", False)),
-                    trusted_user_ids=[
-                        u for u in data.get("trusted_user_ids", []) if u in self.users
-                    ],
-                    created_at=data.get("created_at", ""),
-                    last_seen_at=data.get("last_seen_at", ""),
-                )
+                self.devices[did] = Device.from_dict(did, data, self.users)
             self._emergency_codes = list(raw.get("emergency_codes", []))
             self._setup = dict(raw.get("setup", {}))
             self._pending_transfer = raw.get("pending_transfer") or None
@@ -265,13 +293,8 @@ class AccessStore:
                 )
             }
         except Exception as e:
+            self._reset()
             self.corrupt = True
-            self.users = {}
-            self.devices = {}
-            self._emergency_codes = []
-            self._setup = {}
-            self._pending_transfer = None
-            self._pending_link = None
             logger.error(
                 f"AccessStore: {self._path} is unreadable or invalid ({e}); the "
                 "dashboard will serve an error page. The VMC and MQTT client "
@@ -298,30 +321,8 @@ class AccessStore:
 
     def _document(self) -> dict:
         doc = dict(self._raw_extra)
-        doc["users"] = {
-            u.id: {
-                "name": u.name,
-                "email": u.email,
-                "role": u.role.value,
-                "pin_hash": u.pin_hash,
-                "pin_salt": u.pin_salt,
-                "disabled": u.disabled,
-                "created_at": u.created_at,
-                "last_login_at": u.last_login_at,
-            }
-            for u in self.users.values()
-        }
-        doc["devices"] = {
-            d.id: {
-                "token_hash": d.token_hash,
-                "label": d.label,
-                "shared": d.shared,
-                "trusted_user_ids": list(d.trusted_user_ids),
-                "created_at": d.created_at,
-                "last_seen_at": d.last_seen_at,
-            }
-            for d in self.devices.values()
-        }
+        doc["users"] = {u.id: u.to_dict() for u in self.users.values()}
+        doc["devices"] = {d.id: d.to_dict() for d in self.devices.values()}
         doc["emergency_codes"] = [dict(c) for c in self._emergency_codes]
         doc["setup"] = dict(self._setup)
         doc["pending_transfer"] = self._pending_transfer
@@ -771,19 +772,28 @@ class AccessStore:
 
     # --- ownership transfer ---
 
-    @property
-    def pending_transfer(self) -> dict | None:
-        """The live transfer, or None once it has expired."""
-        pending = self._pending_transfer
-        if pending is None:
+    def _live(self, record: dict | None) -> dict | None:
+        """``record`` unless it is absent, malformed or past its ``expires_at``."""
+        if record is None:
             return None
         try:
-            expires = datetime.fromisoformat(pending["expires_at"])
+            expires = datetime.fromisoformat(record["expires_at"])
         except (KeyError, ValueError):
             return None
         if self._wall() > expires:
             return None
-        return pending
+        return record
+
+    def _cancel(self, attr: str) -> None:
+        """Clear the pending record named ``attr`` and persist."""
+        setattr(self, attr, None)
+        self._commit()
+        self._claim_code_subscribers.publish()
+
+    @property
+    def pending_transfer(self) -> dict | None:
+        """The live transfer, or None once it has expired."""
+        return self._live(self._pending_transfer)
 
     def start_transfer(self, started_by_user_id: str) -> str:
         """Record a pending transfer and return its 8-digit code, shown once.
@@ -813,9 +823,7 @@ class AccessStore:
         return verify_secret(code, pending["transfer_code_hash"])
 
     def cancel_transfer(self) -> None:
-        self._pending_transfer = None
-        self._commit()
-        self._claim_code_subscribers.publish()
+        self._cancel("_pending_transfer")
 
     def complete_transfer(self, name: str, email: str | None, pin: str) -> User:
         """Swap the owner in one write.
@@ -871,16 +879,7 @@ class AccessStore:
     @property
     def pending_link(self) -> dict | None:
         """The live link code record, or None once it has expired."""
-        pending = self._pending_link
-        if pending is None:
-            return None
-        try:
-            expires = datetime.fromisoformat(pending["expires_at"])
-        except (KeyError, ValueError):
-            return None
-        if self._wall() > expires:
-            return None
-        return pending
+        return self._live(self._pending_link)
 
     def start_link(self, started_by_user_id: str) -> str:
         """Mint a link-to-cloud code (8 digits, shown once, 7-day expiry)."""
@@ -899,9 +898,7 @@ class AccessStore:
         return code
 
     def cancel_link(self) -> None:
-        self._pending_link = None
-        self._commit()
-        self._claim_code_subscribers.publish()
+        self._cancel("_pending_link")
 
     # --- cloud claim code ---
 

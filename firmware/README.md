@@ -11,7 +11,7 @@ motors, dispensers) and talk to the edge controller over MQTT.
   `src/` holds the FreeRTOS tasks and board drivers; `boards/kc868-a8.h` is the pin map and default
   input polarity; `test/` holds the host unit tests, fixtures and golden wire JSON.
 - `mdb/` -- the MDB payment board firmware: ESP32-S3-DevKitC-1, C++ on ESP-IDF, built with PlatformIO. `lib/mdbcore` is the pure-C++ MDB master (changer, validator, cashless reader, replay log, accounts) behind bus/clock/id/log-store ports and tested on the host against byte-level fake peripherals; `src/` holds the bus, ledger and comms tasks, the UART 9-bit port, the NVS log store and the status LED; `boards/mdb-s3.h` is the pin map; `test/` holds the host tests and golden wire JSON.
-- `docs/mdb-board-interface.md` -- carrier board, MDB connector and bus power, the 9-bit path, provisioning, replay log, LED patterns, the bench checklist and open items.
+- `docs/mdb-board-interface.md` -- hardware (MDB-to-RS232 converter, MAX3232 level shifter, power), the RS232 link and pin map, the 9-bit path and what the converter must preserve, provisioning, replay log, LED patterns, the bench checklist and open items.
 - `docs/vending-board-interface.md` -- wiring, channel map, master-enable circuit, input polarity,
   provisioning and the Phase E bench checklist.
 

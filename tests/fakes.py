@@ -63,6 +63,10 @@ class FakeTask:
     def cancel(self) -> None:
         self.cancelled = True
 
+    def cancelling(self) -> int:
+        """Mirror `asyncio.Task.cancelling()`: pending cancellation requests."""
+        return 1 if self.cancelled else 0
+
 
 @dataclass
 class ScheduledCall:
@@ -306,6 +310,17 @@ class FakeFaults:
         self.cleared.append(key)
         self.active = {c for c in self.active if getattr(c, "value", c) != key}
         return True
+
+    def ensure_raised(self, code, *, outcome=None) -> bool:
+        if self.has(code):
+            return False
+        self.raise_fault(code, outcome=outcome)
+        return True
+
+    def ensure_cleared(self, code, *, by="auto") -> bool:
+        if not self.has(code):
+            return False
+        return self.clear_fault(code.value, by=by)
 
 
 class FakeStore:

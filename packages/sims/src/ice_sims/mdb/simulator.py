@@ -37,11 +37,16 @@ from ice_contracts.board.payment import (
     PayoutParams,
     SetPolicyParams,
 )
-from ice_sims.base import CommandOutcome, ESP32Simulator, FaultDef
+from ice_sims.base import (
+    CommandOutcome,
+    ESP32Simulator,
+    to_fault_def,
+    uptime_entity,
+)
 from ice_sims.mdb.cash import CashBox
 from ice_sims.mdb.customer import MdbCustomer
 from ice_sims.mdb.event_log import EventLog
-from ice_sims.mdb.faults import InjectedFault, mdb_faults
+from ice_sims.mdb.faults import mdb_faults
 from ice_sims.mdb.policy import PolicyState
 
 BILL_DENOMINATIONS = [100, 500, 1000, 2000]
@@ -124,18 +129,6 @@ class _CustomerPort:
         await self._sim.sleep(seconds)
 
 
-def _fault_def(sim: "MdbSimulator", fault: InjectedFault) -> FaultDef:
-    return FaultDef(
-        name=fault.name,
-        category=fault.category,
-        probability=fault.probability,
-        on_activate=lambda client, f=fault: f.activate(_Port(sim, client)),
-        on_recover=lambda client, f=fault: f.recover(_Port(sim, client)),
-        message=fault.message,
-        severity=fault.severity,
-    )
-
-
 class MdbSimulator(ESP32Simulator):
     """Simulates the MDB payment board: coin changer, bill validator, no reader."""
 
@@ -158,10 +151,9 @@ class MdbSimulator(ESP32Simulator):
         customer: MdbCustomer | None = None,
         **kwargs,
     ) -> None:
-        super().__init__(subsystem_name="mdb", **kwargs)
+        super().__init__(subsystem_name="mdb", sleep=sleep, **kwargs)
         self._clock = clock or time.monotonic
         self._now = now or (lambda: datetime.now(timezone.utc))
-        self._sleep = sleep or asyncio.sleep
         self._customer = customer or MdbCustomer()
 
         self.cash = CashBox()
@@ -193,19 +185,13 @@ class MdbSimulator(ESP32Simulator):
         self.register_command("cash_sale", self._handle_cash_sale)
 
         for fault in mdb_faults():
-            self.register_fault(_fault_def(self, fault))
+            self.register_fault(to_fault_def(fault, lambda client: _Port(self, client)))
 
     # --- small public seams ------------------------------------------------
 
     @property
     def boot_id(self) -> str:
         return self.log.boot_id
-
-    async def sleep(self, seconds: float) -> None:
-        await self._sleep(seconds)
-
-    def set_sleep(self, sleep: Callable[[float], Awaitable[None]]) -> None:
-        self._sleep = sleep
 
     async def next_vmc_status(self) -> dict:
         return await self._vmc_status.get()
@@ -620,18 +606,7 @@ class MdbSimulator(ESP32Simulator):
                 "value_template": "{{ 'on' if value_json.accepting else 'off' }}",
             }
         )
-        entities.append(
-            {
-                "component": "sensor",
-                "object_id": "uptime",
-                "name": "MDB Gateway Uptime",
-                "state_topic_suffix": "heartbeat/mdb",
-                "value_template": "{{ value_json.uptime_seconds }}",
-                "device_class": "duration",
-                "unit_of_measurement": "s",
-                "state_class": "total_increasing",
-            }
-        )
+        entities.append(uptime_entity("mdb", "MDB Gateway Uptime"))
         return entities
 
     async def _force_report_extra(self, client: aiomqtt.Client) -> None:

@@ -217,6 +217,168 @@ class TestSaveObservers:
         inv.set_count("ICE-SM", 4)
 
 
+class TestSaveHealthFollowsWriteOrder:
+    """Health follows the order the writes landed, even when the earlier
+    writer is stalled after its write and before its health report."""
+
+    @staticmethod
+    def _run(tmp_path, monkeypatch, *, start_failing, first_fails):
+        from ice_common.observers import HealthEdge
+        from ice_edge.monitoring import inventory_manager as im
+
+        stalled = {"thread": None}
+        settled = threading.Event()  # first writer is stalled or finished
+        release = threading.Event()
+
+        class StallingHealthEdge(HealthEdge):
+            """Stalls the chosen thread when it reports an outcome the old
+            way (after leaving the write lock)."""
+
+            def _stall(self):
+                if threading.current_thread() is stalled["thread"]:
+                    settled.set()
+                    assert release.wait(5)
+
+            def failed(self):
+                self._stall()
+                super().failed()
+
+            def ok(self):
+                self._stall()
+                super().ok()
+
+        monkeypatch.setattr(im, "HealthEdge", StallingHealthEdge)
+
+        outcome = {"fail": start_failing}
+        first_written = threading.Event()
+        real_write = im.atomic_write
+
+        def fake_write(path, text):
+            fail = outcome["fail"]
+            if threading.current_thread() is stalled["thread"]:
+                first_written.set()
+            if fail:
+                raise OSError("disk full")
+            real_write(path, text)
+
+        monkeypatch.setattr(im, "atomic_write", fake_write)
+        inv = InventoryManager(_products(), path=tmp_path / "inventory.json")
+        calls: list[str] = []
+        inv.set_save_observers(
+            lambda: calls.append("failed"), lambda: calls.append("ok")
+        )
+        if start_failing:
+            inv.set_count("ICE-SM", 1)  # health is now failing
+        calls.clear()
+
+        def first():
+            outcome["fail"] = first_fails
+            inv.set_count("ICE-SM", 2)
+            settled.set()
+
+        a = threading.Thread(target=first)
+        stalled["thread"] = a
+        a.start()
+        assert first_written.wait(5)
+        # Old code: A parks in its health report. Fixed code: A just finishes.
+        assert settled.wait(5)
+
+        def second():
+            outcome["fail"] = not first_fails
+            inv.set_count("ICE-SM", 3)
+
+        b = threading.Thread(target=second)
+        b.start()
+        b.join(5)
+        assert not b.is_alive()
+        release.set()
+        a.join(5)
+        assert not a.is_alive()
+        return calls
+
+    def test_older_success_cannot_clear_a_newer_failure(self, tmp_path, monkeypatch):
+        calls = self._run(tmp_path, monkeypatch, start_failing=True, first_fails=False)
+        assert calls == ["ok", "failed"]
+
+    def test_older_failure_cannot_outlive_a_newer_recovery(self, tmp_path, monkeypatch):
+        calls = self._run(tmp_path, monkeypatch, start_failing=False, first_fails=True)
+        assert calls == ["failed", "ok"]
+
+
+class TestSaveDelivery:
+    def test_delivery_is_outside_the_write_lock_and_in_write_order(
+        self, tmp_path, monkeypatch
+    ):
+        from ice_edge.monitoring import inventory_manager as im
+
+        real_write = im.atomic_write
+        fail_next = {"v": False}
+        second_written = threading.Event()
+        parked = threading.Event()
+        release = threading.Event()
+        calls: list[str] = []
+
+        def fake_write(path, text):
+            if fail_next["v"]:
+                raise OSError("disk full")
+            real_write(path, text)
+            if threading.current_thread().name == "second":
+                second_written.set()
+
+        monkeypatch.setattr(im, "atomic_write", fake_write)
+        inv = InventoryManager(_products(), path=tmp_path / "inventory.json")
+
+        def on_failed():
+            parked.set()
+            assert release.wait(5)
+            calls.append("failed")
+
+        inv.set_save_observers(on_failed, lambda: calls.append("ok"))
+
+        fail_next["v"] = True
+        a = threading.Thread(target=lambda: inv.set_count("ICE-SM", 2), name="first")
+        a.start()
+        assert parked.wait(5)  # A's failed-save notification is in flight
+
+        fail_next["v"] = False
+        b = threading.Thread(target=lambda: inv.set_count("ICE-SM", 3), name="second")
+        b.start()
+        # B's write is not blocked by A's parked delivery ...
+        assert second_written.wait(5)
+        assert json.loads((tmp_path / "inventory.json").read_text())["ICE-SM"] == 3
+        assert calls == []  # ... but its notification waits its turn
+        release.set()
+        a.join(5)
+        b.join(5)
+        assert not a.is_alive() and not b.is_alive()
+        assert calls == ["failed", "ok"]
+
+    def test_observer_may_save_again_without_deadlock(self, tmp_path):
+        inv = InventoryManager(_products(), path=tmp_path / "inventory.json")
+        calls: list[str] = []
+
+        def on_failed():
+            calls.append("failed:start")
+            (tmp_path / "inventory.json.tmp").rmdir()
+            inv.set_count("ICE-SM", 9)  # nested save from inside delivery
+            calls.append("failed:end")
+
+        inv.set_save_observers(on_failed, lambda: calls.append("ok"))
+        (tmp_path / "inventory.json.tmp").mkdir()
+        done = threading.Event()
+
+        def run():
+            inv.set_count("ICE-SM", 4)
+            done.set()
+
+        t = threading.Thread(target=run)
+        t.start()
+        assert done.wait(5)
+        t.join(5)
+        assert calls == ["failed:start", "ok", "failed:end"]
+        assert json.loads((tmp_path / "inventory.json").read_text())["ICE-SM"] == 9
+
+
 def test_save_fsyncs_the_file_before_replacing_it(tmp_path, monkeypatch):
     import os
 

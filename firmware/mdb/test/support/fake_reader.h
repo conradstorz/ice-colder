@@ -7,14 +7,13 @@
 
 namespace mdbcore {
 
-struct FakeReader : FakePeripheral {
+struct FakeReader : ScriptedPeripheral {
     // Configuration.
     uint8_t level = 1;
     uint8_t scale = 5;  // price/funds unit in cents
     uint8_t decimals = 2;
     uint8_t max_response_s = 5;
     bool offer_always_idle = false;  // level 3 only, and only when the VMC announced level 3
-    bool silent = false;             // answer nothing at all
     bool fail_next_action = false;   // NAK the next VEND or READER command (then clears itself)
 
     // Live state.
@@ -23,12 +22,6 @@ struct FakeReader : FakePeripheral {
     bool always_idle_on = false;
     int next_vend = 0;  // 0 hold (no answer), 1 approve, 2 deny
     uint16_t approve_units = 0;
-
-    // Scripted POLL blocks.
-    static constexpr int kBlocks = 16;
-    uint8_t blk[kBlocks][16] = {};
-    uint8_t blk_len[kBlocks] = {};
-    int n_blk = 0, head = 0;
 
     // Recording.
     uint8_t vmc_levels[8] = {};
@@ -51,15 +44,6 @@ struct FakeReader : FakePeripheral {
     int id_request_len = 0;
     int calls[8] = {};
 
-    void clear_script() { n_blk = head = 0; }
-    void add(uint8_t b, bool same_block = false) {
-        if (!same_block || n_blk == 0) {
-            if (n_blk >= kBlocks) return;
-            blk_len[n_blk] = 0;
-            ++n_blk;
-        }
-        blk[n_blk - 1][blk_len[n_blk - 1]++] = b;
-    }
 
     // Scripted reader behaviour.
     void tap(uint16_t funds_units) {  // 0xFFFF = funds undisclosed
@@ -85,30 +69,8 @@ struct FakeReader : FakePeripheral {
         add(0x07);
     }
 
-    static Response ack() {
-        Response r{};
-        r.kind = Reply::Ack;
-        return r;
-    }
-    static Response nak() {
-        Response r{};
-        r.kind = Reply::Nak;
-        return r;
-    }
-    static Response data(const uint8_t* d, uint8_t n) {
-        Response r{};
-        r.kind = Reply::Data;
-        memcpy(r.data, d, n);
-        r.len = n;
-        return r;
-    }
-
     Response respond(uint8_t cmd, const uint8_t* d, uint8_t n) override {
-        if (silent) {
-            Response t{};
-            t.kind = Reply::Timeout;
-            return t;
-        }
+        if (silent) return timeout();
         ++calls[cmd & 7];
         uint8_t out[40];
         switch (cmd) {

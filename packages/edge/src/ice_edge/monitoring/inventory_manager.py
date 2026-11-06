@@ -11,11 +11,13 @@ import asyncio
 import json
 import os  # noqa: F401  (tests patch inventory_manager.os.replace)
 import threading
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
 from loguru import logger
 
+from ice_common.observers import HealthEdge
 from ice_common.paths import atomic_write
 
 INVENTORY_PATH = Path("inventory.json")
@@ -40,9 +42,9 @@ class InventoryManager:
         # event loop, which also calls _save() synchronously — guard the
         # tmp-write-then-replace sequence against concurrent writers.
         self._save_lock = threading.Lock()
-        self._on_save_failed: Callable[[], None] | None = None
-        self._on_save_ok: Callable[[], None] | None = None
-        self._last_save_failed = False
+        self._save_health = HealthEdge(None, None)
+        self._notify_queue: deque[Callable[[], None] | None] = deque()
+        self._notify_lock = threading.RLock()
         self._load(products)
 
     def _load(self, products: list):
@@ -76,11 +78,12 @@ class InventoryManager:
     ) -> None:
         """Observe save health. `on_failed` runs after each failed save;
         `on_ok` after a successful save only when the previous one failed.
-        Both run on the thread that called `_save` (the event loop, or the
-        `save_async` worker thread); a raising observer is logged, never
-        propagated."""
-        self._on_save_failed = on_failed
-        self._on_save_ok = on_ok
+        Notifications are delivered in write order, outside the write lock, by
+        whichever saving thread gets there first (the event loop or the
+        `save_async` worker), so a thread may deliver another's. Delivery is
+        serialised under `_notify_lock`: observers must not block. A raising
+        observer is logged, never propagated."""
+        self._save_health = HealthEdge(on_failed, on_ok)
 
     def _save(self):
         """Persist current counts to disk atomically."""
@@ -89,18 +92,21 @@ class InventoryManager:
                 atomic_write(Path(self._path), json.dumps(dict(self._counts), indent=2))
             except Exception as e:
                 logger.error(f"Failed to save inventory: {e}")
-                self._last_save_failed = True
-                cb = self._on_save_failed
+                cb = self._save_health.mark_failed()
             else:
-                if not self._last_save_failed:
-                    return
-                self._last_save_failed = False
-                cb = self._on_save_ok
-        if cb is not None:
-            try:
-                cb()
-            except Exception:
-                logger.exception("InventoryManager: save observer raised")
+                cb = self._save_health.mark_ok()
+            # Health follows write order: the transition is recorded under the
+            # write lock, the notification queued in the same order.
+            self._notify_queue.append(cb)
+        # Deliver outside the write lock, in write order. Whichever thread
+        # gets here first drains everyone's queued notifications.
+        with self._notify_lock:
+            while True:
+                try:
+                    pending = self._notify_queue.popleft()
+                except IndexError:
+                    break
+                self._save_health.deliver(pending)
 
     def get_count(self, sku: str) -> int:
         """Return current inventory count for a SKU."""

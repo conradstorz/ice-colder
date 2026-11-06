@@ -23,7 +23,7 @@ BUDGET: dict[str, int] = {
     "tests/edge/web/test_route_context.py": 2,
     "tests/edge/web/test_routes_tests.py": 3,
     "tests/sims/test_simulator_base.py": 38,
-    "tests/sims/test_simulator_ice_maker.py": 26,
+    "tests/sims/test_simulator_ice_maker.py": 13,
     "tests/sims/test_simulator_vending.py": 32,
     "tests/edge/sale/test_test_sale_runner.py": 1,
     "tests/edge/sale/test_vmc_flows.py": 2,

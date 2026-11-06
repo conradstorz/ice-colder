@@ -7,7 +7,7 @@
 
 namespace mdbcore {
 
-struct FakeChanger : FakePeripheral {
+struct FakeChanger : ScriptedPeripheral {
     // Configuration.
     uint8_t level = 3;
     uint8_t scaling = 5;
@@ -23,13 +23,6 @@ struct FakeChanger : FakePeripheral {
     int dispense_busy_polls = 0;  // level 2: POLLs reporting 0x02 (payout busy) before a DISPENSE settles in the tubes
     bool fail_coin_type = false;  // NAK every COIN TYPE
     uint8_t value_poll_cap_units = 255;  // PAYOUT VALUE POLL reports at most this many units
-    bool silent = false;     // answer nothing at all
-
-    // Scripted POLL blocks.
-    static constexpr int kBlocks = 16;
-    uint8_t blk[kBlocks][16] = {};
-    uint8_t blk_len[kBlocks] = {};
-    int n_blk = 0, head = 0;
 
     // Recording.
     bool features_enabled = false;
@@ -49,15 +42,6 @@ struct FakeChanger : FakePeripheral {
     uint8_t paid_types[16] = {};
     int status_polls = 0;
 
-    void clear_script() { n_blk = head = 0; }
-    void add(uint8_t b, bool same_block) {
-        if (!same_block || n_blk == 0) {
-            if (n_blk >= kBlocks) return;
-            blk_len[n_blk] = 0;
-            ++n_blk;
-        }
-        blk[n_blk - 1][blk_len[n_blk - 1]++] = b;
-    }
     void deposit(uint8_t type, uint8_t route, bool same_block = false) {
         if (route == 1 && tubes[type] < 255) ++tubes[type];
         add(static_cast<uint8_t>(0x40 | (route << 4) | type), same_block);
@@ -67,24 +51,6 @@ struct FakeChanger : FakePeripheral {
     void lever(bool same_block = false) { add(0x01, same_block); }
     void status(uint8_t b, bool same_block = false) { add(b, same_block); }
     void just_reset() { add(0x0B, false); }
-
-    static Response ack() {
-        Response r{};
-        r.kind = Reply::Ack;
-        return r;
-    }
-    static Response nak() {
-        Response r{};
-        r.kind = Reply::Nak;
-        return r;
-    }
-    static Response data(const uint8_t* d, uint8_t n) {
-        Response r{};
-        r.kind = Reply::Data;
-        memcpy(r.data, d, n);
-        r.len = n;
-        return r;
-    }
 
     // Honest greedy payout from the tubes, in scaled units.
     void pay_units(uint8_t units) {
@@ -105,11 +71,7 @@ struct FakeChanger : FakePeripheral {
     }
 
     Response respond(uint8_t cmd, const uint8_t* d, uint8_t n) override {
-        if (silent) {
-            Response t{};
-            t.kind = Reply::Timeout;
-            return t;
-        }
+        if (silent) return timeout();
         ++calls_total;
         ++calls[cmd & 7];
         uint8_t out[40];

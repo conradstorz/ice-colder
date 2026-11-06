@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Union
+from typing import Any, Literal, Union
 
 import aiomqtt
 from loguru import logger
@@ -34,6 +34,7 @@ from ice_contracts.board.common import (
     CommandAck,
     SubsystemCommand,
 )
+from ice_contracts.board.mqtt_messages import SensorReading
 from ice_contracts.board.vending_machine import (
     CONTRACT_VERSION as VENDING_CONTRACT_VERSION,
     SubsystemCapabilities,
@@ -67,6 +68,92 @@ class FaultDef:
     on_recover: Callable  # async fn(client) — restore normal state
     message: str  # human-readable alert text
     severity: str = "warning"  # "warning" | "critical"
+
+
+async def _no_op(board: Any) -> None:
+    """The default `activate`/`recover`: a fault that is only an alert."""
+
+
+@dataclass(frozen=True)
+class InjectedFault:
+    """One injectable fault, data first.
+
+    `activate`/`recover` act on the board through a port (`BoardPort`,
+    `MdbBoardPort`) and default to no-ops, so a fault that is only an alert
+    is a bare row. `to_fault_def` adapts it to a `FaultDef`. The
+    "Fault activated/cleared" log lines live in `ESP32Simulator`.
+    """
+
+    name: str
+    category: Literal["short", "medium", "long"]
+    probability: float
+    message: str
+    severity: str = "warning"
+    activate: Callable[[Any], Awaitable[None]] = _no_op
+    recover: Callable[[Any], Awaitable[None]] = _no_op
+
+
+def set_channel(
+    channel: str, on_value: bool
+) -> dict[str, Callable[[Any], Awaitable[None]]]:
+    """`activate`/`recover` that drive one board channel to `on_value` and back.
+
+    Splat it into an `InjectedFault`: ``InjectedFault(..., **set_channel(c, True))``.
+    """
+
+    async def activate(board: Any) -> None:
+        await board.set_hw(channel, on_value)
+
+    async def recover(board: Any) -> None:
+        await board.set_hw(channel, not on_value)
+
+    return {"activate": activate, "recover": recover}
+
+
+def to_fault_def(
+    fault: InjectedFault, make_port: Callable[[aiomqtt.Client], Any]
+) -> FaultDef:
+    """Adapt *fault* to a `FaultDef` whose callbacks act through `make_port(client)`."""
+    return FaultDef(
+        name=fault.name,
+        category=fault.category,
+        probability=fault.probability,
+        on_activate=lambda client, f=fault: f.activate(make_port(client)),
+        on_recover=lambda client, f=fault: f.recover(make_port(client)),
+        message=fault.message,
+        severity=fault.severity,
+    )
+
+
+def uptime_entity(subsystem: str, name: str) -> dict:
+    """The HA discovery entity every board publishes for its heartbeat uptime."""
+    return {
+        "component": "sensor",
+        "object_id": "uptime",
+        "name": name,
+        "state_topic_suffix": f"heartbeat/{subsystem}",
+        "value_template": "{{ value_json.uptime_seconds }}",
+        "device_class": "duration",
+        "unit_of_measurement": "s",
+        "state_class": "total_increasing",
+    }
+
+
+def temperature_entity(
+    channel_id: str, label: str, *, object_id: str | None = None
+) -> dict:
+    """The HA discovery entity for one `sensors/temp/<channel_id>` reading."""
+    return {
+        "component": "sensor",
+        "object_id": object_id or channel_id,
+        "name": label,
+        "state_topic_suffix": f"sensors/temp/{channel_id}",
+        "value_template": "{{ value_json.value }}",
+        "device_class": "temperature",
+        "unit_of_measurement": "°C",
+        "state_class": "measurement",
+        "expire_after": 30,
+    }
 
 
 @dataclass
@@ -133,6 +220,7 @@ class ESP32Simulator(ABC):
         config_path: str | None = None,
         username: str | None = None,
         password: str | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
     ):
         self.subsystem_name = subsystem_name
         self.broker = broker
@@ -143,6 +231,10 @@ class ESP32Simulator(ABC):
         self.username = username
         self.password = password
         self._start_time = time.monotonic()
+        # The one seam a simulator's waits go through, bound at construction
+        # so a test patches one instance (`set_sleep`, or assigning
+        # `sim.sleep`) rather than the module-global `asyncio.sleep`.
+        self._sleep = sleep or asyncio.sleep
         self._subscriptions: list[tuple[str, asyncio.Queue]] = []
         self._fault_defs: list[FaultDef] = []
         self._fault_state: dict[str, dict] = {}
@@ -158,6 +250,12 @@ class ESP32Simulator(ABC):
         self.register_command("ping", self._handle_ping)
         self.register_command("self_test", self._handle_self_test)
         self.register_command("force_report", self._handle_force_report)
+
+    async def sleep(self, seconds: float) -> None:
+        await self._sleep(seconds)
+
+    def set_sleep(self, sleep: Callable[[float], Awaitable[None]]) -> None:
+        self._sleep = sleep
 
     @property
     def client_id(self) -> str:
@@ -263,6 +361,28 @@ class ESP32Simulator(ABC):
             data = json.dumps(payload)
         await client.publish(full_topic, data, qos=qos, retain=retain)
         logger.debug(f"[{self.subsystem_name}] published to {full_topic}")
+
+    async def publish_temperature(
+        self, client: aiomqtt.Client, location: str, value: float, **publish_kwargs
+    ) -> None:
+        """Publish one rounded reading to `sensors/temp/<location>`
+        (extra keywords, e.g. `qos`, go to `publish`)."""
+        await self.publish(
+            client,
+            f"sensors/temp/{location}",
+            SensorReading(location=location, value=round(value, 2)),
+            **publish_kwargs,
+        )
+
+    async def _cache_and_publish_ack(
+        self, client: aiomqtt.Client, ack: CommandAck
+    ) -> None:
+        """Cache *ack* under its request_id (oldest evicted past
+        IDEMPOTENCY_CACHE_SIZE) and publish it on `cmd/<subsystem>/ack`."""
+        self._acked[ack.request_id] = ack
+        if len(self._acked) > IDEMPOTENCY_CACHE_SIZE:
+            self._acked.popitem(last=False)  # evict oldest, keep most recent N
+        await self.publish(client, f"cmd/{self.subsystem_name}/ack", ack)
 
     async def subscribe(self, client: aiomqtt.Client, topic: str) -> asyncio.Queue:
         """Subscribe to a topic and return a Queue that receives (topic, payload) tuples.
@@ -626,10 +746,7 @@ class ESP32Simulator(ABC):
                     detail=str(e),
                 )
 
-        self._acked[cmd.request_id] = ack
-        if len(self._acked) > IDEMPOTENCY_CACHE_SIZE:
-            self._acked.popitem(last=False)  # evict oldest, keep most recent N
-        await self.publish(client, ack_topic, ack)
+        await self._cache_and_publish_ack(client, ack)
         logger.info(
             f"[{self.subsystem_name}] Command {cmd.command} ({cmd.request_id}): "
             f"{ack.status}"
@@ -698,11 +815,7 @@ class ESP32Simulator(ABC):
         ack = self._build_ack(cmd, outcome)
         if ack.phase != "completed":
             ack = ack.model_copy(update={"phase": "completed"})
-        self._acked[cmd.request_id] = ack
-        if len(self._acked) > IDEMPOTENCY_CACHE_SIZE:
-            self._acked.popitem(last=False)
-        ack_topic = f"cmd/{self.subsystem_name}/ack"
-        await self.publish(client, ack_topic, ack)
+        await self._cache_and_publish_ack(client, ack)
         logger.info(
             f"[{self.subsystem_name}] Command {cmd.command} ({cmd.request_id}): "
             f"{ack.status} (completed)"

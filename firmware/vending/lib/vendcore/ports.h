@@ -3,9 +3,20 @@
 
 #include <stdint.h>
 
+#include "boardcore/ack_cache.h"
+#include "boardcore/outbound_ring.h"
 #include "channels.h"
 
 namespace vendcore {
+
+// The shared platform types, under the names the vending code has always used.
+using boardcore::Ack;
+using boardcore::AckCache;
+using boardcore::AckStatus;
+using boardcore::OutboundRing;
+using boardcore::Phase;
+using boardcore::Prio;
+using boardcore::RingEntry;
 
 struct Clock {
     virtual uint32_t now_ms() const = 0;

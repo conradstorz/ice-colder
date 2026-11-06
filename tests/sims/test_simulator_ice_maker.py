@@ -246,18 +246,22 @@ class TestIceMakerFaultRegistration:
             sim.sensor_by_name("nonexistent")
 
 
+def _fault(sim, name: str):
+    return next(f for f in sim.fault_defs if f.name == name)
+
+
 class TestCompressorOvertempFault:
     async def test_activate_forces_compressor_off(self):
         sim = IceMakerSimulator()
         sim.compressor_on = True
         client = AsyncMock()
-        await sim._on_compressor_overtemp_activate(client)
+        await _fault(sim, "compressor_overtemp").on_activate(client)
         assert sim.compressor_on is False
 
     async def test_activate_overrides_refrigerant_high_targets(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
-        await sim._on_compressor_overtemp_activate(client)
+        await _fault(sim, "compressor_overtemp").on_activate(client)
         sensor = sim.sensor_by_name("refrigerant_high")
         assert sensor.target_on == 95.0
         assert sensor.target_off == 95.0
@@ -265,8 +269,8 @@ class TestCompressorOvertempFault:
     async def test_recover_restores_refrigerant_high_targets(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
-        await sim._on_compressor_overtemp_activate(client)
-        await sim._on_compressor_overtemp_recover(client)
+        await _fault(sim, "compressor_overtemp").on_activate(client)
+        await _fault(sim, "compressor_overtemp").on_recover(client)
         original = next(d for d in SENSOR_DEFS if d["name"] == "refrigerant_high")
         sensor = sim.sensor_by_name("refrigerant_high")
         assert sensor.target_on == original["target_on"]
@@ -276,7 +280,7 @@ class TestCompressorOvertempFault:
         sim = IceMakerSimulator()
         published = capture_publish(sim)
         client = AsyncMock()
-        await sim._on_compressor_overtemp_activate(client)
+        await _fault(sim, "compressor_overtemp").on_activate(client)
         assert any("ice_maker/event" in s for s, _ in published)
 
     async def test_tick_halts_compressor_cycling_during_fault(self):
@@ -300,7 +304,7 @@ class TestLowRefrigerantFault:
     async def test_activate_pins_refrigerant_low_target(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
-        await sim._on_low_refrigerant_activate(client)
+        await _fault(sim, "low_refrigerant").on_activate(client)
         sensor = sim.sensor_by_name("refrigerant_low")
         assert sensor.target_on == 10.0
         assert sensor.target_off == 10.0
@@ -308,8 +312,8 @@ class TestLowRefrigerantFault:
     async def test_recover_restores_refrigerant_low_targets(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
-        await sim._on_low_refrigerant_activate(client)
-        await sim._on_low_refrigerant_recover(client)
+        await _fault(sim, "low_refrigerant").on_activate(client)
+        await _fault(sim, "low_refrigerant").on_recover(client)
         original = next(d for d in SENSOR_DEFS if d["name"] == "refrigerant_low")
         sensor = sim.sensor_by_name("refrigerant_low")
         assert sensor.target_on == original["target_on"]
@@ -319,7 +323,7 @@ class TestLowRefrigerantFault:
         sim = IceMakerSimulator()
         published = capture_publish(sim)
         client = AsyncMock()
-        await sim._on_low_refrigerant_activate(client)
+        await _fault(sim, "low_refrigerant").on_activate(client)
         assert any("ice_maker/event" in s for s, _ in published)
 
     async def test_tick_allows_compressor_cycling_during_low_refrigerant(self):
@@ -348,7 +352,7 @@ class TestWaterInletBlockedFault:
     async def test_activate_pins_water_bath_target(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
-        await sim._on_water_inlet_blocked_activate(client)
+        await _fault(sim, "water_inlet_blocked").on_activate(client)
         sensor = sim.sensor_by_name("water_bath")
         assert sensor.target_on == 20.0
         assert sensor.target_off == 20.0
@@ -356,8 +360,8 @@ class TestWaterInletBlockedFault:
     async def test_recover_restores_water_bath_targets(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
-        await sim._on_water_inlet_blocked_activate(client)
-        await sim._on_water_inlet_blocked_recover(client)
+        await _fault(sim, "water_inlet_blocked").on_activate(client)
+        await _fault(sim, "water_inlet_blocked").on_recover(client)
         original = next(d for d in SENSOR_DEFS if d["name"] == "water_bath")
         sensor = sim.sensor_by_name("water_bath")
         assert sensor.target_on == original["target_on"]
@@ -367,7 +371,7 @@ class TestWaterInletBlockedFault:
         sim = IceMakerSimulator()
         published = capture_publish(sim)
         client = AsyncMock()
-        await sim._on_water_inlet_blocked_activate(client)
+        await _fault(sim, "water_inlet_blocked").on_activate(client)
         assert any("ice_maker/event" in s for s, _ in published)
 
 

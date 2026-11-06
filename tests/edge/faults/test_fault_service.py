@@ -489,3 +489,47 @@ async def test_machine_scope_fault_is_keyed_and_alerted_without_a_sku():
     service.clear_fault("WTR-106")
     await asyncio.sleep(0)
     assert health.cleared_alerts == ["WTR-106:machine"]
+
+
+# --- ensure_raised / ensure_cleared ---
+
+
+async def test_ensure_raised_raises_once_and_reports_whether_it_did():
+    service, registry, _o, runner, _rec, _tx = make_service()
+    runner.attach(asyncio.get_running_loop())
+    changes: list[FaultChange] = []
+    service.subscribe_fault_change(changes.append)
+
+    assert service.ensure_raised(FaultCode.COM_103, outcome="disconnected") is True
+    assert service.ensure_raised(FaultCode.COM_103, outcome="again") is False
+
+    assert registry.has(FaultCode.COM_103)
+    assert [c.action for c in changes] == ["raised"]
+
+
+async def test_ensure_cleared_clears_only_when_active_and_passes_by():
+    service, registry, _o, runner, _rec, _tx = make_service()
+    runner.attach(asyncio.get_running_loop())
+    changes: list[FaultChange] = []
+    service.subscribe_fault_change(changes.append)
+
+    assert service.ensure_cleared(FaultCode.COM_103) is False
+    service.raise_fault(FaultCode.COM_103)
+    assert service.ensure_cleared(FaultCode.COM_103, by="hardware") is True
+    assert service.ensure_cleared(FaultCode.COM_103) is False
+
+    assert not registry.has(FaultCode.COM_103)
+    assert [(c.action, c.by) for c in changes] == [
+        ("raised", None),
+        ("cleared", "hardware"),
+    ]
+
+
+async def test_ensure_cleared_goes_through_clear_fault_special_handling():
+    service, registry, _o, runner, _rec, _tx = make_service(lease_holder=lambda: "u1")
+    runner.attach(asyncio.get_running_loop())
+    service.raise_fault(FaultCode.SVC_102)
+
+    # The SVC-102 lease guard refuses; ensure_cleared reports it did not clear.
+    assert service.ensure_cleared(FaultCode.SVC_102) is False
+    assert registry.has(FaultCode.SVC_102)

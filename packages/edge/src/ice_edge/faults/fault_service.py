@@ -159,6 +159,20 @@ class FaultService:
         self.push_active_faults()
         self._changes.publish(FaultChange("raised", code, raised.sku, None))
 
+    def ensure_raised(self, code: FaultCode, *, outcome: str | None = None) -> bool:
+        """Raise a machine-scope ``code`` unless already active; True if raised."""
+        if self._registry.has(code):
+            return False
+        self.raise_fault(code, outcome=outcome)
+        return True
+
+    def ensure_cleared(self, code: FaultCode, *, by: str = "auto") -> bool:
+        """Clear ``code`` (through ``clear_fault``, so the SVC-102/PAY-104
+        handling applies) only if active; True if it was cleared."""
+        if not self._registry.has(code):
+            return False
+        return self.clear_fault(code.value, by=by)
+
     def clear_fault(self, key: str, by: str = "admin") -> bool:
         """Clear a fault by key (SKU for product faults, code string for machine faults)."""
         code = self._registry.pop_lockout(key)
@@ -238,7 +252,7 @@ class FaultService:
         code = _LIVENESS_FAULTS.get(subsystem)
         if code is not None:
             if alive:
-                self.clear_fault(code.value, by="auto")
+                self.ensure_cleared(code)
             else:
                 self.raise_fault(code, outcome="heartbeat_lost")
         availability = self._outputs.availability
@@ -253,7 +267,7 @@ class FaultService:
         if availability:
             availability.set_mqtt_connected(connected)
         if connected:
-            self.clear_fault(FaultCode.COM_103.value, by="auto")
+            self.ensure_cleared(FaultCode.COM_103)
             if availability:
                 availability.republish()
             self._outputs.state_changed(self._fsm_state())

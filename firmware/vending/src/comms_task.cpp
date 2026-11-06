@@ -5,14 +5,14 @@
 
 #include <atomic>
 
-#include "ack_cache.h"
+#include "boardcore/ack_cache.h"
+#include "boardcore/outbound_ring.h"
 #include "boardidf/mqtt_publisher.h"
 #include "boardidf/net.h"
 #include "channels.h"
 #include "command.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "outbound_ring.h"
 #include "queues.h"
 #include "version.h"
 #include "wire.h"
