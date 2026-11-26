@@ -102,9 +102,9 @@ Subsystem detail is in scoped `CLAUDE.md` files that load only when you work und
 | File | Covers |
 |---|---|
 | `packages/edge/CLAUDE.md` | startup, configuration, cloud uplink, FSM Core overview (dependency rule, `Machine`), task runner, services list |
-| `packages/edge/src/ice_edge/sale/CLAUDE.md` | `StatusOutputs`, `SaleJournal`, observers and `TestSaleRunner`, test-sale rules, maintenance lease |
+| `packages/edge/src/ice_edge/sale/CLAUDE.md` | `StatusOutputs`, `SaleJournal`, observers and `TestSaleRunner`, test-sale rules, maintenance lease, session evidence (`SessionEvidence`, PAY-104 Record as sale / Discard) |
 | `packages/edge/src/ice_edge/payment/CLAUDE.md` | payouts, evidence hold, boot recovery, per-boot reconciliation, cutover residuals |
-| `packages/edge/src/ice_edge/ledger/CLAUDE.md` | FIFO method attribution, session recovery |
+| `packages/edge/src/ice_edge/ledger/CLAUDE.md` | FIFO method attribution, pre-cents journal rows (session evidence moved to `sale/`) |
 | `packages/edge/src/ice_edge/faults/CLAUDE.md` | `FaultService`, `InputFaults` |
 | `packages/edge/src/ice_edge/vend/CLAUDE.md` | dispenser profiles (`dispensers.toml`), `DispenseCycle` |
 | `packages/edge/src/ice_edge/hal/CLAUDE.md` | telemetry router |

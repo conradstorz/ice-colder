@@ -962,7 +962,7 @@ class TestRecordedSaleWithLeftoverCredit:
         assert "only if the board still holds it" in text
         assert "verify the customer was repaid" in text
 
-    def test_recovery_detail_forwarded_on_machine(self, leftover):
+    def test_recovery_detail_on_machine_evidence(self, leftover):
         machine, _store, _db = leftover
         detail = machine.evidence.recovery_detail()
         assert detail is not None
