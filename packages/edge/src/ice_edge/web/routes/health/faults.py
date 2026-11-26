@@ -182,10 +182,7 @@ async def clear_fault(request: Request, key: str):
     machine = context.machine_instance
     if not vmc:
         raise HTTPException(status_code=404, detail=f"No active fault with key {key}")
-    if (
-        key == FaultCode.PAY_104.value
-        and machine.pending_sale_for_recovery() is not None
-    ):
+    if key == FaultCode.PAY_104.value and machine.evidence.plain_clear_refused():
         raise HTTPException(
             status_code=409,
             detail=(

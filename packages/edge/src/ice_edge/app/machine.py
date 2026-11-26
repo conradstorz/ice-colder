@@ -2,7 +2,7 @@
 and owns the service wiring.
 
 `StatusOutputs`, `FaultRegistry`/`FaultService`, `EscrowLedger`,
-`MdbGateway`, `SessionRecovery`, `TelemetryRouter`, `MaintenanceLease`
+`MdbGateway`, `SessionEvidence`, `TelemetryRouter`, `MaintenanceLease`
 and `DispenserProfileGate` were each carved off the VMC god object in turn
 (see `CLAUDE.md`'s "FSM Core" section); `Machine` builds every one of them
 *itself*, in the order below, then builds the `VMC` and hands most of them
@@ -47,13 +47,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import asdict
 from typing import Any
 
 from loguru import logger
 
 from ice_common.config_model import ConfigModel
-from ice_contracts.money import format_cents
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.hal import mqtt_inbound
 from ice_edge.vend.dispense_cycle import DispenseCycle
@@ -75,12 +73,12 @@ from ice_edge.ledger import payment_cursor
 from ice_edge.ledger.payment_cursor import PaymentCursorStore
 from ice_edge.faults.fault_service import FaultChange
 from ice_edge.payment.mdb import MdbGateway
-from ice_edge.payment.ports import Payments, PendingPayout, cash_cents, cash_share
+from ice_edge.payment.ports import Payments, PendingPayout, cash_cents
 from ice_edge.sale.sale_journal import SaleJournal
-from ice_edge.ledger.session_recovery import (
+from ice_edge.sale.session_evidence import (
     SALE_MATCH_MARGIN_SECONDS,
     RecoveryDetail,
-    SessionRecovery,
+    SessionEvidence,
 )
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.sale.test_sale import TestSaleRunner
@@ -90,14 +88,7 @@ from ice_edge.vend.dispensers import DispenserProfiles
 from ice_edge.customer_ui.display_controller import DisplayController
 from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.monitoring.inventory_manager import InventoryManager
-from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
-
-# Bound logger for the transaction log -- mirrors ice_edge/hal/mqtt_inbound.py's
-# `ice_log`: loguru's bind() only
-# attaches the `transaction` extra field, and sinks are resolved at log
-# time, so binding here at import is safe even though setup_logging() runs
-# later in main().
-_txn_log = logger.bind(transaction=True)
+from ice_edge.ledger.session_store import SessionStore
 
 #: Failure sources that keep DATA-104 raised; it clears only when none remains.
 _SNAPSHOT_SOURCE = "snapshot"
@@ -174,11 +165,6 @@ class Machine:
         """`payments` replaces the MDB gateway as the VMC's payout path (a
         seam for tests; the gateway is built and wired regardless)."""
         self._config = config
-        # True while session.json is crash evidence the operator must see
-        # (an uncertain boot snapshot, or a sale recorded nowhere durable).
-        # A runtime PAY-104 (escrow mismatch, cash_sale outcome) does not
-        # set it: persistence continues and clearing never deletes the file.
-        self._evidence_held = False
         self._data104_sources: set[str] = set()
         self._mdb_alive = False
         self._tasks = tasks if tasks is not None else TaskRunner()
@@ -200,9 +186,9 @@ class Machine:
             fsm_state=lambda: self.vmc.state,
             credit_escrow_cents=lambda: self._escrow.total_cents,
             selected_product=lambda: self.vmc.selected_product,
-            evidence_held=lambda: self._evidence_held,
+            evidence_held=lambda: self._evidence.held,
             tasks=self._tasks,
-            on_evidence_released=self._release_evidence,
+            on_evidence_released=lambda: self._evidence.release(),
             on_persist_failed=self._raise_session_unsaved,
             on_persist_ok=self._clear_session_unsaved,
         )
@@ -243,15 +229,21 @@ class Machine:
             escrow_is_empty=lambda: self.escrow.is_empty,
             make_idle_for_service=lambda: self.vmc.make_idle_for_service(),
         )
-        self._recovery = SessionRecovery(
+        self._payments: Payments = payments or _GatewayPayments(lambda: self._gateway)
+        self._evidence = SessionEvidence(
             store=lambda: self._outputs.session_store,
             product_name=self._product_name,
-            evidence_held=lambda: self._evidence_held,
+            faults=self._faults,
+            payments=self._payments,
+            recorder=lambda: self._event_recorder,
+            availability=lambda: self._outputs.availability,
             sale_recorded=self._sale_recorded,
             match_window_seconds=lambda: (
                 self._config.physical.dispense_timeout_seconds
                 + SALE_MATCH_MARGIN_SECONDS
             ),
+            seed_event_ids=lambda ids: self._gateway.intake.seed(ids),
+            seed_payouts=lambda items: self._gateway.seed_payouts(items),
         )
         # The router is a pure fan-out; every consumer is subscribed here.
         self._telemetry = mqtt_inbound.TelemetryRouter()
@@ -308,18 +300,12 @@ class Machine:
                 else None
             ),
             tasks=self._tasks,
-            hold_evidence=self._hold_evidence,
+            hold_evidence=lambda: self._evidence.hold(),
             timeout_seconds=lambda: self.vmc.dispense_timeout_seconds,
             on_failed=self.vmc.on_dispense_failed,
             on_request_id=self.vmc.note_dispense_request,
         )
 
-        self._payments: Payments = payments or _GatewayPayments(lambda: self._gateway)
-        # Recovered sales whose cash_sale this process already queued (a retried
-        # "Record as sale" must not tell the board twice).
-        self._recovered_cash_sales: set[tuple] = set()
-        # The uncertain boot snapshot, held read-only until PAY-104 resolves.
-        self._boot_snapshot: SessionSnapshot | None = None
         self._vmc = VMC(
             config,
             tasks=self._tasks,
@@ -407,32 +393,14 @@ class Machine:
         self._tasks.fire_and_forget(client.publish(PAYMENT_EVENT_ACK_TOPIC, ack))
 
     def _on_fault_change(self, change: FaultChange) -> None:
-        if change.action == "cleared" and change.code is FaultCode.PAY_104:
-            # Whatever path resolved PAY-104 (Record as sale, Discard, Clear):
-            # re-queue the boot snapshot's unconfirmed payouts / cash_sales
-            # (same request_ids; the board dedupes) BEFORE reconciliation is
-            # released, so the queue is non-idle when it evaluates and the
-            # sale's price is never paid out as an excess.
-            self._requeue_boot_payouts()
+        # First, before reconciliation is released: the evidence module
+        # re-queues the boot snapshot's payouts so the queue is non-idle when
+        # the reconciler evaluates.
+        self._evidence.on_fault_change(change)
         if change.action == "cleared" and change.code is FaultCode.PAY_101:
             self._gateway.on_pay101_cleared()
         else:
             self._gateway.reconciler.maybe_run()
-
-    def _requeue_boot_payouts(self) -> None:
-        snap, self._boot_snapshot = self._boot_snapshot, None
-        if snap is None or not snap.pending_payouts:
-            return
-        items = []
-        for d in snap.pending_payouts:
-            try:
-                items.append(PendingPayout(**d))
-            except TypeError:
-                logger.error(f"dropping malformed pending payout {d!r}")
-                self._faults.raise_fault(
-                    FaultCode.PAY_103, outcome=f"invalid_pending:{d.get('request_id')}"
-                )
-        self._gateway.seed_payouts(items)
 
     def _on_fsm_state(self, _state: str) -> None:
         self._gateway.reconciler.maybe_run()
@@ -495,8 +463,12 @@ class Machine:
         return self._test_sales
 
     @property
-    def recovery(self) -> SessionRecovery:
-        return self._recovery
+    def recovery(self) -> SessionEvidence:
+        return self._evidence
+
+    @property
+    def evidence(self) -> SessionEvidence:
+        return self._evidence
 
     @property
     def telemetry(self) -> mqtt_inbound.TelemetryRouter:
@@ -699,23 +671,7 @@ class Machine:
                 "(attach the recorder first)."
             )
         self._outputs.attach_session_store(store)
-        decision = self._recovery.evaluate_at_boot()
-        if decision.snapshot is not None:
-            # A deposit that reached session.json but not the cursor before a
-            # crash is replayed by the board; seeding keeps it from crediting twice.
-            self._gateway.intake.seed(c.event_id for c in decision.snapshot.credits)
-        if decision.kind == "discard_test":
-            logger.warning(
-                "SessionStore: discarding a test-sale snapshot found at "
-                f"boot (sku={decision.snapshot.selected_sku!r}, "
-                f"state={decision.snapshot.state!r}); a test sale risks no "
-                "real money, so no PAY-104 is raised."
-            )
-        elif decision.kind == "uncertain":
-            self._boot_snapshot = decision.snapshot
-            self._flag_uncertain_session(decision.snapshot)
-        elif decision.kind == "closed" and decision.snapshot.pending_sale_shares:
-            self._recover_closed_cash_sale(decision.snapshot)
+        self._evidence.recover_at_boot()
         logger.debug("Machine attached session store.")
 
     def set_command_dispatcher(self, dispatcher) -> None:
@@ -757,77 +713,22 @@ class Machine:
             window_seconds=window_seconds,
         )
 
-    def _recover_closed_cash_sale(self, snap: SessionSnapshot) -> None:
-        """The crash fell after the sales row was written but before the
-        sale's cash_sale was queued (a closed snapshot holds no pending
-        payouts, so none was). Tell the board the cash share left its escrow,
-        queued here -- before edge-start reconciliation can evaluate -- so it
-        is not paid back out as an excess. The snapshot carries no event ids,
-        so the full cash share is sent; if the board rebooted meanwhile the
-        board clamps it and PAY-104 is raised (visible, moves no money)."""
-        cents = cash_share(snap.pending_sale_shares)
-        if cents <= 0:
-            return
-        logger.warning(
-            f"Recovering the cash_sale of an already-recorded sale at boot: "
-            f"{format_cents(cents)} (sku={snap.selected_sku!r})"
-        )
-        self._payments.cash_sale(cents, None)
-
-    def _hold_evidence(self) -> None:
-        self._evidence_held = True
-
-    def _release_evidence(self) -> None:
-        self._evidence_held = False
-
-    def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
-        """Side effects of an 'uncertain' boot decision other than
-        `SessionStore.clear()` itself (which `SessionRecovery.
-        evaluate_at_boot` already performs for the other two decision
-        kinds) -- mirrors `VMC._flag_uncertain_session` exactly."""
-        detail = snap.error or (
-            f"state={snap.state} escrow={format_cents(snap.credit_escrow_cents)} "
-            f"sku={snap.selected_sku} payouts={len(snap.pending_payouts)}"
-        )
-        logger.error(f"Transaction uncertain after restart: {detail}")
-        _txn_log.error(f"RESTART WITH OPEN SESSION: {detail}")
-        if self._event_recorder:
-            self._event_recorder.record(
-                "session_uncertain",
-                value=snap.credit_escrow_cents,
-                metadata=asdict(snap),
-            )
-        self._hold_evidence()
-        availability = self._outputs.availability
-        if availability:
-            availability.set_transaction_certain(False)
-        self._faults.raise_fault(FaultCode.PAY_104, outcome=detail)
-
-    # --- recovery conveniences (one-line forwards; routes call them) ---
+    # --- recovery conveniences (one-line forwards onto `evidence`) ---
 
     def recovery_detail(self) -> RecoveryDetail | None:
-        return self._recovery.recovery_detail()
+        return self._evidence.recovery_detail()
 
     def pending_sale_for_recovery(self) -> dict | None:
-        return self._recovery.pending_sale_for_recovery()
+        return self._evidence.pending_sale_for_recovery()
 
     def send_recovered_cash_sale(self, pending: dict) -> bool:
-        """After "Record as sale": tell the board the pending sale's cash share
-        left its escrow (`cash_sale(cash share, None)`). Once per sale per
-        process; returns whether a command was queued."""
-        key = (pending["sku"], pending["saved_at"])
-        cents = cash_share(pending["methods"])
-        if cents <= 0 or key in self._recovered_cash_sales:
-            return False
-        self._payments.cash_sale(cents, None)
-        self._recovered_cash_sales.add(key)
-        return True
+        return self._evidence.send_recovered_cash_sale(pending)
 
     def pending_sale_already_recorded(self, pending: dict) -> bool:
-        return self._recovery.pending_sale_already_recorded(pending)
+        return self._evidence.pending_sale_already_recorded(pending)
 
     def reserve_pending_sale(self, pending: dict) -> None:
-        self._recovery.reserve_pending_sale(pending)
+        self._evidence.reserve_pending_sale(pending)
 
     def mark_pending_sale_recorded(self) -> bool:
-        return self._recovery.mark_pending_sale_recorded()
+        return self._evidence.mark_pending_sale_recorded()

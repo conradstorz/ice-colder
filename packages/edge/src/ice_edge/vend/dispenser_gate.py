@@ -3,7 +3,7 @@
 eighth piece carved off the VMC god object, following the same pattern as
 ``ice_edge/faults/fault_registry.py``'s ``FaultRegistry``,
 ``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger``,
-``ice_edge/ledger/session_recovery.py``'s ``SessionRecovery``,
+``ice_edge/sale/session_evidence.py``'s ``SessionEvidence``,
 ``ice_edge/hal/mqtt_inbound.py``'s ``TelemetryRouter``, and
 ``ice_edge/sale/maintenance_lease.py``'s ``MaintenanceLease`` (see
 ``CLAUDE.md``'s "FSM Core" section). ``DispenserProfileGate`` owns the

@@ -4,7 +4,7 @@ persistent-task set drained (not cancelled) at shutdown.
 Extracted from ``ice_edge.sale.vmc.VMC`` following the same pattern as
 ``ice_edge/faults/fault_registry.py``'s ``FaultRegistry``,
 ``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger``,
-``ice_edge/ledger/session_recovery.py``'s ``SessionRecovery`` and
+``ice_edge/sale/session_evidence.py``'s ``SessionEvidence`` and
 ``ice_edge/sale/maintenance_lease.py``'s ``MaintenanceLease`` (see
 ``CLAUDE.md``'s "FSM Core" section). ``TaskRunner`` is pure event-loop
 bookkeeping with no domain knowledge whatsoever: it does not know about the

@@ -41,8 +41,7 @@ packages/
       notify/          alert delivery (§7): mailer, notifier
       monitoring/      environment & physical monitoring (§2.6): health_monitor, inventory_manager
       access/          roles & access control (§5): access, auth_policy
-      ledger/          escrow ledger & durability (§2.3): escrow_ledger, event_recorder, session_store,
-                       session_recovery
+      ledger/          escrow ledger & durability (§2.3): escrow_ledger, event_recorder, session_store
       customer_ui/     customer UI (§2.7): display_controller
       hal/             hardware abstraction (§2.1): mqtt_inbound, command_dispatcher
       config/          config persistence: config_store
