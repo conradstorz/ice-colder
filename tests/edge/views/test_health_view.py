@@ -150,7 +150,7 @@ def scenario(tmp_path):
     machine, monitor, avail, recorder = _pay104_machine(tmp_path)
     codes = fault_codes(machine.vmc)
     assert {"PAY-104", "ICE-301"} <= codes, "positive control: both faults active"
-    assert machine.pending_sale_for_recovery() is not None
+    assert machine.evidence.pending_sale_for_recovery() is not None
     yield machine, monitor, avail, recorder
     machine.cancel_pending_tasks()
 
@@ -283,7 +283,7 @@ def _legacy_faults_with_age(machine, monitor) -> list[dict]:
         f["gate"] = fault_gate(f)
         f["dom_key"] = f["key"]
         f["pending_sale"] = (
-            machine.pending_sale_for_recovery()
+            machine.evidence.pending_sale_for_recovery()
             if f["code"] == FaultCode.PAY_104.value
             else None
         )

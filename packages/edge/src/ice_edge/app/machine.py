@@ -77,7 +77,6 @@ from ice_edge.payment.ports import Payments, PendingPayout, cash_cents
 from ice_edge.sale.sale_journal import SaleJournal
 from ice_edge.sale.session_evidence import (
     SALE_MATCH_MARGIN_SECONDS,
-    RecoveryDetail,
     SessionEvidence,
 )
 from ice_edge.supervisor.task_runner import TaskRunner
@@ -463,10 +462,6 @@ class Machine:
         return self._test_sales
 
     @property
-    def recovery(self) -> SessionEvidence:
-        return self._evidence
-
-    @property
     def evidence(self) -> SessionEvidence:
         return self._evidence
 
@@ -712,23 +707,3 @@ class Machine:
             methods,
             window_seconds=window_seconds,
         )
-
-    # --- recovery conveniences (one-line forwards onto `evidence`) ---
-
-    def recovery_detail(self) -> RecoveryDetail | None:
-        return self._evidence.recovery_detail()
-
-    def pending_sale_for_recovery(self) -> dict | None:
-        return self._evidence.pending_sale_for_recovery()
-
-    def send_recovered_cash_sale(self, pending: dict) -> bool:
-        return self._evidence.send_recovered_cash_sale(pending)
-
-    def pending_sale_already_recorded(self, pending: dict) -> bool:
-        return self._evidence.pending_sale_already_recorded(pending)
-
-    def reserve_pending_sale(self, pending: dict) -> None:
-        self._evidence.reserve_pending_sale(pending)
-
-    def mark_pending_sale_recorded(self) -> bool:
-        return self._evidence.mark_pending_sale_recorded()

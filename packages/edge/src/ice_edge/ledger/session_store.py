@@ -82,7 +82,7 @@ class SessionSnapshot:
     # two chokepoints so a crashed test sale can never reach the sales
     # ledger even if a second persistence path is added later: VMC.
     # set_session_store() (boot) skips raising PAY-104 for it at all, and
-    # VMC.pending_sale_for_recovery() refuses to surface it even if some
+    # SessionEvidence.pending_sale_for_recovery() refuses to surface it even if some
     # future path leaves PAY-104 active anyway.
     is_test: bool = False
     saved_at: float = field(default_factory=time.time)

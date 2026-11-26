@@ -76,7 +76,7 @@ class TestConstruction:
         assert machine.gateway is not None
         assert machine.gate is not None
         assert machine.lease is not None
-        assert machine.recovery is not None
+        assert machine.evidence is not None
         assert machine.telemetry is not None
 
     def test_sink_properties_are_none_until_attached(self):
