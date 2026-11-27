@@ -142,3 +142,17 @@ Money is integer cents everywhere inside the system (spec `docs/superpowers/spec
 - **Timezone handling**: Report bucketing uses the machine's local timezone; weeks start on **Monday**; a sale exactly on a boundary (e.g. midnight) belongs to the **later** bucket.
 - **DST testing**: `zoneinfo.ZoneInfo` is **unusable on a Windows checkout without `tzdata`**, so the DST tests use synthetic `tzinfo` classes. The shared synthetic zones (`SyntheticDstTz` and `SyntheticFallBackTz`, plus the fixed-offset `FIXED_TZ` and the `fixed_dt` helper) live in `tests/edge/reporting/tz.py`; `test_reports.py` uses them to test report bucketing across DST transitions, and `test_report_scheduler.py` reuses them to verify the scheduler threads its `tz` parameter correctly. Production code uses the OS's real timezone resolver.
 - **CSS class extractor limitation**: `tests/ui/test_static_css.py`'s class extractor cannot tell markup inside a Jinja2 comment (`{# ... #}`) from real markup, so a template comment containing a literal `class="..."` will fail the test. This regex-based limitation (`_CLASS_ATTR_RE` at line 25) has no comment awareness — mentioning a Tailwind class name in a comment is safe, but writing an actual `class="..."` attribute in one is not. `tests/meta/test_no_private_access.py`'s private-access ratchet does *not* share this blindness: it walks the `ast`, so private names in comments and docstrings are ignored.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for conradstorz/ice-colder (`gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `GLOSSARY.md` + `docs/adr/`, created lazily. See `docs/agents/domain.md`.
