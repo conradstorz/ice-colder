@@ -9,6 +9,7 @@ from ice_edge.ledger.session_store import (
     Credit,
     SessionSnapshot,
     SessionStore,
+    UnreadableSnapshot,
 )
 
 
@@ -85,7 +86,7 @@ def test_old_file_with_no_credits_key_still_loads_with_defaults(tmp_path):
 
     loaded = SessionStore(path).load()
 
-    assert loaded.error is None
+    assert isinstance(loaded, SessionSnapshot)
     assert loaded.credit_escrow_cents == 125
     assert loaded.credits == []
     assert loaded.pending_sale_shares is None
@@ -113,7 +114,7 @@ def test_old_file_with_no_is_test_key_defaults_to_production(tmp_path):
 
     loaded = SessionStore(path).load()
 
-    assert loaded.error is None
+    assert isinstance(loaded, SessionSnapshot)
     assert loaded.is_test is False
     assert loaded.pending_sale_shares == {"cash_bill": 250}
     assert loaded.is_open() is True
@@ -140,7 +141,7 @@ def test_old_file_with_no_dispense_mechanism_key_still_loads(tmp_path):
 
     loaded = SessionStore(path).load()
 
-    assert loaded.error is None
+    assert isinstance(loaded, SessionSnapshot)
     assert loaded.dispense_mechanism is None
     assert loaded.is_open() is True
 
@@ -189,13 +190,12 @@ def test_clear_returns_false_when_unlink_raises(tmp_path, monkeypatch):
     assert store.clear() is False
 
 
-def test_corrupt_file_is_an_open_session_with_error(tmp_path):
+def test_corrupt_file_loads_as_unreadable_snapshot(tmp_path):
     p = tmp_path / "session.json"
     p.write_text("{not json", encoding="utf-8")
     snap = SessionStore(p).load()
-    assert snap is not None
-    assert snap.error
-    assert snap.is_open() is True
+    assert isinstance(snap, UnreadableSnapshot)
+    assert snap.detail
 
 
 def test_is_open_rules():
@@ -253,9 +253,7 @@ def test_missing_saved_at_is_reported_as_unreadable_not_defaulted_to_now(tmp_pat
     loaded = SessionStore(path).load()
 
     assert loaded is not None
-    assert loaded.error is not None
-    assert loaded.credit_escrow_cents == 0  # the fabricated 5.0 was not trusted
-    assert loaded.is_open() is True
+    assert isinstance(loaded, UnreadableSnapshot)
 
 
 def test_non_finite_saved_at_is_reported_as_unreadable(tmp_path):
@@ -271,9 +269,7 @@ def test_non_finite_saved_at_is_reported_as_unreadable(tmp_path):
     loaded = SessionStore(path).load()
 
     assert loaded is not None
-    assert loaded.error is not None
-    assert loaded.credit_escrow_cents == 0
-    assert loaded.is_open() is True
+    assert isinstance(loaded, UnreadableSnapshot)
 
 
 def test_negative_saved_at_is_reported_as_unreadable(tmp_path):
@@ -286,9 +282,7 @@ def test_negative_saved_at_is_reported_as_unreadable(tmp_path):
     loaded = SessionStore(path).load()
 
     assert loaded is not None
-    assert loaded.error is not None
-    assert loaded.credit_escrow_cents == 0
-    assert loaded.is_open() is True
+    assert isinstance(loaded, UnreadableSnapshot)
 
 
 def test_is_open_unchanged_for_open_and_cleared_snapshot_after_guard(tmp_path):
@@ -328,7 +322,7 @@ def test_future_saved_at_beyond_skew_loads_with_a_warning(tmp_path):
         logger.remove(sink)
 
     assert loaded is not None
-    assert loaded.error is None
+    assert isinstance(loaded, SessionSnapshot)
     assert loaded.credit_escrow_cents == 500
     assert loaded.saved_at == future
     assert loaded.is_open() is True
@@ -357,7 +351,7 @@ def test_saved_at_just_within_future_skew_is_accepted(tmp_path):
         logger.remove(sink)
 
     assert loaded is not None
-    assert loaded.error is None
+    assert isinstance(loaded, SessionSnapshot)
     assert loaded.credit_escrow_cents == 500
     assert loaded.saved_at == within_skew
     assert not any("saved_at" in m for m in messages)
@@ -378,9 +372,7 @@ def test_zero_saved_at_is_reported_as_unreadable(tmp_path):
     loaded = SessionStore(path).load()
 
     assert loaded is not None
-    assert loaded.error is not None
-    assert loaded.credit_escrow_cents == 0
-    assert loaded.is_open() is True
+    assert isinstance(loaded, UnreadableSnapshot)
 
 
 def test_save_writes_units_cents_marker(tmp_path):
@@ -446,7 +438,7 @@ def test_pending_payouts_keep_a_snapshot_open_and_round_trip(tmp_path):
     assert store.load().pending_payouts == [payout]
 
 
-def test_pre_cents_file_loads_as_an_open_error_snapshot(tmp_path):
+def test_pre_cents_file_loads_as_an_unreadable_snapshot(tmp_path):
     """Legacy dollar / refund-id keys are no longer understood; the file must
     fail safe as an unreadable (open, PAY-104) snapshot, never as 'closed'."""
     path = tmp_path / "session.json"
@@ -464,8 +456,8 @@ def test_pre_cents_file_loads_as_an_open_error_snapshot(tmp_path):
 
     loaded = SessionStore(path).load()
 
-    assert loaded.error
-    assert loaded.is_open()
+    assert isinstance(loaded, UnreadableSnapshot)
+    assert loaded.detail
 
 
 def _previous_release_file(**overrides):
@@ -499,7 +491,7 @@ def test_previous_release_file_with_null_refund_id_loads_readable(tmp_path):
 
     loaded = SessionStore(path).load()
 
-    assert loaded.error is None
+    assert isinstance(loaded, SessionSnapshot)
     assert loaded.pending_sale_shares == {"cash": 250}
     assert loaded.credits == [Credit("cash_bill", 125, 1.0, event_id="evt-1")]
 
@@ -513,8 +505,8 @@ def test_non_null_legacy_refund_id_still_fails_safe(tmp_path):
 
     loaded = SessionStore(path).load()
 
-    assert loaded.error
-    assert loaded.is_open()
+    assert isinstance(loaded, UnreadableSnapshot)
+    assert loaded.detail
 
 
 def _write_precents_with_pending_sale(path):
@@ -540,10 +532,12 @@ def test_unreadable_file_is_preserved_and_survives_clear(tmp_path):
 
     loaded = store.load()
 
-    assert loaded.error and "raw file kept at" in loaded.error
+    assert isinstance(loaded, UnreadableSnapshot)
+    assert "raw file kept at" in loaded.detail
+    assert loaded.kept_at is not None
     kept = [p for p in tmp_path.glob("session.unreadable.*.json")]
     assert len(kept) == 1 and kept[0].read_bytes() == original
-    assert kept[0].name in loaded.error
+    assert kept[0].name in loaded.detail
 
     assert store.clear() is True  # Discard / Clear (as Discard)
     assert not path.exists()
@@ -558,7 +552,7 @@ def test_repeated_loads_of_an_unreadable_file_keep_one_copy(tmp_path):
     first = store.load()
     second = store.load()
 
-    assert first.error == second.error
+    assert first == second
     assert len(list(tmp_path.glob("session.unreadable.*.json"))) == 1
 
 
@@ -588,5 +582,40 @@ def test_preserved_copy_name_carries_16_hex_digest(tmp_path):
 def test_readable_file_leaves_no_preserved_copy(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(SessionSnapshot(state="idle", credit_escrow_cents=5))
-    assert store.load().error is None
+    assert isinstance(store.load(), SessionSnapshot)
     assert not list(tmp_path.glob("session.unreadable.*"))
+
+
+def test_null_error_key_from_an_older_save_loads_as_a_normal_snapshot(tmp_path):
+    """Every session.json written before the error field was removed carries
+    "error": null; it must still load as a snapshot, not as unreadable."""
+    path = tmp_path / "session.json"
+    store = SessionStore(path)
+    store.save(
+        SessionSnapshot(state="dispensing", credit_escrow_cents=250, saved_at=100.0)
+    )
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["error"] = None
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = store.load()
+
+    assert isinstance(loaded, SessionSnapshot)
+    assert loaded.credit_escrow_cents == 250
+    assert loaded.is_open()
+
+
+def test_non_null_error_key_loads_as_unreadable(tmp_path):
+    path = tmp_path / "session.json"
+    store = SessionStore(path)
+    store.save(
+        SessionSnapshot(state="dispensing", credit_escrow_cents=250, saved_at=100.0)
+    )
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["error"] = "bad json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = store.load()
+
+    assert isinstance(loaded, UnreadableSnapshot)
+    assert "error" in loaded.detail

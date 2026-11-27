@@ -3206,7 +3206,7 @@ class TestRunTestSale:
         # test-flagged -- before asserting anything about recovery from it.
         raw = SessionStore(store_path).load()
         assert raw is not None
-        assert raw.error is None
+        assert isinstance(raw, SessionSnapshot)
         assert raw.is_test is True
         assert raw.pending_sale_shares == {"test": 250}
         assert raw.is_open() is True

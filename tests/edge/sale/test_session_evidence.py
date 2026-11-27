@@ -8,7 +8,11 @@ import asyncio
 
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.faults.fault_service import FaultChange
-from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
+from ice_edge.ledger.session_store import (
+    SessionSnapshot,
+    SessionStore,
+    UnreadableSnapshot,
+)
 from ice_edge.sale.session_evidence import (
     BootDecision,
     DiscardOutcome,
@@ -476,7 +480,6 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
             pending_payouts=[
                 {"request_id": "p1", "kind": "payout", "cents": 100, "reason": "change"}
             ],
-            error="bad json",
         )
     )
     detail = make_recovery(
@@ -490,7 +493,7 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
         pending_payouts=[
             {"request_id": "p1", "kind": "payout", "cents": 100, "reason": "change"}
         ],
-        error="bad json",
+        error=None,
         is_test=False,
     )
 
@@ -558,7 +561,8 @@ def test_unreadable_pre_cents_snapshot_still_raises_uncertain_at_boot(tmp_path):
     decision = make_recovery(store).recover_at_boot()
 
     assert decision.kind == "uncertain"
-    assert decision.snapshot.error
+    assert isinstance(decision.snapshot, UnreadableSnapshot)
+    assert decision.snapshot.detail
     assert path.exists()
 
 
@@ -930,3 +934,30 @@ async def test_machine_requeues_boot_payouts_before_reconciler_runs(
     machine.vmc.clear_fault(FaultCode.PAY_104.value, by="admin")
 
     assert order[:2] == ["requeue", "reconcile"]
+
+
+def test_recovery_detail_for_an_unreadable_snapshot(tmp_path):
+    path = tmp_path / "session.json"
+    path.write_text("{not json", encoding="utf-8")
+    detail = make_recovery(
+        SessionStore(path), evidence_held=True, sale_recorded=lambda *a: True
+    ).recovery_detail()
+
+    assert detail is not None
+    assert detail.sku is None
+    assert detail.sale_recorded is False
+    assert detail.credit_escrow_cents == 0
+    assert detail.pending_payouts == []
+    assert detail.is_test is False
+    assert "raw file kept at" in detail.error
+
+
+def test_unreadable_snapshot_offers_no_recovery_and_is_never_rewritten(
+    tmp_path,
+):
+    path = tmp_path / "session.json"
+    path.write_text("{not json", encoding="utf-8")
+    evidence = make_recovery(SessionStore(path), evidence_held=True)
+
+    assert evidence.pending_sale_for_recovery() is None
+    assert path.read_text(encoding="utf-8") == "{not json"
