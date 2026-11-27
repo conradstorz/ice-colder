@@ -9,6 +9,7 @@ from ice_common.config_model import Product
 from ice_edge.ledger.event_recorder import SaleRecordingFailed
 from ice_edge.ledger.session_store import SessionStore
 from ice_edge.monitoring.inventory_manager import InventoryManager
+from ice_edge.sale.session_evidence import RecordOutcome
 from tests.edge.fault_helpers import fault_codes
 from tests.edge.sale.test_vmc_flows import (
     payouts,
@@ -147,6 +148,14 @@ class _GatedRecorder:
         self.sales.append((sku, price, methods))
 
 
+class _OkRecorder:
+    def __init__(self):
+        self.sales = []
+
+    def record_sale(self, sku, name, slot, price, methods, **kwargs):
+        self.sales.append((sku, price, methods))
+
+
 async def _start_blocked_write(machine, vmc, recorder, product=None):
     """Drive a paid sale to the awaited sale write; return the report task."""
     machine.set_event_recorder(recorder)
@@ -216,7 +225,12 @@ async def test_error_during_failed_write_keeps_snapshot_for_pay104_recovery(tmp_
     pending = machine.evidence.pending_sale_for_recovery()
     assert pending is not None
     assert pending["sku"] == "ICE-1"
-    assert machine.evidence.mark_pending_sale_recorded() is True
+    # Record as sale works from this snapshot: the pending sale is written
+    # once and PAY-104 clears.
+    ok = _OkRecorder()
+    assert await machine.evidence.record_pending_sale(ok) is RecordOutcome.RECORDED
+    assert ok.sales == [("ICE-1", 250, {"cash_bill": 250})]
+    assert "PAY-104" not in fault_codes(vmc)
 
 
 async def test_stale_write_does_not_touch_the_next_customers_sale(tmp_path):

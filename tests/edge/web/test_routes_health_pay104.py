@@ -664,7 +664,7 @@ class TestRecordSaleExactlyOnce:
 
 
 class TestMarkerFailureExactlyOnce:
-    """Part 3 review, finding 3: `mark_pending_sale_recorded()`'s own
+    """Part 3 review, finding 3: the durable marker write's own
     `bool` return was discarded at health.py:504-517. It can fail for the
     same underlying I/O reason that made `clear_fault`'s snapshot removal
     fail one line earlier -- both go through the same `SessionStore`

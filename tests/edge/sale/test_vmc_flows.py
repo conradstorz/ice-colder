@@ -3237,7 +3237,7 @@ class TestRunTestSale:
         crash test above: forces PAY-104 active and a test-flagged
         snapshot onto disk directly, attaching the store through
         set_session_store() while store_path has nothing on it yet (so its
-        boot-time eval, evaluate_at_boot, finds no snapshot and does
+        boot-time eval (recover_at_boot), finds no snapshot and does
         nothing) and only saving the test-flagged snapshot afterward, to
         prove this second chokepoint refuses on its own merits -- not only
         because the boot gate already keeps the two states from ever
@@ -3253,7 +3253,7 @@ class TestRunTestSale:
         vmc = machine.vmc
         session_store = SessionStore(store_path)
         # Attached before anything is saved to store_path, so
-        # set_session_store's own boot-time eval (evaluate_at_boot) finds
+        # set_session_store's own boot-time eval (recover_at_boot) finds
         # no snapshot on disk and does nothing -- the snapshot below is
         # saved only after attaching, through the normal public setter.
         machine.set_session_store(session_store)

@@ -48,7 +48,7 @@ BootDecisionKind = Literal["discard_test", "uncertain", "closed", "none"]
 
 @dataclass(frozen=True)
 class BootDecision:
-    """Result of :meth:`SessionEvidence.evaluate_at_boot`.
+    """Result of :meth:`SessionEvidence.recover_at_boot`.
 
     ``kind``: ``"none"`` (no snapshot / no store); ``"discard_test"`` (an
     ``is_test`` snapshot, already cleared -- a test sale risks no real money);
@@ -178,7 +178,7 @@ class SessionEvidence:
         raises PAY-104; a ``closed`` snapshot with a pending sale re-queues its
         cash_sale.
         """
-        decision = self.evaluate_at_boot()
+        decision = self._evaluate_at_boot()
         snap = decision.snapshot
         if snap is not None:
             self._seed_event_ids(c.event_id for c in snap.credits)
@@ -196,7 +196,7 @@ class SessionEvidence:
             self._recover_closed_cash_sale(snap)
         return decision
 
-    def evaluate_at_boot(self) -> BootDecision:
+    def _evaluate_at_boot(self) -> BootDecision:
         """Load any snapshot left by a previous run and decide its fate.
 
         An ``is_test`` snapshot is discarded (never raises PAY-104); an open
@@ -356,7 +356,7 @@ class SessionEvidence:
         ``None`` unless the evidence is held (a runtime PAY-104 alone leaves
         the LIVE snapshot on disk, which is not a recoverable sale) *and* the
         on-disk snapshot carries non-empty ``pending_sale_shares``. A test
-        snapshot is never offered (defence in depth beside ``evaluate_at_boot``)
+        snapshot is never offered (defence in depth beside ``_evaluate_at_boot``)
         and neither is a sale that already has a ``sales`` row.
 
         The price is the sum of the shares -- the money actually taken -- not a
@@ -417,17 +417,17 @@ class SessionEvidence:
             pending["saved_at"],
         )
 
-    def pending_sale_already_recorded(self, pending: dict) -> bool:
+    def _pending_sale_already_recorded(self, pending: dict) -> bool:
         """True if ``pending`` was already reserved in this process. Closes the
         gap only for this process; a restart loses it, which is why the
         idempotent insert, not this, is what makes a retry safe."""
         return self._sale_key(pending) in self._recorded_keys
 
-    def reserve_pending_sale(self, pending: dict) -> None:
+    def _reserve_pending_sale(self, pending: dict) -> None:
         """Record, in memory only, that ``pending`` has been written. Never raises."""
         self._recorded_keys.add(self._sale_key(pending))
 
-    def mark_pending_sale_recorded(self) -> bool:
+    def _mark_pending_sale_recorded(self) -> bool:
         """Durably mark the on-disk snapshot's pending sale as already recorded
         (clear ``pending_sale_shares``), without touching fault state.
 
@@ -454,7 +454,7 @@ class SessionEvidence:
             return False
         return True
 
-    def send_recovered_cash_sale(self, pending: dict) -> bool:
+    def _send_recovered_cash_sale(self, pending: dict) -> bool:
         """After Record as sale: tell the board the pending sale's cash share
         left its escrow (``cash_sale(cash share, None)``). Once per sale per
         process; returns whether a command was queued."""
@@ -482,7 +482,7 @@ class SessionEvidence:
         with :meth:`discard`.
 
         A successful write followed by a failed clear reserves the sale in
-        memory, then durably marks the snapshot (``mark_pending_sale_recorded``);
+        memory, then durably marks the snapshot (``_mark_pending_sale_recorded``);
         either way no later request in this process writes it again. Safety
         across restarts comes from the database: the write passes
         ``ts=pending["saved_at"]`` and ``idempotent=True``, so a second attempt
@@ -492,7 +492,7 @@ class SessionEvidence:
             pending = self.pending_sale_for_recovery()
             if pending is None:
                 return RecordOutcome.NOTHING_PENDING
-            if self.pending_sale_already_recorded(pending):
+            if self._pending_sale_already_recorded(pending):
                 return RecordOutcome.ALREADY_RESERVED
             if recorder is None:
                 return RecordOutcome.NO_RECORDER
@@ -525,7 +525,7 @@ class SessionEvidence:
             # PAY-104 and the evidence stay held: a retry re-runs the
             # idempotent insert and queues the cash_sale.
             try:
-                self.send_recovered_cash_sale(pending)
+                self._send_recovered_cash_sale(pending)
             except Exception:
                 logger.exception("PAY-104 record-sale: cash_sale could not be queued")
                 self._faults.raise_fault(
@@ -536,8 +536,8 @@ class SessionEvidence:
                 # Reserve before anything else, still inside the lock, so even
                 # if the durable marker also fails no later request in this
                 # process can find a pending sale again.
-                self.reserve_pending_sale(pending)
-                if self.mark_pending_sale_recorded():
+                self._reserve_pending_sale(pending)
+                if self._mark_pending_sale_recorded():
                     return RecordOutcome.CLEAR_FAILED_MARKER_WRITTEN
                 # Surface the storage problem as a fault that outlives the
                 # HTTP response; retrying is still safe (idempotent insert).

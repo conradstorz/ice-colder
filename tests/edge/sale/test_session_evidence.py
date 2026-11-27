@@ -121,32 +121,32 @@ def make_recovery(
     return evidence
 
 
-# --- evaluate_at_boot ---
+# --- boot decision (recover_at_boot) ---
 
 
-def test_evaluate_at_boot_none_with_no_file(tmp_path):
+def test_recover_at_boot_decision_none_with_no_file(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     recovery = make_recovery(store)
 
-    decision = recovery.evaluate_at_boot()
+    decision = recovery.recover_at_boot()
 
     assert decision == BootDecision(kind="none", snapshot=None)
 
 
-def test_evaluate_at_boot_closed_clears_the_file(tmp_path):
+def test_recover_at_boot_decision_closed_clears_the_file(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     snap = SessionSnapshot(state="idle", credit_escrow_cents=0)
     store.save(snap)
     recovery = make_recovery(store)
 
-    decision = recovery.evaluate_at_boot()
+    decision = recovery.recover_at_boot()
 
     assert decision.kind == "closed"
     assert decision.snapshot == snap
     assert store.load() is None
 
 
-def test_evaluate_at_boot_discard_test_clears_the_file(tmp_path):
+def test_recover_at_boot_decision_discard_test_clears_the_file(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     snap = SessionSnapshot(
         state="dispensing",
@@ -158,14 +158,14 @@ def test_evaluate_at_boot_discard_test_clears_the_file(tmp_path):
     store.save(snap)
     recovery = make_recovery(store)
 
-    decision = recovery.evaluate_at_boot()
+    decision = recovery.recover_at_boot()
 
     assert decision.kind == "discard_test"
     assert decision.snapshot == snap
     assert store.load() is None
 
 
-def test_evaluate_at_boot_uncertain_leaves_the_file(tmp_path):
+def test_recover_at_boot_decision_uncertain_leaves_the_file(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     snap = SessionSnapshot(
         state="dispensing",
@@ -174,18 +174,20 @@ def test_evaluate_at_boot_uncertain_leaves_the_file(tmp_path):
         pending_sale_shares={"cash_bill": 250},
     )
     store.save(snap)
-    recovery = make_recovery(store)
+    faults = FakeFaults()
+    recovery = make_recovery(store, faults=faults)
 
-    # Capture the file content before evaluate_at_boot
+    # Capture the file content before recover_at_boot
     file_path = tmp_path / "session.json"
     bytes_before = file_path.read_bytes()
     snapshot_before = store.load()
 
-    decision = recovery.evaluate_at_boot()
+    decision = recovery.recover_at_boot()
 
     # Verify the decision is correct
     assert decision.kind == "uncertain"
     assert decision.snapshot == snap
+    assert faults.codes() == [FaultCode.PAY_104]  # the boot side effect
 
     # Verify the file is unchanged (both content and loaded snapshot)
     bytes_after = file_path.read_bytes()
@@ -266,73 +268,87 @@ def test_pending_sale_for_recovery_returns_dict_when_everything_lines_up(tmp_pat
     }
 
 
-# --- reserve_pending_sale / pending_sale_already_recorded ---
+# --- record-once guard and durable marker (through record_pending_sale) ---
 
 
-def test_reserve_then_already_recorded_true_for_same_pending(tmp_path):
-    store = SessionStore(tmp_path / "session.json")
-    store.save(
-        SessionSnapshot(
-            state="dispensing",
-            credit_escrow_cents=0,
-            selected_sku="ICE-1",
-            pending_sale_shares={"cash_bill": 250},
-        )
+async def test_unwritable_marker_reserves_the_sale_in_memory(tmp_path, monkeypatch):
+    store, faults, evidence = _held_with_pending(
+        tmp_path, faults=FakeFaults(active=[FaultCode.PAY_104], clear_ok=False)
     )
-    recovery = make_recovery(store, evidence_held=True)
-    pending = recovery.pending_sale_for_recovery()
+    monkeypatch.setattr(store, "save", _save_fails)
+    recorder = FakeRecorder()
 
-    assert recovery.pending_sale_already_recorded(pending) is False
-    recovery.reserve_pending_sale(pending)
-    assert recovery.pending_sale_already_recorded(pending) is True
-
-
-def test_already_recorded_false_for_different_saved_at(tmp_path):
-    store = SessionStore(tmp_path / "session.json")
-    store.save(
-        SessionSnapshot(
-            state="dispensing",
-            credit_escrow_cents=0,
-            selected_sku="ICE-1",
-            pending_sale_shares={"cash_bill": 250},
-        )
+    assert (
+        await evidence.record_pending_sale(recorder) is RecordOutcome.MARKER_UNWRITABLE
     )
-    recovery = make_recovery(store, evidence_held=True)
-    pending = recovery.pending_sale_for_recovery()
-    recovery.reserve_pending_sale(pending)
-
-    different = dict(pending, saved_at=pending["saved_at"] + 1.0)
-
-    assert recovery.pending_sale_already_recorded(different) is False
-
-
-# --- mark_pending_sale_recorded ---
-
-
-def test_mark_pending_sale_recorded_clears_shares_on_disk(tmp_path):
-    store = SessionStore(tmp_path / "session.json")
-    store.save(
-        SessionSnapshot(
-            state="dispensing",
-            credit_escrow_cents=0,
-            selected_sku="ICE-1",
-            pending_sale_shares={"cash_bill": 250},
-        )
+    # The same pending sale is now reserved: a retry writes nothing more.
+    assert (
+        await evidence.record_pending_sale(recorder) is RecordOutcome.ALREADY_RESERVED
     )
-    recovery = make_recovery(store, evidence_held=True)
-    assert recovery.pending_sale_for_recovery() is not None
-
-    assert recovery.mark_pending_sale_recorded() is True
-
-    assert recovery.pending_sale_for_recovery() is None
-    reloaded = store.load()
-    assert reloaded.pending_sale_shares is None
+    assert len(recorder.sales) == 1
 
 
-def test_mark_pending_sale_recorded_false_with_no_store():
-    recovery = make_recovery(None, evidence_held=True)
+async def test_reservation_does_not_cover_a_different_pending_sale(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "session.json"
+    store, faults, evidence = _held_with_pending(
+        tmp_path, faults=FakeFaults(active=[FaultCode.PAY_104], clear_ok=False)
+    )
+    monkeypatch.setattr(store, "save", _save_fails)
+    recorder = FakeRecorder()
+    assert (
+        await evidence.record_pending_sale(recorder) is RecordOutcome.MARKER_UNWRITABLE
+    )
 
-    assert recovery.mark_pending_sale_recorded() is False
+    # A later sale (same sku and shares, different saved_at) lands on disk.
+    first = store.load()
+    SessionStore(path).save(_open_snapshot(saved_at=first.saved_at + 1.0))
+    faults.clear_ok = True
+
+    assert await evidence.record_pending_sale(recorder) is RecordOutcome.RECORDED
+    assert len(recorder.sales) == 2
+
+
+async def test_marker_write_clears_shares_on_disk(tmp_path):
+    store, faults, evidence = _held_with_pending(
+        tmp_path, faults=FakeFaults(active=[FaultCode.PAY_104], clear_ok=False)
+    )
+    assert evidence.pending_sale_for_recovery() is not None
+
+    outcome = await evidence.record_pending_sale(FakeRecorder())
+
+    assert outcome is RecordOutcome.CLEAR_FAILED_MARKER_WRITTEN
+    assert evidence.pending_sale_for_recovery() is None
+    assert store.load().pending_sale_shares is None
+
+
+async def test_unreadable_snapshot_at_marker_time_is_marker_unwritable(
+    tmp_path, monkeypatch
+):
+    store, faults, evidence = _held_with_pending(
+        tmp_path, faults=FakeFaults(active=[FaultCode.PAY_104], clear_ok=False)
+    )
+    real_load, calls = store.load, []
+
+    def load_then_fail():
+        calls.append(1)
+        if len(calls) > 1:  # the pending read succeeds; the marker's read fails
+            raise OSError("disk")
+        return real_load()
+
+    monkeypatch.setattr(store, "load", load_then_fail)
+    recorder = FakeRecorder()
+
+    outcome = await evidence.record_pending_sale(recorder)
+
+    assert outcome is RecordOutcome.MARKER_UNWRITABLE
+    assert faults.codes() == [FaultCode.DATA_101]
+    assert len(recorder.sales) == 1
+
+
+def _save_fails(snap):
+    raise OSError("disk")
 
 
 # --- already-recorded sale (M5) ---
@@ -358,10 +374,14 @@ def test_uncertain_snapshot_whose_sale_is_recorded_is_closed(tmp_path):
         calls.append((sku, since_ts, methods))
         return True
 
-    decision = make_recovery(store, sale_recorded=recorded).evaluate_at_boot()
+    payments = FakePayments()
+    decision = make_recovery(
+        store, sale_recorded=recorded, payments=payments
+    ).recover_at_boot()
 
     assert decision.kind == "closed"
     assert store.load() is None
+    assert payments.cash_sales == [(250, None)]  # the cash_sale is re-sent
     assert calls == [("ICE-1", snap.saved_at, {"cash": 250})]
 
 
@@ -369,7 +389,7 @@ def test_uncertain_snapshot_not_recorded_stays_uncertain(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(_open_snapshot())
 
-    decision = make_recovery(store, sale_recorded=lambda *a: False).evaluate_at_boot()
+    decision = make_recovery(store, sale_recorded=lambda *a: False).recover_at_boot()
 
     assert decision.kind == "uncertain"
     assert store.load() is not None
@@ -382,7 +402,7 @@ def test_test_snapshot_never_consults_sale_recorded(tmp_path):
     def boom(*a):
         raise AssertionError("must not be consulted")
 
-    decision = make_recovery(store, sale_recorded=boom).evaluate_at_boot()
+    decision = make_recovery(store, sale_recorded=boom).recover_at_boot()
 
     assert decision.kind == "discard_test"
 
@@ -408,7 +428,7 @@ def test_recorded_sale_with_leftover_credit_stays_uncertain(tmp_path):
     store.save(_open_snapshot_with(credit_escrow_cents=250))
     recovery = make_recovery(store, evidence_held=True, sale_recorded=lambda *a: True)
 
-    assert recovery.evaluate_at_boot().kind == "uncertain"
+    assert recovery.recover_at_boot().kind == "uncertain"
     assert store.load() is not None
     assert recovery.pending_sale_for_recovery() is None
 
@@ -417,10 +437,14 @@ def test_recorded_sale_with_zero_credit_is_closed(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(_open_snapshot_with(credit_escrow_cents=0))
 
-    decision = make_recovery(store, sale_recorded=lambda *a: True).evaluate_at_boot()
+    payments = FakePayments()
+    decision = make_recovery(
+        store, sale_recorded=lambda *a: True, payments=payments
+    ).recover_at_boot()
 
     assert decision.kind == "closed"
     assert store.load() is None
+    assert payments.cash_sales == [(250, None)]
 
 
 def _open_snapshot_with(**kw):
@@ -504,7 +528,7 @@ def test_match_window_is_passed_to_sale_recorded(tmp_path):
         sale_recorded=lambda sku, ts, methods, window: seen.append(window) or False,
         match_window_seconds=lambda: 777.0,
     )
-    recovery.evaluate_at_boot()
+    recovery.recover_at_boot()
 
     assert seen == [777.0]
 
@@ -531,7 +555,7 @@ def test_unreadable_pre_cents_snapshot_still_raises_uncertain_at_boot(tmp_path):
     )
     store = SessionStore(path)
 
-    decision = make_recovery(store).evaluate_at_boot()
+    decision = make_recovery(store).recover_at_boot()
 
     assert decision.kind == "uncertain"
     assert decision.snapshot.error

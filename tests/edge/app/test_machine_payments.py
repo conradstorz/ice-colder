@@ -2,6 +2,7 @@
 seeding, the snapshot lifecycle around a payout, policy sync and the lever."""
 
 import asyncio
+import inspect
 import itertools
 import json
 import types
@@ -15,6 +16,7 @@ from ice_edge.ledger.payment_cursor import PaymentCursorStore
 from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
 from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.payment.mdb.policy import build_policy
+from ice_edge.sale.session_evidence import RecordOutcome
 from tests.fakes import settle
 from tests.payment_state_helpers import set_coin_status
 
@@ -454,6 +456,16 @@ async def test_reconciliation_after_a_reboot_ignores_earlier_boot_cash(tmp_path)
 # --- PAY-104 recovery drives the board ------------------------------------------------
 
 
+class _RecordSaleOk:
+    """Event-recorder stand-in for Record as sale: accepts the idempotent write."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def record_sale(self, *args, **kwargs):
+        self.calls += 1
+
+
 def _pay104_snapshot(tmp_path):
     path = tmp_path / "session.json"
     SessionStore(path).save(
@@ -480,22 +492,25 @@ async def test_record_as_sale_sends_cash_share_then_reconciliation_pays_only_lef
     machine, cfg, avail, dispatcher = build(tmp_path, store=SessionStore(path))
     assert machine.faults.has(FaultCode.PAY_104)
     await ack_policy(machine, cfg, avail)
-    pending = machine.evidence.pending_sale_for_recovery()
-    assert pending is not None
+    assert machine.evidence.pending_sale_for_recovery() is not None
 
     # The board still holds the sale's 200 of cash plus the 100 leftover credit.
     policy_id = build_policy(cfg.payment.mdb.policy, avail.payment_enabled).policy_id
     stale = state_doc(policy_id)
     stale["escrow_cents"] = 300
     await machine.gateway.state_consumer.handle("payment/state", stale)
-    assert machine.evidence.send_recovered_cash_sale(pending) is True
-    assert machine.evidence.send_recovered_cash_sale(pending) is False  # once per sale
+    recorder = _RecordSaleOk()
+    outcome = await machine.evidence.record_pending_sale(recorder)
+    assert outcome is RecordOutcome.RECORDED
+    # once per sale: a replay finds nothing pending and queues nothing more
+    replay = await machine.evidence.record_pending_sale(recorder)
+    assert replay is RecordOutcome.NOTHING_PENDING
+    assert recorder.calls == 1
     await settle(10)
     assert [
         (c[1]["cents"], c[1].get("sale_id")) for c in dispatcher.commands("cash_sale")
     ] == [(200, None)]
-
-    machine.vmc.clear_fault(FaultCode.PAY_104.value, by="admin")
+    assert not machine.faults.has(FaultCode.PAY_104)
     board = state_doc(
         build_policy(cfg.payment.mdb.policy, avail.payment_enabled).policy_id
     )
@@ -557,7 +572,9 @@ async def _resolved(tmp_path, items, resolve, board_escrow, **extra):
     assert (
         dispatcher.commands("cash_sale") == [] and dispatcher.commands("payout") == []
     )
-    resolve(machine)
+    resolved = resolve(machine)
+    if inspect.isawaitable(resolved):
+        await resolved
     await settle(12)
     return machine, cfg, avail, dispatcher, stale
 
@@ -629,11 +646,9 @@ async def test_record_as_sale_sends_its_cash_sale_besides_an_unrelated_queued_on
         }
     ]
 
-    def record(machine):
-        pending = machine.evidence.pending_sale_for_recovery()
-        assert pending is not None
-        assert machine.evidence.send_recovered_cash_sale(pending) is True
-        machine.vmc.clear_fault(FaultCode.PAY_104.value, by="admin")
+    async def record(machine):
+        outcome = await machine.evidence.record_pending_sale(_RecordSaleOk())
+        assert outcome is RecordOutcome.RECORDED
 
     machine, cfg, avail, dispatcher, _ = await _resolved(
         tmp_path,
