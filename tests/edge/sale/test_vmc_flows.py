@@ -502,7 +502,7 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     # The sale must be recoverable through the existing PAY-104 flow, in
     # this same process, with no reboot -- proving the on-disk snapshot
     # genuinely survived, not merely that some in-memory flag is set.
-    pending = machine.pending_sale_for_recovery()
+    pending = machine.evidence.pending_sale_for_recovery()
     assert pending is not None, "sale evidence was lost -- nothing to recover"
     assert pending["sku"] == "ICE-1"
     assert pending["price_cents"] == 250
@@ -3185,7 +3185,7 @@ class TestRunTestSale:
         Production paths reached: VMC.process_payment (unmodified),
         VMC.snapshot (this fix's `is_test=self._sale.is_test`),
         Machine.set_session_store (this fix's is_test boot branch), and
-        Machine.pending_sale_for_recovery (this fix's is_test guard).
+        Machine.evidence.pending_sale_for_recovery (this fix's is_test guard).
         """
         store_path = tmp_path / "session.json"
         machine, rec, client = _test_run_machine()
@@ -3222,7 +3222,7 @@ class TestRunTestSale:
         machine2.set_session_store(SessionStore(store_path))
 
         assert "PAY-104" not in fault_codes(vmc2)
-        assert machine2.pending_sale_for_recovery() is None
+        assert machine2.evidence.pending_sale_for_recovery() is None
         machine2.cancel_pending_tasks()
 
         task.cancel()
@@ -3245,7 +3245,7 @@ class TestRunTestSale:
         rationale describes: some future call site raises PAY-104 while a
         stale test-sale snapshot happens to still be on disk.
 
-        Production path reached: Machine.pending_sale_for_recovery (this
+        Production path reached: Machine.evidence.pending_sale_for_recovery (this
         fix's is_test guard), independent of Machine.set_session_store.
         """
         store_path = tmp_path / "session.json"
@@ -3272,7 +3272,7 @@ class TestRunTestSale:
         # Positive control: the fault really is active before asserting
         # what the accessor does about it.
         assert "PAY-104" in fault_codes(vmc)
-        assert machine.pending_sale_for_recovery() is None
+        assert machine.evidence.pending_sale_for_recovery() is None
 
     async def test_crashed_production_sale_is_still_offered_for_recovery_with_fifo_shares(
         self, tmp_path
@@ -3289,7 +3289,7 @@ class TestRunTestSale:
         VMC.process_payment/_consume_credits_fifo (all unmodified),
         VMC.snapshot (is_test=False for a real sale), Machine.set_session_store
         (the pre-existing is_open() branch, untouched by this fix), and
-        Machine.pending_sale_for_recovery (returns the pending sale as before).
+        Machine.evidence.pending_sale_for_recovery (returns the pending sale as before).
         """
         store_path = tmp_path / "session.json"
         machine, rec, client = _test_run_machine()
@@ -3318,7 +3318,7 @@ class TestRunTestSale:
         machine2.set_session_store(SessionStore(store_path))
 
         assert "PAY-104" in fault_codes(vmc2)
-        pending = machine2.pending_sale_for_recovery()
+        pending = machine2.evidence.pending_sale_for_recovery()
         assert pending is not None
         assert pending["sku"] == "ICE-1"
         assert pending["methods"] == {"cash_bill": 200, "card": 50}

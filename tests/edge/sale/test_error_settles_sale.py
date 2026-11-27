@@ -213,10 +213,10 @@ async def test_error_during_failed_write_keeps_snapshot_for_pay104_recovery(tmp_
     assert snap is not None
     assert snap.is_open() is True
     assert snap.pending_sale_shares == {"cash_bill": 250}
-    pending = machine.pending_sale_for_recovery()
+    pending = machine.evidence.pending_sale_for_recovery()
     assert pending is not None
     assert pending["sku"] == "ICE-1"
-    assert machine.mark_pending_sale_recorded() is True
+    assert machine.evidence.mark_pending_sale_recorded() is True
 
 
 async def test_stale_write_does_not_touch_the_next_customers_sale(tmp_path):

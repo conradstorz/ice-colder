@@ -4,7 +4,7 @@ session-liveness sweep.
 Extracted from ``ice_edge.sale.vmc.VMC`` as the sixth and last piece carved off
 the VMC god object, following ``ice_edge/faults/fault_registry.py``'s
 ``FaultRegistry``, ``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger``,
-``ice_edge/ledger/session_recovery.py``'s ``SessionRecovery`` (see ``CLAUDE.md``'s
+``ice_edge/sale/session_evidence.py``'s ``SessionEvidence`` (see ``CLAUDE.md``'s
 "FSM Core" section). ``MaintenanceLease`` owns the lease itself
 (``MaintenanceHold``), its idle timer, the standby sweep, and the
 grant/release/takeover/run accounting.

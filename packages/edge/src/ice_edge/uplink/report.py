@@ -79,7 +79,9 @@ async def build_machine_report(
         health=health,
         kpi=await build_kpi_summary(machine.event_recorder),
         faults=build_fault_views(
-            faults_with_age(machine.vmc, monitor, machine.pending_sale_for_recovery)
+            faults_with_age(
+                machine.vmc, monitor, machine.evidence.pending_sale_for_recovery
+            )
         ),
         health_page=build_health_page_summary(
             monitor.get_summary() if monitor else None, subsystem_rows(monitor)

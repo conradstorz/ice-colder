@@ -115,7 +115,7 @@ def pay104(wired, tmp_path):
     # genuinely reports the pending sale -- before any test asserts on
     # what an action against it did.
     assert "PAY-104" in fault_codes(vmc2)
-    pending = machine2.pending_sale_for_recovery()
+    pending = machine2.evidence.pending_sale_for_recovery()
     assert pending is not None
     assert pending["sku"] == "ICE-1"
     assert pending["methods"] == expected_shares
@@ -150,7 +150,7 @@ def _assert_evidence_intact(pay104):
     and the sales table."""
     assert pay104["session_path"].exists()
     assert "PAY-104" in fault_codes(pay104["vmc"])
-    assert pay104["machine"].pending_sale_for_recovery() is not None
+    assert pay104["machine"].evidence.pending_sale_for_recovery() is not None
     assert _sales_rows(pay104["db_path"]) == []
 
 
@@ -189,7 +189,7 @@ class TestFaultsListRendersPendingSale:
         _cfg, vmc, _inv, _store = wired
         vmc.raise_fault(FaultCode.PAY_104, outcome="test, no session store")
         assert (
-            context.machine_instance.pending_sale_for_recovery() is None
+            context.machine_instance.evidence.pending_sale_for_recovery() is None
         )  # positive control
         client = login_as(Role.tech)
         resp = client.get("/health/faults")
@@ -209,7 +209,7 @@ class TestFaultsListRendersPendingSale:
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         routes.set_event_recorder(recorder)
         vmc.raise_fault(FaultCode.PAY_104, outcome="test, no session store")
-        assert context.machine_instance.pending_sale_for_recovery() is None
+        assert context.machine_instance.evidence.pending_sale_for_recovery() is None
         client = login_as(Role.tech)
         resp = client.post("/health/faults/PAY-104/clear")
         assert resp.status_code == 200
@@ -243,7 +243,7 @@ class TestPlainClearRejectedWithPendingSale:
         # and still reports the exact same pending sale, and no sale row
         # was ever written.
         assert pay104["session_path"].exists()
-        pending = pay104["machine"].pending_sale_for_recovery()
+        pending = pay104["machine"].evidence.pending_sale_for_recovery()
         assert pending is not None
         assert pending["sku"] == "ICE-1"
         assert pending["methods"] == pay104["shares"]
@@ -303,7 +303,7 @@ class TestRecordSale:
         # Positive control, restated right before the write this test is
         # actually about.
         assert "PAY-104" in fault_codes(vmc)
-        assert machine.pending_sale_for_recovery() is not None
+        assert machine.evidence.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
         client = login_as(Role.tech)
@@ -358,7 +358,7 @@ class TestRecordSale:
         assert resp.status_code == 500
         assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
         assert pay104["session_path"].exists()
-        assert machine.pending_sale_for_recovery() is not None
+        assert machine.evidence.pending_sale_for_recovery() is not None
         assert machine.gateway.pending_payouts() == []
         assert len(_sales_rows(pay104["db_path"])) == 1
 
@@ -394,7 +394,9 @@ class TestRecordSale:
         vmc = pay104["vmc"]
         machine = pay104["machine"]
         assert "PAY-104" not in fault_codes(vmc)
-        assert machine.pending_sale_for_recovery() is None  # idempotency token is gone
+        assert (
+            machine.evidence.pending_sale_for_recovery() is None
+        )  # idempotency token is gone
 
         second = client.post("/health/faults/PAY-104/record-sale")
         assert second.status_code == 200
@@ -461,7 +463,7 @@ class TestDiscard:
         vmc = pay104["vmc"]
         machine = pay104["machine"]
         assert "PAY-104" in fault_codes(vmc)
-        assert machine.pending_sale_for_recovery() is not None
+        assert machine.evidence.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
         client = login_as(Role.tech)
@@ -544,7 +546,7 @@ class TestRecordSaleExactlyOnce:
         machine = pay104["machine"]
         # Positive control, restated right before the concurrent write.
         assert "PAY-104" in fault_codes(vmc)
-        assert machine.pending_sale_for_recovery() is not None
+        assert machine.evidence.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
         recorder = pay104["recorder"]
@@ -625,7 +627,7 @@ class TestRecordSaleExactlyOnce:
         # Positive control, restated right before the write this test is
         # actually about.
         assert "PAY-104" in fault_codes(vmc)
-        assert machine.pending_sale_for_recovery() is not None
+        assert machine.evidence.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
         monkeypatch.setattr(machine.session_store, "clear", lambda: False)
@@ -649,7 +651,7 @@ class TestRecordSaleExactlyOnce:
         # the accessor now reports no pending sale even with the fault
         # still active.
         assert pay104["session_path"].exists()
-        assert machine.pending_sale_for_recovery() is None
+        assert machine.evidence.pending_sale_for_recovery() is None
         rewritten = SessionStore(pay104["session_path"]).load()
         assert rewritten is not None
         assert not rewritten.pending_sale_shares
@@ -692,7 +694,7 @@ class TestMarkerFailureExactlyOnce:
         # actually about -- see task-14-brief.md's "beware the fixture
         # that makes the asserted branch unreachable".
         assert "PAY-104" in fault_codes(vmc)
-        assert machine.pending_sale_for_recovery() is not None
+        assert machine.evidence.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
         # Both disk writes fail -- the realistic pairing: clear_fault's
@@ -740,7 +742,7 @@ class TestMarkerFailureExactlyOnce:
         # pending sale. This is exactly the danger the in-memory guard
         # below must close, since the disk-based idempotency token is
         # gone.
-        assert machine.pending_sale_for_recovery() is not None
+        assert machine.evidence.pending_sale_for_recovery() is not None
 
         # A second POST in the same process must not write a second row,
         # even though the disk still shows a pending sale.
@@ -758,7 +760,7 @@ class TestMarkerFailureExactlyOnce:
         vmc = pay104["vmc"]
         machine = pay104["machine"]
         assert "PAY-104" in fault_codes(vmc)
-        assert machine.pending_sale_for_recovery() is not None
+        assert machine.evidence.pending_sale_for_recovery() is not None
         assert "DATA-101" not in fault_codes(vmc)  # positive control
 
         monkeypatch.setattr(machine.session_store, "clear", lambda: False)
@@ -820,7 +822,7 @@ class TestCrossRestartExactlyOnce:
         # Positive control, restated right before the write this test is
         # actually about.
         assert "PAY-104" in fault_codes(vmc)
-        assert machine.pending_sale_for_recovery() is not None
+        assert machine.evidence.pending_sale_for_recovery() is not None
         assert session_path.exists()
 
         # Force the same realistic failure pairing as
@@ -871,7 +873,7 @@ class TestCrossRestartExactlyOnce:
         # still reported, and (per this test's own docstring) no
         # DATA-101 survives to warn that a retry needs care.
         assert "PAY-104" in fault_codes(vmc_after_restart)
-        assert machine_after_restart.pending_sale_for_recovery() is not None
+        assert machine_after_restart.evidence.pending_sale_for_recovery() is not None
 
         recorder_after_restart = EventRecorder(db_path=str(db_path))
 
@@ -934,7 +936,7 @@ class TestRecordedSaleWithLeftoverCredit:
         machine, store_path, _db = leftover
         assert "PAY-104" in fault_codes(machine.vmc)
         assert store_path.exists()
-        assert machine.pending_sale_for_recovery() is None
+        assert machine.evidence.pending_sale_for_recovery() is None
         client = login_as(Role.tech)
         text = client.get("/health/faults").text
         assert 'id="record-sale-PAY-104"' not in text
@@ -960,9 +962,9 @@ class TestRecordedSaleWithLeftoverCredit:
         assert "only if the board still holds it" in text
         assert "verify the customer was repaid" in text
 
-    def test_recovery_detail_forwarded_on_machine(self, leftover):
+    def test_recovery_detail_on_machine_evidence(self, leftover):
         machine, _store, _db = leftover
-        detail = machine.recovery_detail()
+        detail = machine.evidence.recovery_detail()
         assert detail is not None
         assert detail.sale_recorded is True
         assert detail.credit_escrow_cents == 250

@@ -480,7 +480,7 @@ async def test_record_as_sale_sends_cash_share_then_reconciliation_pays_only_lef
     machine, cfg, avail, dispatcher = build(tmp_path, store=SessionStore(path))
     assert machine.faults.has(FaultCode.PAY_104)
     await ack_policy(machine, cfg, avail)
-    pending = machine.pending_sale_for_recovery()
+    pending = machine.evidence.pending_sale_for_recovery()
     assert pending is not None
 
     # The board still holds the sale's 200 of cash plus the 100 leftover credit.
@@ -488,8 +488,8 @@ async def test_record_as_sale_sends_cash_share_then_reconciliation_pays_only_lef
     stale = state_doc(policy_id)
     stale["escrow_cents"] = 300
     await machine.gateway.state_consumer.handle("payment/state", stale)
-    assert machine.send_recovered_cash_sale(pending) is True
-    assert machine.send_recovered_cash_sale(pending) is False  # once per sale
+    assert machine.evidence.send_recovered_cash_sale(pending) is True
+    assert machine.evidence.send_recovered_cash_sale(pending) is False  # once per sale
     await settle(10)
     assert [
         (c[1]["cents"], c[1].get("sale_id")) for c in dispatcher.commands("cash_sale")
@@ -630,9 +630,9 @@ async def test_record_as_sale_sends_its_cash_sale_besides_an_unrelated_queued_on
     ]
 
     def record(machine):
-        pending = machine.pending_sale_for_recovery()
+        pending = machine.evidence.pending_sale_for_recovery()
         assert pending is not None
-        assert machine.send_recovered_cash_sale(pending) is True
+        assert machine.evidence.send_recovered_cash_sale(pending) is True
         machine.vmc.clear_fault(FaultCode.PAY_104.value, by="admin")
 
     machine, cfg, avail, dispatcher, _ = await _resolved(
@@ -670,16 +670,16 @@ async def test_runtime_pay104_with_a_live_dispensing_snapshot_offers_no_recovery
         )
     )
     assert path.exists()
-    assert machine.pending_sale_for_recovery() is None
-    assert machine.recovery_detail() is None
+    assert machine.evidence.pending_sale_for_recovery() is None
+    assert machine.evidence.recovery_detail() is None
 
 
 async def test_boot_uncertain_snapshot_still_offers_the_recovery_card(tmp_path):
     path = _pay104_snapshot(tmp_path)
     machine, *_ = build(tmp_path, store=SessionStore(path))
     assert machine.faults.has(FaultCode.PAY_104)
-    assert machine.pending_sale_for_recovery() is not None
-    assert machine.recovery_detail() is not None
+    assert machine.evidence.pending_sale_for_recovery() is not None
+    assert machine.evidence.recovery_detail() is not None
 
 
 async def test_sale_recording_failed_still_offers_the_recovery_card(tmp_path):
@@ -719,7 +719,7 @@ async def test_sale_recording_failed_still_offers_the_recovery_card(tmp_path):
     await settle(12)
     await machine.drain_persistence()
     assert machine.faults.has(FaultCode.PAY_104)
-    pending = machine.pending_sale_for_recovery()
+    pending = machine.evidence.pending_sale_for_recovery()
     assert pending is not None
     assert pending["price_cents"] == 250
 
