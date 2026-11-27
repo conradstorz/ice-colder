@@ -32,7 +32,11 @@ from ice_contracts.board.vending_machine import FaultCode
 from ice_contracts.money import format_cents
 from ice_edge.faults.fault_service import FaultChange, FaultService
 from ice_edge.ledger.event_recorder import SALE_MATCH_WINDOW_SECONDS
-from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
+from ice_edge.ledger.session_store import (
+    SessionSnapshot,
+    SessionStore,
+    UnreadableSnapshot,
+)
 from ice_edge.payment.ports import Payments, PendingPayout, cash_share
 
 _txn_log = logger.bind(transaction=True)
@@ -58,7 +62,7 @@ class BootDecision:
     """
 
     kind: BootDecisionKind
-    snapshot: SessionSnapshot | None
+    snapshot: SessionSnapshot | UnreadableSnapshot | None
 
 
 @dataclass(frozen=True)
@@ -181,7 +185,8 @@ class SessionEvidence:
         decision = self._evaluate_at_boot()
         snap = decision.snapshot
         if snap is not None:
-            self._seed_event_ids(c.event_id for c in snap.credits)
+            credits = snap.credits if isinstance(snap, SessionSnapshot) else ()
+            self._seed_event_ids(c.event_id for c in credits)
         if decision.kind == "discard_test":
             logger.warning(
                 "SessionStore: discarding a test-sale snapshot found at "
@@ -190,7 +195,8 @@ class SessionEvidence:
                 "real money, so no PAY-104 is raised."
             )
         elif decision.kind == "uncertain":
-            self._boot_snapshot = snap
+            # An unreadable file has no payouts to requeue, so nothing is kept.
+            self._boot_snapshot = snap if isinstance(snap, SessionSnapshot) else None
             self._flag_uncertain_session(snap)
         elif decision.kind == "closed" and snap.pending_sale_shares:
             self._recover_closed_cash_sale(snap)
@@ -210,6 +216,9 @@ class SessionEvidence:
         snap = store.load()
         if snap is None:
             return BootDecision(kind="none", snapshot=None)
+        if isinstance(snap, UnreadableSnapshot):
+            # We cannot tell what the file held: always uncertain, file kept.
+            return BootDecision(kind="uncertain", snapshot=snap)
         if snap.is_test:
             # is_test is read straight off the snapshot (not the lease, which
             # is never persisted): this and ``pending_sale_for_recovery`` are
@@ -234,12 +243,8 @@ class SessionEvidence:
     @staticmethod
     def _nothing_left_over(snap: SessionSnapshot) -> bool:
         """True when the snapshot holds no money or state an operator must see:
-        leftover credit, a pending payout, or an unreadable-file error."""
-        return (
-            snap.credit_escrow_cents <= 0
-            and not snap.pending_payouts
-            and not snap.error
-        )
+        leftover credit or a pending payout."""
+        return snap.credit_escrow_cents <= 0 and not snap.pending_payouts
 
     def _already_recorded(self, snap: SessionSnapshot) -> bool:
         """True when the snapshot's pending sale already has a `sales` row."""
@@ -258,21 +263,35 @@ class SessionEvidence:
             logger.exception("PAY-104: already-recorded check failed; assuming not")
             return False
 
-    def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
+    def _flag_uncertain_session(
+        self, snap: SessionSnapshot | UnreadableSnapshot
+    ) -> None:
         """Side effects of an 'uncertain' boot decision: log, record the event
         row, hold the evidence, close the availability gate, raise PAY-104."""
-        detail = snap.error or (
-            f"state={snap.state} escrow={format_cents(snap.credit_escrow_cents)} "
-            f"sku={snap.selected_sku} payouts={len(snap.pending_payouts)}"
-        )
+        if isinstance(snap, UnreadableSnapshot):
+            detail = snap.detail
+            credit_cents = 0
+            # The event row keeps the shape it had when the unreadable case was
+            # a placeholder snapshot: state "unknown", nothing in escrow.
+            metadata = {
+                **asdict(SessionSnapshot(state="unknown", credit_escrow_cents=0)),
+                "error": detail,
+            }
+        else:
+            detail = (
+                f"state={snap.state} escrow={format_cents(snap.credit_escrow_cents)} "
+                f"sku={snap.selected_sku} payouts={len(snap.pending_payouts)}"
+            )
+            credit_cents = snap.credit_escrow_cents
+            metadata = asdict(snap)
         logger.error(f"Transaction uncertain after restart: {detail}")
         _txn_log.error(f"RESTART WITH OPEN SESSION: {detail}")
         recorder = self._recorder()
         if recorder:
             recorder.record(
                 "session_uncertain",
-                value=snap.credit_escrow_cents,
-                metadata=asdict(snap),
+                value=credit_cents,
+                metadata=metadata,
             )
         self.hold()
         availability = self._availability()
@@ -340,12 +359,21 @@ class SessionEvidence:
             return None
         if snap is None:
             return None
+        if isinstance(snap, UnreadableSnapshot):
+            return RecoveryDetail(
+                sku=None,
+                sale_recorded=False,
+                credit_escrow_cents=0,
+                pending_payouts=[],
+                error=snap.detail,
+                is_test=False,
+            )
         return RecoveryDetail(
             sku=snap.selected_sku,
             sale_recorded=self._already_recorded(snap),
             credit_escrow_cents=snap.credit_escrow_cents,
             pending_payouts=[dict(p) for p in snap.pending_payouts],
-            error=snap.error,
+            error=None,
             is_test=snap.is_test,
         )
 
@@ -372,7 +400,9 @@ class SessionEvidence:
             snap = store.load()
         except Exception:
             return None
-        if snap is None or not snap.pending_sale_shares:
+        if snap is None or isinstance(snap, UnreadableSnapshot):
+            return None
+        if not snap.pending_sale_shares:
             return None
         if snap.is_test:
             return None
@@ -444,7 +474,7 @@ class SessionEvidence:
         except Exception as e:
             logger.error(f"PAY-104: could not load snapshot to mark recorded: {e}")
             return False
-        if snap is None:
+        if snap is None or isinstance(snap, UnreadableSnapshot):
             return False
         snap.pending_sale_shares = None
         try:

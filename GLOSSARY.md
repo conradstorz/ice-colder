@@ -10,6 +10,10 @@ A vending machine controller: the edge runs one machine's sales, payments and ha
 The on-disk record of the live sale (state, escrow credit, selected product, pending payouts), rewritten as the sale progresses.
 _Avoid_: session file, session.json (when meaning the concept)
 
+**Unreadable snapshot**:
+A **Session snapshot** that could not be read; always treated as uncertain **Session evidence**, with its raw bytes kept beside it.
+_Avoid_: corrupt session, unknown state
+
 **Session evidence**:
 A **Session snapshot** held back from deletion because it is the only account of money the machine may owe or have taken: left uncertain at boot, or describing a sale that could not be recorded anywhere durable. An operator resolves it with **Record as sale** or **Discard**.
 _Avoid_: PAY-104 (a fault code that can also be raised without any evidence held), recovery snapshot

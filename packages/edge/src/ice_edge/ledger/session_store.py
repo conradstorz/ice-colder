@@ -86,17 +86,30 @@ class SessionSnapshot:
     # future path leaves PAY-104 active anyway.
     is_test: bool = False
     saved_at: float = field(default_factory=time.time)
-    error: Optional[str] = None  # set when the file could not be parsed
 
     def is_open(self) -> bool:
-        """True when money or a vend was in flight (or we cannot tell)."""
+        """True when money or a vend was in flight."""
         return (
-            bool(self.error)
-            or self.credit_escrow_cents > 0
+            self.credit_escrow_cents > 0
             or self.state == "dispensing"
             or bool(self.pending_sale_shares)
             or bool(self.pending_payouts)
         )
+
+
+@dataclass(frozen=True)
+class UnreadableSnapshot:
+    """``session.json`` exists but could not be trusted (see GLOSSARY.md,
+    *Unreadable snapshot*). It is not a snapshot: it carries no money or state,
+    and callers must treat it as open (we cannot tell) -- a distinct type so a
+    reader cannot mistake it for a ``SessionSnapshot`` with nothing in it.
+
+    ``detail`` is the failure text, with a "; raw file kept at <path>" suffix
+    when a copy was preserved; ``kept_at`` is that copy, or None.
+    """
+
+    detail: str
+    kept_at: Path | None
 
 
 class SessionStore:
@@ -114,55 +127,16 @@ class SessionStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(self._path, json.dumps({**asdict(snap), "units": "cents"}))
 
-    def load(self) -> Optional[SessionSnapshot]:
+    def load(self) -> SessionSnapshot | UnreadableSnapshot | None:
+        """The saved snapshot; ``None`` when there is no file; an
+        :class:`UnreadableSnapshot` when the file cannot be trusted. An
+        unreadable file is treated as open by every caller (fail safe)."""
         if not self._path.exists():
             return None
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-            # asdict() flattened Credit to plain dicts on save; a file written
-            # before this field existed has no "credits" key at all, which
-            # SessionSnapshot(**raw) already handles via default_factory=list
-            # — only rehydrate when the key is actually present.
-            raw_credits = raw.get("credits")
-            # The "units" marker is still written but no longer interpreted.
-            raw.pop("units", None)
-            # The previous release serialised the removed refund-id field as
-            # null on every save; a null carries no information and is
-            # dropped. A non-null id is a real legacy pending refund and is
-            # left in place so the unknown-key error below fails safe.
-            if "pending_refund_request_id" in raw and (
-                raw["pending_refund_request_id"] is None
-            ):
-                del raw["pending_refund_request_id"]
-            if raw_credits is not None:
-                raw["credits"] = [Credit(**c) for c in raw_credits]
-            # saved_at is money-load-bearing (PAY-104 recovery keys on the
-            # exact instant a pending sale's escrow shares were written) so
-            # it must never be allowed to silently re-default to "now" via
-            # SessionSnapshot's field(default_factory=time.time) -- an
-            # absent, non-numeric, non-finite, or non-positive value
-            # on disk is rejected here and folds into the same
-            # unreadable-snapshot "error" channel used below for a JSON
-            # parse failure, rather than inventing a second signalling
-            # mechanism. That channel already reports is_open() == True
-            # (see SessionSnapshot.error), which is the correct, fail-safe
-            # answer for a snapshot we cannot actually trust.
-            if "saved_at" not in raw:
-                raise ValueError("saved_at missing from session snapshot")
-            saved_at = raw["saved_at"]
-            if (
-                isinstance(saved_at, bool)
-                or not isinstance(saved_at, (int, float))
-                or not math.isfinite(saved_at)
-                or saved_at <= 0
-            ):
-                raise ValueError(f"saved_at is not a valid timestamp: {saved_at!r}")
-            skew = saved_at - time.time()
-            if skew > SAVED_AT_FUTURE_SKEW_SECONDS:
-                logger.warning(
-                    f"SessionStore: saved_at in {self._path} is {skew:.0f}s ahead of "
-                    "the clock (clock behind the last save?); keeping it as-is"
-                )
+            raw = self._migrate(raw)
+            self._check_saved_at(raw)
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")
@@ -170,7 +144,59 @@ class SessionStore:
             kept = self._preserve_unreadable()
             if kept is not None:
                 detail += f"; raw file kept at {kept}"
-            return SessionSnapshot(state="unknown", credit_escrow_cents=0, error=detail)
+            return UnreadableSnapshot(detail=detail, kept_at=kept)
+
+    @staticmethod
+    def _migrate(raw: dict) -> dict:
+        """Drop legacy keys and rehydrate credits, in place.
+
+        asdict() flattened Credit to plain dicts on save; a file written
+        before the credits field existed has no "credits" key at all, which
+        SessionSnapshot(**raw) already handles via default_factory=list --
+        only rehydrate when the key is actually present.
+        """
+        raw_credits = raw.get("credits")
+        # The "units" marker is still written but no longer interpreted.
+        raw.pop("units", None)
+        # Previous releases serialised two removed fields as null on every
+        # save (the refund-id field, and ``error`` -- the old unreadable
+        # channel); a null carries no information and is dropped. A non-null
+        # value is left in place so the unknown-key error in
+        # SessionSnapshot(**raw) fails safe: the file loads as unreadable.
+        for removed in ("pending_refund_request_id", "error"):
+            if removed in raw and raw[removed] is None:
+                del raw[removed]
+        if raw_credits is not None:
+            raw["credits"] = [Credit(**c) for c in raw_credits]
+        return raw
+
+    def _check_saved_at(self, raw: dict) -> None:
+        """Reject an unusable ``saved_at``; warn when it is far in the future.
+
+        saved_at is money-load-bearing (PAY-104 recovery keys on the exact
+        instant a pending sale's escrow shares were written) so it must never
+        silently re-default to "now" via SessionSnapshot's
+        field(default_factory=time.time). An absent, non-numeric, non-finite
+        or non-positive value raises, and load() turns that into an
+        UnreadableSnapshot, which every caller treats as open -- the fail-safe
+        answer for a snapshot we cannot trust.
+        """
+        if "saved_at" not in raw:
+            raise ValueError("saved_at missing from session snapshot")
+        saved_at = raw["saved_at"]
+        if (
+            isinstance(saved_at, bool)
+            or not isinstance(saved_at, (int, float))
+            or not math.isfinite(saved_at)
+            or saved_at <= 0
+        ):
+            raise ValueError(f"saved_at is not a valid timestamp: {saved_at!r}")
+        skew = saved_at - time.time()
+        if skew > SAVED_AT_FUTURE_SKEW_SECONDS:
+            logger.warning(
+                f"SessionStore: saved_at in {self._path} is {skew:.0f}s ahead of "
+                "the clock (clock behind the last save?); keeping it as-is"
+            )
 
     def _preserve_unreadable(self) -> Optional[Path]:
         """Copy an unreadable snapshot beside the original, once per content.
